@@ -1,18 +1,9 @@
 ---
 deployment:
   tasks:
-    # Copy ONLY the app files into the web root on each deploy.
-    # Adjust the path if your cPanel user/home differs (cPanel shows it on the
-    # Git Version Control page). Docs, .git, and data/ are intentionally NOT copied.
-    - export DEPLOYPATH=/home/$(whoami)/public_html
-    - /bin/cp -f index.html $DEPLOYPATH
-    - /bin/cp -f api.php $DEPLOYPATH
-    - /bin/cp -f sow.php $DEPLOYPATH
-    - /bin/cp -f cp.php $DEPLOYPATH
-    - /bin/cp -f jobs.php $DEPLOYPATH
-    - /bin/cp -f levatalogo.png $DEPLOYPATH
-    - /bin/cp -f levata-logo-jpeg.jpg $DEPLOYPATH
-    - /bin/cp -f .htaccess $DEPLOYPATH
-    # Ensure the writable data dirs exist (created once; never overwritten so live data is safe).
-    - /bin/mkdir -p $DEPLOYPATH/data/uploads
-    - /bin/chmod 755 $DEPLOYPATH/data $DEPLOYPATH/data/uploads
+    # The repo is cloned directly INTO the web root (/home/stagdctc/levataos.com),
+    # so the app files are already served in place — no copy step is needed.
+    # Deploy only ensures the writable data dirs exist (never overwrites live data).
+    - export WEBROOT=/home/stagdctc/levataos.com
+    - /bin/mkdir -p $WEBROOT/data/uploads
+    - /bin/chmod 755 $WEBROOT/data $WEBROOT/data/uploads

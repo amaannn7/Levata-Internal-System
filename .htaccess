@@ -7,8 +7,17 @@
     RewriteRule ^data/ - [F,L]
 </IfModule>
 
-# Block access to sensitive files (json/log/md) anywhere
-<FilesMatch "\.(json|log|md)$">
+# Block access to sensitive files (json/log/md/yml) anywhere
+<FilesMatch "\.(json|log|md|yml|yaml)$">
+    Require all denied
+</FilesMatch>
+
+# Block the .git directory and dotfiles (the repo is cloned into the web root,
+# so .git/, .gitignore, .cpanel.yml etc. must never be served).
+<IfModule mod_rewrite.c>
+    RewriteRule (^|/)\.git - [F,L]
+</IfModule>
+<FilesMatch "^\.">
     Require all denied
 </FilesMatch>
 
