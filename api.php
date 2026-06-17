@@ -13,12 +13,12 @@ ini_set('max_execution_time', 180);
 header('Content-Type: application/json');
 
 // CORS: restrict to known origins
-$allowedOrigins = ['https://sales.macktiles.com.au', 'http://sales.macktiles.com.au', 'http://localhost:8000', 'http://localhost:8080'];
+$allowedOrigins = ['https://levataos.com', 'https://www.levataos.com', 'http://localhost:8000', 'http://localhost:8080'];
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 if (in_array($origin, $allowedOrigins)) {
     header('Access-Control-Allow-Origin: ' . $origin);
 } else {
-    header('Access-Control-Allow-Origin: https://sales.macktiles.com.au');
+    header('Access-Control-Allow-Origin: https://levataos.com');
 }
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-User-Token');
