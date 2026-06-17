@@ -7,6 +7,7 @@ pptx-build/
 _*.png
 _*.js
 _*.html
+.data-backup-*/
 
 # Runtime-generated files (auto-recreate — don't ship)
 data/.rate_limits.json
