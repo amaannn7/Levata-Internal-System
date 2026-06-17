@@ -1,0 +1,13 @@
+# Dev / build junk — not needed in the deployed image
+.git
+.github
+.claude
+.DS_Store
+error_log
+*.md
+AGENTS.md
+CLAUDE.md
+README.md
+Macktiles_Sales_Intelligence_Demo.pdf
+Macktiles_Sales_Intelligence_Demo.pptx
+pptx-build/

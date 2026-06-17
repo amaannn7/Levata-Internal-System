@@ -1,0 +1,24 @@
+# Dev junk
+error_log
+.DS_Store
+.claude/
+node_modules/
+pptx-build/
+_*.png
+_*.js
+_*.html
+
+# Runtime-generated files (auto-recreate — don't ship)
+data/.rate_limits.json
+data/chat_last_read_*.json
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Sensitive data — NEVER commit (contains API keys, passwords, tokens, lead data)
+data/admin.json
+data/users.json
+data/user_*.json
+data/documents.json
+data/jobs.json
+data/*.json
+# Keep example/seed files if you add any later (none yet)

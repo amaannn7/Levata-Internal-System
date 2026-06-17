@@ -1,0 +1,9 @@
+# Render Blueprint — deploys the Macktiles app as a Docker web service
+services:
+  - type: web
+    name: macktiles-intelligence
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /
+    autoDeploy: true
