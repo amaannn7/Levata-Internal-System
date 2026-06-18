@@ -1425,14 +1425,38 @@ function respond($data, $code = 200) { http_response_code($code); echo json_enco
 
 // Resolve the current user from the X-User-Token header (or ?token= query param as a fallback).
 // Returns null when no valid token is presented.
+// Multi-device: a user may have many active tokens (one per device/login). We keep the
+// legacy single 'token' field for back-compat and also check the 'tokens' array.
+function userTokens($u) {
+    $list = [];
+    if (!empty($u['token'])) $list[] = $u['token'];
+    if (!empty($u['tokens']) && is_array($u['tokens'])) {
+        foreach ($u['tokens'] as $t) { if (is_string($t) && $t !== '') $list[] = $t; }
+    }
+    return array_values(array_unique($list));
+}
+
 function getCurrentUser() {
     $token = $_SERVER['HTTP_X_USER_TOKEN'] ?? ($_GET['token'] ?? '');
     $token = trim($token);
     if ($token === '') return null;
     foreach (getUsers() as $u) {
-        if (!empty($u['token']) && hash_equals($u['token'], $token)) return $u;
+        foreach (userTokens($u) as $valid) {
+            if (hash_equals($valid, $token)) return $u;
+        }
     }
     return null;
+}
+
+// Add a new device token to a user without removing existing ones (caps the list so it
+// can't grow forever). Mutates the passed user array by reference.
+function addUserToken(&$u, $token, $max = 10) {
+    if (!isset($u['tokens']) || !is_array($u['tokens'])) $u['tokens'] = [];
+    // Migrate any legacy single token into the array, then drop the legacy field.
+    if (!empty($u['token'])) { $u['tokens'][] = $u['token']; unset($u['token']); }
+    $u['tokens'][] = $token;
+    $u['tokens'] = array_values(array_unique($u['tokens']));
+    if (count($u['tokens']) > $max) $u['tokens'] = array_slice($u['tokens'], -$max);
 }
 
 // Require a logged-in user; 401 otherwise.
@@ -1940,7 +1964,9 @@ case 'reset-password':
             $u['password'] = password_hash($newPassword, PASSWORD_DEFAULT);
             unset($u['reset_token']);
             unset($u['reset_expires']);
-            $u['token'] = bin2hex(random_bytes(32));
+            // Security: a password reset invalidates ALL existing device sessions.
+            $u['tokens'] = [];
+            unset($u['token']);
             saveUsers($users);
             respond(['success' => true, 'message' => 'Password reset successful. Please login with your new password.']);
         }
@@ -1956,7 +1982,7 @@ case 'login':
     foreach ($users as &$user) {
         if ($user['email'] === $email && password_verify($password, $user['password'])) {
             $token = generateToken();
-            $user['token'] = $token;
+            addUserToken($user, $token); // multi-device: keep existing sessions alive
             $user['last_login_at'] = date('c');
             $user['session_start'] = date('c');
             $user['last_active_at'] = date('c');
@@ -2161,7 +2187,7 @@ case 'impersonate':
     foreach ($users as &$u) {
         if ($u['id'] === $targetId) {
             $token = bin2hex(random_bytes(32));
-            $u['token'] = $token;
+            addUserToken($u, $token); // multi-device: don't evict the target's real sessions
             saveUsers($users);
             respond(['success' => true, 'token' => $token, 'user' => ['id' => $u['id'], 'name' => $u['name'], 'email' => $u['email'], 'is_admin' => $u['is_admin'] ?? false, 'is_super_admin' => $u['is_super_admin'] ?? false]]);
         }
