@@ -2094,7 +2094,14 @@ case 'create-user':
     if (!$name || !$email) respond(['success' => false, 'error' => 'Name and email required'], 400);
     $users = getUsers();
     foreach ($users as $u) { if ($u['email'] === $email) respond(['success' => false, 'error' => 'Email exists'], 400); }
-    $password = generatePassword();
+    // Use the admin-provided password if given (min 8 chars), otherwise auto-generate one.
+    $customPassword = (string)($input['password'] ?? '');
+    if ($customPassword !== '') {
+        if (strlen($customPassword) < 8) respond(['success' => false, 'error' => 'Password must be at least 8 characters'], 400);
+        $password = $customPassword;
+    } else {
+        $password = generatePassword();
+    }
     $userId = generateId('user_');
     $users[] = ['id' => $userId, 'name' => $name, 'email' => $email, 'password' => password_hash($password, PASSWORD_DEFAULT), 'token' => '', 'created_at' => date('c'), 'is_admin' => $isAdmin, 'is_super_admin' => $isSuperAdmin];
     saveUsers($users);
@@ -2115,7 +2122,15 @@ case 'update-user':
             if (!empty($input['email'])) $u['email'] = trim(strtolower($input['email']));
             if (isset($input['is_admin'])) $u['is_admin'] = (bool)$input['is_admin'];
             if (isset($input['is_super_admin'])) { requireSuperAdmin(); $u['is_super_admin'] = (bool)$input['is_super_admin']; }
-            if (!empty($input['reset_password'])) { $newPass = generatePassword(); $u['password'] = password_hash($newPass, PASSWORD_DEFAULT); }
+            // Set a specific password if provided (min 8 chars); else if reset_password is set, auto-generate one.
+            if (!empty($input['new_password'])) {
+                if (strlen((string)$input['new_password']) < 8) respond(['success' => false, 'error' => 'Password must be at least 8 characters'], 400);
+                $u['password'] = password_hash((string)$input['new_password'], PASSWORD_DEFAULT);
+                $newPass = (string)$input['new_password'];
+            } elseif (!empty($input['reset_password'])) {
+                $newPass = generatePassword();
+                $u['password'] = password_hash($newPass, PASSWORD_DEFAULT);
+            }
             saveUsers($users);
             $res = ['success' => true];
             if ($newPass) $res['new_password'] = $newPass;
