@@ -15,6 +15,9 @@ data/chat_last_read_*.json
 data/uploads/*
 !data/uploads/.gitkeep
 
+# SSL validation challenge files (created by AutoSSL/Let's Encrypt on the server)
+.well-known/
+
 # Sensitive data — NEVER commit (contains API keys, passwords, tokens, lead data)
 data/admin.json
 data/users.json
