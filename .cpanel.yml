@@ -3,7 +3,12 @@ deployment:
   tasks:
     # The repo is cloned directly INTO the web root (/home/stagdctc/levataos.com),
     # so the app files are already served in place — no copy step is needed.
-    # Deploy only ensures the writable data dirs exist (never overwrites live data).
     - export WEBROOT=/home/stagdctc/levataos.com
+    # Ensure the writable data dirs exist (never overwrites live data).
     - /bin/mkdir -p $WEBROOT/data/uploads
     - /bin/chmod 755 $WEBROOT/data $WEBROOT/data/uploads
+    # Clear PHP OPcache so updated .php files take effect immediately on deploy
+    # (otherwise PHP keeps serving the old cached code until a restart).
+    - /bin/echo '<?php opcache_reset(); echo "ok"; ?>' > $WEBROOT/_deploy_flush.php
+    - /usr/bin/curl -s "https://levataos.com/_deploy_flush.php" || /bin/true
+    - /bin/rm -f $WEBROOT/_deploy_flush.php
