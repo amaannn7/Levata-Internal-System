@@ -1647,7 +1647,7 @@
                                 <form id="sow-form">
                                     <div class="form-row"><div class="form-group"><label class="form-label">Project name</label><input type="text" class="form-input" id="sow-project-name" placeholder="e.g. Acme Website"></div><div class="form-group"><label class="form-label">Client name</label><input type="text" class="form-input" id="sow-client-name" placeholder="e.g. Acme Corp"></div></div>
                                     <div class="form-row"><div class="form-group"><label class="form-label">Project ID</label><input type="text" class="form-input" id="sow-project-id" placeholder="Optional"></div><div class="form-group"><label class="form-label">Contact person</label><input type="text" class="form-input" id="sow-contact"></div></div>
-                                    <div class="form-group"><label class="form-label">Linked cost proposal <span style="font-weight:400;color:#888;">(the approved CP this SOW is built from)</span></label><select class="form-select" id="sow-linked-cp"><option value="">None</option></select></div>
+                                    <div class="form-group"><label class="form-label">Linked cost proposal <span style="font-weight:400;color:#888;">(pick the approved CP — its details auto-fill below)</span></label><select class="form-select" id="sow-linked-cp"><option value="">None</option></select></div>
                                     <div class="form-group"><label class="form-label">Engagement (short line for the header table)</label><input type="text" class="form-input" id="sow-engagement" placeholder="e.g. Design and development of a new website"></div>
                                     <div class="form-row"><div class="form-group"><label class="form-label">Contact email</label><input type="email" class="form-input" id="sow-email"></div><div class="form-group"><label class="form-label">Timeline / duration</label><input type="text" class="form-input" id="sow-timeline" placeholder="e.g. 5 to 6 weeks from kickoff"></div></div>
                                     <div class="form-group"><label class="form-label">Project description / objectives</label><textarea class="form-textarea" id="sow-description" rows="3" placeholder="What is being built, for whom, and why it matters..."></textarea></div>
@@ -5064,17 +5064,45 @@ document.getElementById('sow-back-btn').addEventListener('click',()=>sowGoStep(1
 // Global hook so showPage can reset the SOW view on entry.
 window.sowOnEnter=function(){if(!document.getElementById('sow-output').textContent.trim())sowGoStep(1);sowLoadCpOptions();};
 // Populate the "Linked cost proposal" dropdown from the user's saved cost proposals.
+let _sowCpById={}; // doc_no -> {id, client...} so selecting a CP can auto-fill the SOW
 async function sowLoadCpOptions(selected){
     const sel=document.getElementById('sow-linked-cp');if(!sel)return;
     const keep=selected!==undefined?selected:sel.value;
     const r=await api('list-documents');
     const cps=(r&&r.success?r.documents:[]).filter(d=>d.type==='cost_proposal'||d.type==='cost-proposal');
+    _sowCpById={};cps.forEach(d=>{if(d.doc_no)_sowCpById[d.doc_no]=d;});
     sel.innerHTML='<option value="">None</option>'+cps.map(d=>{
         const label=`${d.doc_no||'CP'} — ${(d.title||'Untitled').replace(/</g,'&lt;')}${d.client?' ('+d.client.replace(/</g,'&lt;')+')':''}`;
         return `<option value="${(d.doc_no||'').replace(/"/g,'&quot;')}">${label}</option>`;
     }).join('');
     if(keep)sel.value=keep;
 }
+// When a CP is chosen, pull its full content and pre-fill the matching SOW fields,
+// so a SOW built from an approved CP doesn't need everything re-typed.
+async function sowFillFromCp(docNo){
+    if(!docNo){return;}
+    const meta=_sowCpById[docNo];if(!meta||!meta.id)return;
+    const r=await api('get-document&id='+encodeURIComponent(meta.id));
+    if(!r.success||!r.document)return;
+    const ci=r.document.input||{}; // CP form input
+    const setIfEmpty=(id,val)=>{const el=document.getElementById(id);if(el&&!el.value.trim()&&val)el.value=val;};
+    // Shared concepts (CP field -> SOW field). Only fill blanks so we don't clobber edits.
+    setIfEmpty('sow-client-name', ci.clientName);
+    setIfEmpty('sow-project-id', ci.projectId);
+    setIfEmpty('sow-contact', ci.contactPerson);
+    setIfEmpty('sow-timeline', ci.timeline);
+    setIfEmpty('sow-investment', ci.investment);
+    // CP "serviceType" -> SOW "engagement" / project name; CP "overview" -> SOW "description"
+    setIfEmpty('sow-engagement', ci.serviceType);
+    setIfEmpty('sow-project-name', (meta.title||ci.serviceType));
+    setIfEmpty('sow-description', ci.overview);
+    // List fields (one per line)
+    const setListIfEmpty=(id,arr)=>{const el=document.getElementById(id);if(el&&!el.value.trim()&&Array.isArray(arr)&&arr.length)el.value=arr.join('\n');};
+    setListIfEmpty('sow-scope', ci.scopeDetails);
+    setListIfEmpty('sow-deliverables', ci.deliverables);
+    toast('Pre-filled from '+docNo+' — review and add SOW details','success');
+}
+document.getElementById('sow-linked-cp')?.addEventListener('change',e=>sowFillFromCp(e.target.value));
 // ===================== Job Registry =====================
 // Shared company-wide jobs. A job links a client to its approved cost proposal (CP-xxxx),
 // its SOW (SOW-xxxx) and its invoices (advance+final, or one per month for retainers).
