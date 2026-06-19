@@ -5935,7 +5935,9 @@ async function sowDeleteDoc(id,rowEl){
     toast('Deleted','success');
     // Remove the row instantly for immediate feedback, then re-render in the
     // background so client groupings stay correct (an emptied group disappears).
-    if(rowEl)rowEl.remove();
+    console.log('[del] success path; rowEl=',rowEl,'connected=',rowEl&&rowEl.isConnected);
+    if(rowEl&&rowEl.remove)rowEl.remove(); else {const el=document.querySelector('.sow-doc-row[data-doc-id="'+id+'"]');console.log('[del] fallback lookup row=',el);if(el)el.remove();}
+    console.log('[del] calling loadSavedDocuments…');
     loadSavedDocuments();
 }
 // ---- Saved Documents page (navbar item) — global so onclick can reach it ----
