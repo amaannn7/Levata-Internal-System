@@ -2115,6 +2115,12 @@ Phone: +1 234 567 890"></textarea></div>
     <div class="toast-container" id="toast-container"></div>
 
     <script>
+// Force HTTPS: if loaded over http, the server 301-redirects API POSTs to https, which
+// breaks fetch (the browser drops the POST body on redirect) — so deletes/saves appear to
+// hang. Redirecting the whole page to https up front keeps every API call same-protocol.
+if(location.protocol==='http:'&&location.hostname!=='localhost'&&location.hostname!=='127.0.0.1'){
+    location.replace('https://'+location.host+location.pathname+location.search+location.hash);
+}
 let user=null,leads=[],currentLead=null,importData=[],reqConfig=[],userSettings={},ecAttachments=[];
 const API_BASE='api.php';
 const MACKTILES_STAGES=[
@@ -5910,10 +5916,13 @@ async function sowDeleteDoc(id,rowEl){
     // Disable the button while the request is in flight so double-clicks can't happen
     const btn=rowEl?rowEl.querySelector('[data-doc-del]'):null;
     if(btn){btn.disabled=true;btn.textContent='Deleting…';}
-    const r=await api('delete-document','POST',{id});
+    const r=await api('delete-document','POST',{id})||{};
     if(!r.success){
         if(btn){btn.disabled=false;btn.textContent='Delete';}
-        toast(r.error||'Delete failed','error');
+        // If the request itself misbehaved (e.g. redirect), re-sync from the server so the
+        // list reflects reality instead of leaving the button stuck on "Deleting…".
+        toast(r.error||'Delete failed — refreshing list','error');
+        loadSavedDocuments();
         return;
     }
     // Server confirmed deletion — clear in-memory IDs.
