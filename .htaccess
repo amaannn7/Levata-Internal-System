@@ -26,6 +26,15 @@
     RewriteRule ^data/uploads/.*\.(png|jpe?g|gif|webp|pdf|csv|txt)$ - [L]
 </IfModule>
 
+# Never cache the app shell or API so updates take effect without a hard refresh.
+<IfModule mod_headers.c>
+    <FilesMatch "(index\.html|api\.php|sow\.php|cp\.php|jobs\.php)$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+</IfModule>
+
 # Security headers
 <IfModule mod_headers.c>
     Header set X-Content-Type-Options "nosniff"
