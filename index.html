@@ -5187,13 +5187,13 @@ function jrJobRow(j){
                 <div style="color:var(--warning);">Due ${jrMoney(f.outstanding)}</div>
             </div>
             <div style="flex:0 0 auto;display:flex;gap:6px;">
-                <button class="btn btn-secondary btn-sm" onclick="jrEditJob('${j.id}')">Edit</button>
-                <button class="btn btn-danger btn-sm" onclick="jrDeleteJob('${j.id}')">Delete</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="jrEditJob('${j.id}')">Edit</button>
+                <button type="button" class="btn btn-danger btn-sm" onclick="jrDeleteJob('${j.id}')">Delete</button>
             </div>
         </div>
         <details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--gold-dark);">Invoices (${(j.invoices||[]).length})</summary>
             <div style="margin-top:8px;">${invoices}
-                <button class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="jrOpenInvoiceModal('${j.id}')">+ Add invoice</button>
+                <button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="jrOpenInvoiceModal('${j.id}')">+ Add invoice</button>
             </div>
         </details>
     </div></div>`;
@@ -5204,9 +5204,9 @@ function jrInvoiceRow(j,inv){
         <div><strong>${esc(inv.invoice_no||'')}</strong> ${esc(inv.label||'')}${inv.due_date?` <span style="color:var(--text-muted);">due ${esc(inv.due_date)}</span>`:''}</div>
         <div style="display:flex;align-items:center;gap:8px;">
             <span>${jrMoney(inv.amount,j.currency)}</span>
-            <button class="btn btn-sm ${paid?'btn-secondary':'btn-primary'}" onclick="jrToggleInvoicePaid('${j.id}','${inv.id}',${paid?'false':'true'})">${paid?'Paid ✓':'Mark paid'}</button>
-            <button class="btn btn-secondary btn-sm" onclick="jrEditInvoice('${j.id}','${inv.id}')">Edit</button>
-            <button class="btn btn-danger btn-sm" onclick="jrDeleteInvoice('${j.id}','${inv.id}')">×</button>
+            <button type="button" class="btn btn-sm ${paid?'btn-secondary':'btn-primary'}" onclick="jrToggleInvoicePaid('${j.id}','${inv.id}',${paid?'false':'true'})">${paid?'Paid ✓':'Mark paid'}</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="jrEditInvoice('${j.id}','${inv.id}')">Edit</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="jrDeleteInvoice('${j.id}','${inv.id}')">×</button>
         </div>
     </div>`;
 }
@@ -5956,7 +5956,7 @@ async function loadSavedDocuments(){
         const owner=d.owner?` · by ${d.owner.replace(/</g,'&lt;')}`:'';
         const fileTag=d.has_file?`<span style="font-size:10px;font-weight:600;background:#dcfce7;color:#16a34a;padding:2px 7px;border-radius:4px;margin-left:6px;" title="${(d.file_name||'').replace(/"/g,'&quot;')}">📄 Revised file</span>`:'';
         const dlBtn=d.has_file?`<button class="btn btn-secondary btn-sm" data-doc-dl="${d.id}" title="Download uploaded file">↓ Download</button>`:'';
-        return `<div class="sow-doc-row" data-doc-id="${d.id}"><div class="sow-doc-meta"><div class="sow-doc-title">${docNo}${(d.title||'Untitled').replace(/</g,'&lt;')}${fileTag}</div><div class="sow-doc-sub">${(d.client||'').replace(/</g,'&lt;')}${d.client&&when?' · ':''}${when}${owner}${linked}</div></div><div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">${dlBtn}<button class="btn btn-secondary btn-sm" data-doc-job="${d.id}" title="Register a job in the Job Registry from this document">+ Create job</button><button class="btn btn-secondary btn-sm" data-doc-upload="${d.id}" title="Upload a revised PDF or DOCX to replace the generated version">↑ Upload revised</button><button class="btn btn-secondary btn-sm" data-doc-open="${d.id}">Open</button><button class="btn btn-danger btn-sm" data-doc-del="${d.id}">Delete</button></div></div>`;
+        return `<div class="sow-doc-row" data-doc-id="${d.id}"><div class="sow-doc-meta"><div class="sow-doc-title">${docNo}${(d.title||'Untitled').replace(/</g,'&lt;')}${fileTag}</div><div class="sow-doc-sub">${(d.client||'').replace(/</g,'&lt;')}${d.client&&when?' · ':''}${when}${owner}${linked}</div></div><div style="display:flex;gap:6px;flex-shrink:0;align-items:center;">${dlBtn}<button type="button" class="btn btn-secondary btn-sm" data-doc-job="${d.id}" title="Register a job in the Job Registry from this document">+ Create job</button><button type="button" class="btn btn-secondary btn-sm" data-doc-upload="${d.id}" title="Upload a revised PDF or DOCX to replace the generated version">↑ Upload revised</button><button type="button" class="btn btn-secondary btn-sm" data-doc-open="${d.id}">Open</button><button type="button" class="btn btn-danger btn-sm" data-doc-del="${d.id}">Delete</button></div></div>`;
     }
     const cps=r.documents.filter(d=>d.type==='cost_proposal'||d.type==='cost-proposal');
     const sows=r.documents.filter(d=>d.type!=='cost_proposal'&&d.type!=='cost-proposal');
@@ -5987,6 +5987,7 @@ document.getElementById('saved-docs-list')?.addEventListener('click',e=>{
     const u=e.target.closest('[data-doc-upload]');
     const dl=e.target.closest('[data-doc-dl]');
     const jb=e.target.closest('[data-doc-job]');
+    if(o||d||u||dl||jb)e.preventDefault(); // stop any default button/form submit that cancels the fetch
     if(o)sowOpenDoc(o.getAttribute('data-doc-open'));
     else if(d)sowDeleteDoc(d.getAttribute('data-doc-del'),d.closest('.sow-doc-row'));
     else if(u)docUploadRevised(u.getAttribute('data-doc-upload'));
