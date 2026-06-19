@@ -2122,6 +2122,7 @@ if(location.protocol==='http:'&&location.hostname!=='localhost'&&location.hostna
     location.replace('https://'+location.host+location.pathname+location.search+location.hash);
 }
 let user=null,leads=[],currentLead=null,importData=[],reqConfig=[],userSettings={},ecAttachments=[];
+let _savedDocs={}; // cache of saved documents (declared early to avoid TDZ when delete runs)
 const API_BASE='api.php';
 const MACKTILES_STAGES=[
     ['new_lead','New Lead'],
@@ -5912,14 +5913,11 @@ async function sowOpenDoc(id){
     if(window._sowGoStep)window._sowGoStep(2);
 }
 async function sowDeleteDoc(id,rowEl){
-    console.log('[del] start id=',id);
-    if(!await customConfirm('Delete this document? This cannot be undone.','Delete Document',{danger:true,confirmText:'Delete'})){console.log('[del] cancelled');return;}
-    console.log('[del] confirmed, sending request…');
+    if(!await customConfirm('Delete this document? This cannot be undone.','Delete Document',{danger:true,confirmText:'Delete'}))return;
     // Disable the button while the request is in flight so double-clicks can't happen
     const btn=rowEl?rowEl.querySelector('[data-doc-del]'):null;
     if(btn){btn.disabled=true;btn.textContent='Deleting…';}
     const r=await api('delete-document','POST',{id})||{};
-    console.log('[del] response:',r);
     if(!r.success){
         if(btn){btn.disabled=false;btn.textContent='Delete';}
         // If the request itself misbehaved (e.g. redirect), re-sync from the server so the
@@ -5933,11 +5931,9 @@ async function sowDeleteDoc(id,rowEl){
     if(typeof cpCurrentDocId!=='undefined'&&cpCurrentDocId===id)cpCurrentDocId=null;
     delete _savedDocs[id];
     toast('Deleted','success');
-    // Remove the row instantly for immediate feedback, then re-render in the
-    // background so client groupings stay correct (an emptied group disappears).
-    console.log('[del] success path; rowEl=',rowEl,'connected=',rowEl&&rowEl.isConnected);
-    if(rowEl&&rowEl.remove)rowEl.remove(); else {const el=document.querySelector('.sow-doc-row[data-doc-id="'+id+'"]');console.log('[del] fallback lookup row=',el);if(el)el.remove();}
-    console.log('[del] calling loadSavedDocuments…');
+    // Remove the row instantly; fall back to a live lookup if the passed node is stale.
+    if(rowEl&&rowEl.remove)rowEl.remove();
+    else{const el=document.querySelector('.sow-doc-row[data-doc-id="'+id+'"]');if(el)el.remove();}
     loadSavedDocuments();
 }
 // ---- Saved Documents page (navbar item) — global so onclick can reach it ----
@@ -5985,7 +5981,6 @@ async function loadSavedDocuments(){
     }
     wrap.innerHTML=sectionLabel('Cost Proposals','cost proposals')+groupByClient(cps,'proposals')+sectionLabel('Statements of Work','statements of work')+groupByClient(sows,'SOWs');
 }
-let _savedDocs={};
 document.getElementById('saved-docs-list')?.addEventListener('click',e=>{
     const o=e.target.closest('[data-doc-open]');
     const d=e.target.closest('[data-doc-del]');
