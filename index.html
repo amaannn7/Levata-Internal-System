@@ -1645,9 +1645,9 @@
                                     </select>
                                 </div>
                                 <form id="sow-form">
+                                    <div class="form-group" style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px;"><label class="form-label" style="color:#7c3aed;font-weight:600;">Start from an approved cost proposal</label><select class="form-select" id="sow-linked-cp"><option value="">None — start blank</option></select><p class="form-hint" style="margin-top:4px;">Pick the approved CP and its client, scope, deliverables, timeline and investment auto-fill below.</p></div>
                                     <div class="form-row"><div class="form-group"><label class="form-label">Project name</label><input type="text" class="form-input" id="sow-project-name" placeholder="e.g. Acme Website"></div><div class="form-group"><label class="form-label">Client name</label><input type="text" class="form-input" id="sow-client-name" placeholder="e.g. Acme Corp"></div></div>
                                     <div class="form-row"><div class="form-group"><label class="form-label">Project ID</label><input type="text" class="form-input" id="sow-project-id" placeholder="Optional"></div><div class="form-group"><label class="form-label">Contact person</label><input type="text" class="form-input" id="sow-contact"></div></div>
-                                    <div class="form-group"><label class="form-label">Linked cost proposal <span style="font-weight:400;color:#888;">(pick the approved CP — its details auto-fill below)</span></label><select class="form-select" id="sow-linked-cp"><option value="">None</option></select></div>
                                     <div class="form-group"><label class="form-label">Engagement (short line for the header table)</label><input type="text" class="form-input" id="sow-engagement" placeholder="e.g. Design and development of a new website"></div>
                                     <div class="form-row"><div class="form-group"><label class="form-label">Contact email</label><input type="email" class="form-input" id="sow-email"></div><div class="form-group"><label class="form-label">Timeline / duration</label><input type="text" class="form-input" id="sow-timeline" placeholder="e.g. 5 to 6 weeks from kickoff"></div></div>
                                     <div class="form-group"><label class="form-label">Project description / objectives</label><textarea class="form-textarea" id="sow-description" rows="3" placeholder="What is being built, for whom, and why it matters..."></textarea></div>
@@ -5926,14 +5926,16 @@ async function sowDeleteDoc(id,rowEl){
         loadSavedDocuments();
         return;
     }
-    // Server confirmed deletion — clear in-memory IDs.
-    if(sowCurrentDocId===id)sowCurrentDocId=null;
-    if(typeof cpCurrentDocId!=='undefined'&&cpCurrentDocId===id)cpCurrentDocId=null;
-    delete _savedDocs[id];
+    // Server confirmed deletion. Remove the row FIRST (the important visible bit), then do
+    // the bookkeeping in a guarded block so a stray error can never leave it stuck.
+    const el=(rowEl&&rowEl.isConnected)?rowEl:document.querySelector('.sow-doc-row[data-doc-id="'+id+'"]');
+    if(el)el.remove();
+    try{
+        if(typeof sowCurrentDocId!=='undefined'&&sowCurrentDocId===id)sowCurrentDocId=null;
+        if(typeof cpCurrentDocId!=='undefined'&&cpCurrentDocId===id)cpCurrentDocId=null;
+        if(typeof _savedDocs!=='undefined'&&_savedDocs)delete _savedDocs[id];
+    }catch(err){console.warn('delete cleanup',err);}
     toast('Deleted','success');
-    // Remove the row instantly; fall back to a live lookup if the passed node is stale.
-    if(rowEl&&rowEl.remove)rowEl.remove();
-    else{const el=document.querySelector('.sow-doc-row[data-doc-id="'+id+'"]');if(el)el.remove();}
     loadSavedDocuments();
 }
 // ---- Saved Documents page (navbar item) — global so onclick can reach it ----
