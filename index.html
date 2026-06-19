@@ -5912,11 +5912,14 @@ async function sowOpenDoc(id){
     if(window._sowGoStep)window._sowGoStep(2);
 }
 async function sowDeleteDoc(id,rowEl){
-    if(!await customConfirm('Delete this document? This cannot be undone.','Delete Document',{danger:true,confirmText:'Delete'}))return;
+    console.log('[del] start id=',id);
+    if(!await customConfirm('Delete this document? This cannot be undone.','Delete Document',{danger:true,confirmText:'Delete'})){console.log('[del] cancelled');return;}
+    console.log('[del] confirmed, sending request…');
     // Disable the button while the request is in flight so double-clicks can't happen
     const btn=rowEl?rowEl.querySelector('[data-doc-del]'):null;
     if(btn){btn.disabled=true;btn.textContent='Deleting…';}
     const r=await api('delete-document','POST',{id})||{};
+    console.log('[del] response:',r);
     if(!r.success){
         if(btn){btn.disabled=false;btn.textContent='Delete';}
         // If the request itself misbehaved (e.g. redirect), re-sync from the server so the
