@@ -977,6 +977,10 @@
                 <div class="nav-section-title">Job Registry</div>
                 <div class="nav-item" data-page="job-registry"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg><span>Jobs</span></div>
 
+                <!-- ============ HELP & SUPPORT ============ -->
+                <div class="nav-section-title">Help &amp; Support</div>
+                <div class="nav-item" data-page="support"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span>Help &amp; Support</span></div>
+
                 <!-- ============ SYSTEM ============ -->
                 <div class="nav-section-title manager-nav admin-only">System</div>
                 <div class="nav-item manager-nav admin-only" data-page="admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>Settings</span></div>
@@ -1867,6 +1871,30 @@
                 </div>
             </section>
 
+            <section class="page-section" id="page-support">
+                <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1>Help &amp; Support</h1><p>Send feedback or raise a support request. We'll get back to you by email.</p></div></div></div>
+                <div class="page-content">
+                    <!-- Summary stat cards -->
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px;">
+                        <div class="card jr-stat"><div class="card-body jr-stat-body"><div class="jr-stat-label">Open</div><div class="jr-stat-value" id="sup-open-count">0</div></div></div>
+                        <div class="card jr-stat"><div class="card-body jr-stat-body"><div class="jr-stat-label">In progress</div><div class="jr-stat-value" id="sup-progress-count">0</div></div></div>
+                        <div class="card jr-stat"><div class="card-body jr-stat-body"><div class="jr-stat-label">Resolved</div><div class="jr-stat-value" id="sup-resolved-count">0</div></div></div>
+                        <div class="card jr-stat"><div class="card-body jr-stat-body"><div class="jr-stat-label">Total</div><div class="jr-stat-value" id="sup-total-count">0</div></div></div>
+                    </div>
+
+                    <div class="card"><div class="card-body">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:8px;flex-wrap:wrap;">
+                            <strong id="sup-list-title">My tickets</strong>
+                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                                <label id="sup-scope-wrap" style="display:none;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);cursor:pointer;"><input type="checkbox" id="sup-scope-all" onchange="loadSupport()"> Show all users' tickets</label>
+                                <button type="button" class="btn btn-primary btn-sm" onclick="supOpenTicketModal()">+ New Ticket</button>
+                            </div>
+                        </div>
+                        <div id="sup-ticket-list"><div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading...</div></div>
+                    </div></div>
+                </div>
+            </section>
+
             <section class="page-section" id="page-my-settings">
                 <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1>My Context</h1><p>Your email settings</p></div></div></div>
                 <div class="page-content">
@@ -1918,6 +1946,9 @@ Phone: +1 234 567 890"></textarea></div>
                                 <div class="form-group"><label class="form-label">Anthropic (Claude) API Key</label><input type="password" class="form-input" id="admin-anthropic-key"></div>
                                 <div class="form-group"><label class="form-label">Claude Model</label><select class="form-select" id="admin-anthropic-model"><option value="">Default (Opus 4.8)</option><option value="claude-opus-4-8">Claude Opus 4.8 (most capable)</option><option value="claude-sonnet-4-6">Claude Sonnet 4.6 (balanced)</option><option value="claude-haiku-4-5">Claude Haiku 4.5 (fastest)</option></select></div>
                                 <div class="form-group"><label class="form-label">Fireflies API Key <span style="font-weight:400;color:#888;">(for Documents / meeting notes)</span></label><input type="password" class="form-input" id="admin-fireflies-key"></div>
+                                <div class="form-group"><label class="form-label">Resend API Key <span style="font-weight:400;color:#888;">(sends Help &amp; Support emails)</span></label><input type="password" class="form-input" id="admin-resend-key" placeholder="re_..."></div>
+                                <div class="form-group"><label class="form-label">Support Email <span style="font-weight:400;color:#888;">(where Help &amp; Support tickets are sent)</span></label><input type="email" class="form-input" id="admin-support-email" placeholder="support@levatahq.com"></div>
+                                <div class="form-group"><label class="form-label">Support From <span style="font-weight:400;color:#888;">(verified sender; leave blank for onboarding@resend.dev)</span></label><input type="text" class="form-input" id="admin-support-from" placeholder="support@levataos.com"></div>
                                 <div class="btn-group"><button type="submit" class="btn btn-primary btn-sm">Save Keys</button><button type="button" class="btn btn-secondary btn-sm" onclick="testAPI()">Test</button></div>
                             </form>
                         </div>
@@ -2104,6 +2135,17 @@ Phone: +1 234 567 890"></textarea></div>
             <div class="form-group"><label class="form-label">Amount</label><input type="text" class="form-input" id="invoice-amount" required placeholder="e.g. 100000"></div>
             <div class="form-row"><div class="form-group"><label class="form-label">Due date</label><input type="date" class="form-input" id="invoice-due"></div><div class="form-group"><label class="form-label">Status</label><select class="form-select" id="invoice-status"><option value="unpaid">Unpaid</option><option value="paid">Paid</option></select></div></div>
             <button type="submit" class="btn btn-primary">Save invoice</button>
+        </form>
+    </div></div></div>
+    <!-- Help & Support: new/edit ticket -->
+    <div class="modal-overlay" id="ticket-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title" id="ticket-modal-title">New Ticket</h3><button class="modal-close" onclick="closeModal('ticket-modal')">&times;</button></div><div class="modal-body">
+        <form id="ticket-form">
+            <input type="hidden" id="ticket-id">
+            <div class="form-row"><div class="form-group"><label class="form-label">Type</label><select class="form-select" id="ticket-type"><option value="support">Support request</option><option value="feedback">Feedback</option></select></div><div class="form-group"><label class="form-label">Category</label><select class="form-select" id="ticket-category"><option value="bug">Bug / something broken</option><option value="feature">Feature request</option><option value="question">Question</option><option value="other">Other</option></select></div></div>
+            <div class="form-group"><label class="form-label">Priority</label><select class="form-select" id="ticket-priority"><option value="low">Low</option><option value="normal" selected>Normal</option><option value="high">High</option></select></div>
+            <div class="form-group"><label class="form-label">Subject</label><input type="text" class="form-input" id="ticket-subject" required placeholder="Short summary"></div>
+            <div class="form-group"><label class="form-label">Message</label><textarea class="form-textarea" id="ticket-message" rows="5" required placeholder="Describe your feedback or the issue you're seeing..."></textarea></div>
+            <button type="submit" class="btn btn-primary" id="ticket-save-btn">Submit</button>
         </form>
     </div></div></div>
     <div class="modal-overlay" id="add-req-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title" id="add-req-title">Add Question</h3><button class="modal-close" onclick="closeModal('add-req-modal')">&times;</button></div><div class="modal-body"><form id="add-req-form"><input type="hidden" id="edit-req-id"><div class="form-group"><label class="form-label">Question Title</label><input type="text" class="form-input" id="req-title-input" required placeholder="e.g., Next Step Agreed"></div><div class="form-group"><label class="form-label">Subtitle/Description</label><input type="text" class="form-input" id="req-subtitle-input" placeholder="e.g., What did they agree to after the call?"></div><div class="form-group"><label class="form-label">Type</label><select class="form-select" id="req-type-input"><option value="single">Single Select</option><option value="multi">Multi Select</option><option value="text">Free Text</option></select></div><div class="form-group"><label class="form-label">Options (one per line)</label><textarea class="form-textarea" id="req-options-input" rows="4" placeholder="Option 1&#10;Option 2&#10;Option 3"></textarea><p class="form-hint">Leave blank for free-text questions.</p></div><button type="submit" class="btn btn-primary">Save</button></form></div></div></div>
@@ -4498,6 +4540,9 @@ async function loadAdminSettings(){
         document.getElementById('admin-gemini-key').value=r.settings.gemini_key||'';
         document.getElementById('admin-anthropic-key').value=r.settings.anthropic_key||'';
         document.getElementById('admin-fireflies-key').value=r.settings.fireflies_key||'';
+        document.getElementById('admin-resend-key').value=r.settings.resend_key||'';
+        document.getElementById('admin-support-email').value=r.settings.support_email||'';
+        document.getElementById('admin-support-from').value=r.settings.support_from||'';
         document.getElementById('admin-provider').value=r.settings.default_provider||'groq';
         document.getElementById('admin-groq-model').value=r.settings.groq_model||'';
         document.getElementById('admin-gemini-model').value=r.settings.gemini_model||'';
@@ -5330,6 +5375,121 @@ window.jrDeleteInvoice=async function(jobId,invId){
     const r=await api('delete-invoice','POST',{job_id:jobId,invoice_id:invId});
     if(r.success){toast('Invoice deleted','success');loadJobRegistry();}else toast(r.error||'Delete failed','error');
 };
+// ================= Help & Support (feedback + support tickets) =================
+let _supTickets=[],_supIsAdmin=false;
+const SUP_STATUS={open:{label:'Open',color:'#6d28d9'},in_progress:{label:'In Progress',color:'#2563eb'},resolved:{label:'Resolved',color:'#10b981'},closed:{label:'Closed',color:'#9ca3af'}};
+const SUP_TYPE={feedback:'Feedback',support:'Support'};
+const SUP_CAT={bug:'Bug',feature:'Feature',question:'Question',other:'Other'};
+function supEsc(s){return esc(s);}
+window.loadSupport=async function(){
+    const list=document.getElementById('sup-ticket-list');
+    list.innerHTML='<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading...</div>';
+    const isAdmin=!!(user&&(user.is_admin||user.is_super_admin));
+    // Admins get a "show all" toggle; the box reflects whether we're asking for the full queue.
+    const scopeWrap=document.getElementById('sup-scope-wrap');
+    scopeWrap.style.display=isAdmin?'flex':'none';
+    const wantAll=isAdmin&&document.getElementById('sup-scope-all').checked;
+    const r=await api('tickets'+(wantAll?'?scope=all':''));
+    if(!r.success){list.innerHTML='<div style="color:var(--text-muted);font-size:13px;">Could not load tickets.</div>';return;}
+    _supTickets=r.tickets||[];_supIsAdmin=!!r.is_admin;
+    document.getElementById('sup-list-title').textContent=(r.scope==='all')?'All tickets':'My tickets';
+    supRenderSummary(r.summary||{});
+    supRenderList(_supTickets);
+};
+function supRenderSummary(s){
+    document.getElementById('sup-open-count').textContent=s.open||0;
+    document.getElementById('sup-progress-count').textContent=s.in_progress||0;
+    document.getElementById('sup-resolved-count').textContent=s.resolved||0;
+    document.getElementById('sup-total-count').textContent=s.total||0;
+}
+function supRenderList(tickets){
+    const list=document.getElementById('sup-ticket-list');
+    if(!tickets.length){list.innerHTML='<div style="text-align:center;padding:40px 16px;color:var(--text-muted);"><div style="font-size:36px;margin-bottom:10px;">💬</div><div style="font-size:15px;font-weight:600;color:#333;margin-bottom:6px;">No tickets yet</div><p style="max-width:520px;margin:0 auto;line-height:1.6;font-size:13px;">Click <strong>+ New Ticket</strong> to send feedback or raise a support request.</p></div>';return;}
+    list.innerHTML=tickets.map(supTicketRow).join('');
+}
+function supTicketRow(t){
+    const st=SUP_STATUS[t.status]||SUP_STATUS.open;
+    const typeBadge=t.type==='feedback'?'<span style="font-size:10px;background:var(--brand-slate-soft);color:var(--gold-dark);padding:2px 6px;border-radius:4px;margin-left:6px;">Feedback</span>':'<span style="font-size:10px;background:#eef2ff;color:#3730a3;padding:2px 6px;border-radius:4px;margin-left:6px;">Support</span>';
+    const meta=[t.ticket_no||'',SUP_CAT[t.category]||t.category,t.priority?('Priority: '+t.priority):''].filter(Boolean).join(' · ');
+    const who=_supIsAdmin&&t.created_by_name?(' · by '+supEsc(t.created_by_name)):'';
+    const replies=(t.replies||[]).map(supReplyRow).join('')||'<div style="font-size:12px;color:var(--text-muted);padding:6px 0;">No replies yet.</div>';
+    // Admin status controls.
+    let adminControls='';
+    if(_supIsAdmin){
+        const opt=(v,l)=>`<option value="${v}"${t.status===v?' selected':''}>${l}</option>`;
+        adminControls=`<select class="form-select" style="height:30px;font-size:12px;width:auto;" onchange="supSetStatus('${t.id}',this.value)">${opt('open','Open')}${opt('in_progress','In Progress')}${opt('resolved','Resolved')}${opt('closed','Closed')}</select>`;
+    }
+    return `<div class="card" style="margin-bottom:8px;"><div class="card-body" style="padding:12px 14px;">
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+            <div style="flex:1 1 220px;min-width:200px;">
+                <div style="font-weight:600;">${supEsc(t.subject||'(no subject)')}${typeBadge}</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${supEsc(meta)}${who}</div>
+            </div>
+            <div style="flex:0 0 auto;display:flex;justify-content:center;">
+                <span style="font-size:11px;font-weight:600;color:#fff;background:${st.color};padding:3px 9px;border-radius:20px;white-space:nowrap;">${st.label}</span>
+            </div>
+            <div style="flex:0 0 auto;display:flex;gap:6px;align-items:center;">
+                ${adminControls}
+                <button type="button" class="btn btn-danger btn-sm" onclick="supDeleteTicket('${t.id}')">Delete</button>
+            </div>
+        </div>
+        <div style="margin-top:8px;font-size:13px;color:var(--text-primary);white-space:pre-wrap;">${supEsc(t.message||'')}</div>
+        <details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--gold-dark);">Conversation (${(t.replies||[]).length})</summary>
+            <div style="margin-top:8px;">${replies}
+                <div style="display:flex;gap:6px;margin-top:8px;">
+                    <input type="text" class="form-input" id="sup-reply-${t.id}" placeholder="Write a reply..." style="flex:1;">
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="supSendReply('${t.id}')">Send</button>
+                </div>
+            </div>
+        </details>
+    </div></div>`;
+}
+function supReplyRow(rep){
+    const staff=rep.is_staff;
+    return `<div style="padding:6px 0;border-bottom:1px solid var(--border-light);font-size:13px;">
+        <div style="font-weight:600;font-size:12px;color:${staff?'var(--gold-dark)':'var(--text-primary)'};">${supEsc(rep.author_name||'')}${staff?' <span style="font-weight:500;color:var(--text-muted);">· staff</span>':''}</div>
+        <div style="white-space:pre-wrap;margin-top:2px;">${supEsc(rep.message||'')}</div>
+    </div>`;
+}
+window.supOpenTicketModal=function(){
+    document.getElementById('ticket-form').reset();
+    document.getElementById('ticket-id').value='';
+    document.getElementById('ticket-priority').value='normal';
+    document.getElementById('ticket-modal-title').textContent='New Ticket';
+    openModal('ticket-modal');
+};
+document.getElementById('ticket-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const btn=document.getElementById('ticket-save-btn');btn.disabled=true;
+    const payload={
+        id:document.getElementById('ticket-id').value,
+        type:document.getElementById('ticket-type').value,
+        category:document.getElementById('ticket-category').value,
+        priority:document.getElementById('ticket-priority').value,
+        subject:document.getElementById('ticket-subject').value,
+        message:document.getElementById('ticket-message').value,
+    };
+    const r=await api('save-ticket','POST',payload);
+    btn.disabled=false;
+    if(r.success){closeModal('ticket-modal');toast('Ticket submitted','success');loadSupport();}
+    else toast(r.error||'Submit failed','error');
+});
+window.supSendReply=async function(id){
+    const inp=document.getElementById('sup-reply-'+id);
+    const message=(inp&&inp.value||'').trim();
+    if(!message){toast('Write a reply first','warning');return;}
+    const r=await api('ticket-reply','POST',{ticket_id:id,message});
+    if(r.success){toast('Reply sent','success');loadSupport();}else toast(r.error||'Could not send','error');
+};
+window.supSetStatus=async function(id,status){
+    const r=await api('update-ticket-status','POST',{id,status});
+    if(r.success){toast('Status updated','success');loadSupport();}else toast(r.error||'Update failed','error');
+};
+window.supDeleteTicket=async function(id){
+    if(!await customConfirm('Delete this ticket? This cannot be undone.','Delete Ticket',{danger:true,confirmText:'Delete'}))return;
+    const r=await api('delete-ticket','POST',{id});
+    if(r.success){toast('Ticket deleted','success');loadSupport();}else toast(r.error||'Delete failed','error');
+};
 // Start a fresh document.
 function sowNewDocument(){sowCurrentDocId=null;document.getElementById('sow-form').reset();document.getElementById('sow-output').textContent='';document.getElementById('sow-pdf-body').innerHTML='';sowGoStep(1);}
 // Toggle between the styled preview and the raw markdown.
@@ -5615,7 +5775,7 @@ document.getElementById('sow-ff-list').addEventListener('click',async e=>{
     sowFfStatus('Transcript from "'+(tr.title||'meeting')+'" added below. Review it, then click "Extract to form".','ok');
     toast('Transcript added below','success');
 });
-document.getElementById('admin-settings-form').addEventListener('submit',async e=>{e.preventDefault();await api('admin-settings','POST',{default_provider:document.getElementById('admin-provider').value,groq_key:document.getElementById('admin-groq-key').value,gemini_key:document.getElementById('admin-gemini-key').value,anthropic_key:document.getElementById('admin-anthropic-key').value,fireflies_key:document.getElementById('admin-fireflies-key').value,groq_model:document.getElementById('admin-groq-model').value,gemini_model:document.getElementById('admin-gemini-model').value,anthropic_model:document.getElementById('admin-anthropic-model').value});toast('Saved!','success')});
+document.getElementById('admin-settings-form').addEventListener('submit',async e=>{e.preventDefault();await api('admin-settings','POST',{default_provider:document.getElementById('admin-provider').value,groq_key:document.getElementById('admin-groq-key').value,gemini_key:document.getElementById('admin-gemini-key').value,anthropic_key:document.getElementById('admin-anthropic-key').value,fireflies_key:document.getElementById('admin-fireflies-key').value,resend_key:document.getElementById('admin-resend-key').value,support_email:document.getElementById('admin-support-email').value,support_from:document.getElementById('admin-support-from').value,groq_model:document.getElementById('admin-groq-model').value,gemini_model:document.getElementById('admin-gemini-model').value,anthropic_model:document.getElementById('admin-anthropic-model').value});toast('Saved!','success')});
 document.querySelectorAll('.provider-card').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.provider-card').forEach(x=>x.classList.remove('selected'));c.classList.add('selected');document.getElementById('admin-provider').value=c.dataset.provider}));
 document.getElementById('add-req-form').addEventListener('submit',async e=>{e.preventDefault();const idx=document.getElementById('edit-req-id').value;const type=document.getElementById('req-type-input').value;const options=type==='text'?[]:document.getElementById('req-options-input').value.split('\n').map(o=>o.trim()).filter(o=>o);if(type!=='text'&&!options.length){toast('Add at least one option','warning');return;}const newReq={id:idx!==''?reqConfig[idx].id:'req_'+Date.now(),title:document.getElementById('req-title-input').value,subtitle:document.getElementById('req-subtitle-input').value,type,options,enabled:true};if(idx!=='')reqConfig[idx]=newReq;else reqConfig.push(newReq);await api('admin-settings','POST',{requisitions:reqConfig});renderReqList();closeModal('add-req-modal');toast('Saved!','success')});
 document.getElementById('create-user-form').addEventListener('submit',async e=>{e.preventDefault();const typedPass=document.getElementById('new-user-pass').value;const r=await api('create-user','POST',{name:document.getElementById('new-user-name').value,email:document.getElementById('new-user-email').value,password:typedPass,is_admin:document.getElementById('new-user-admin').checked});if(r.success){const box=document.getElementById('new-user-password');box.innerHTML='';box.style.display='none';e.target.reset();loadUsers();closeModal('create-user-modal');toast('User created','success')}else toast(r.error||'Failed','error')});
@@ -5844,6 +6004,7 @@ function showPage(p){
     if(p==='cost-proposals'&&typeof window.cpOnEnter==='function')window.cpOnEnter();
     if(p==='saved-documents')loadSavedDocuments();
     if(p==='job-registry'&&typeof window.loadJobRegistry==='function')window.loadJobRegistry();
+    if(p==='support'&&typeof window.loadSupport==='function')window.loadSupport();
 }
 function openSidebar(){document.getElementById('sidebar').classList.add('open');document.getElementById('sidebar-overlay').classList.add('active')}
 function closeSidebar(){document.getElementById('sidebar').classList.remove('open');document.getElementById('sidebar-overlay').classList.remove('active')}

@@ -37,6 +37,8 @@ require_once __DIR__ . '/sow.php';
 require_once __DIR__ . '/cp.php';
 // Job Registry (shared company-wide jobs/invoices) — added module.
 require_once __DIR__ . '/jobs.php';
+// Help & Support (feedback + support tickets) — added module.
+require_once __DIR__ . '/support.php';
 
 // Rate limiting
 function checkRateLimit($identifier, $maxRequests = 120, $windowSeconds = 60) {
@@ -1934,6 +1936,166 @@ case 'delete-invoice':
     respond(['success' => true]);
     break;
 
+// ===== Help & Support (feedback + support tickets) =====
+case 'tickets':
+    if ($method !== 'GET') break;
+    $u = requireAuth();
+    $isAdmin = !empty($u['is_admin']) || !empty($u['is_super_admin']);
+    // Admins may request the full company-wide queue; everyone else sees only their own.
+    $scopeAll = $isAdmin && (($_GET['scope'] ?? '') === 'all');
+    $store = getTicketsStore();
+    $tickets = $store['tickets'];
+    if (!$scopeAll) {
+        $tickets = array_values(array_filter($tickets, function ($t) use ($u) {
+            return ($t['created_by'] ?? '') === ($u['id'] ?? '');
+        }));
+    }
+    // Newest first.
+    usort($tickets, function ($a, $b) { return strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''); });
+    respond([
+        'success' => true,
+        'tickets' => $tickets,
+        'summary' => ticketsSummary($tickets),
+        'is_admin' => $isAdmin,
+        'scope' => $scopeAll ? 'all' : 'mine',
+    ]);
+    break;
+
+case 'save-ticket':
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $store = getTicketsStore();
+    $now = date('c');
+    $id = trim($input['id'] ?? '');
+
+    if ($id !== '') {
+        // Edit an existing ticket's fields. Owner or admin only.
+        $isAdmin = !empty($u['is_admin']) || !empty($u['is_super_admin']);
+        $found = false;
+        foreach ($store['tickets'] as &$ticket) {
+            if (($ticket['id'] ?? '') === $id) {
+                if (($ticket['created_by'] ?? '') !== ($u['id'] ?? '') && !$isAdmin) {
+                    respond(['success' => false, 'error' => 'Not allowed'], 403);
+                }
+                $ticket = applyTicketFields($ticket, $input);
+                $ticket['updated_at'] = $now;
+                $found = true;
+                break;
+            }
+        }
+        unset($ticket);
+        if (!$found) respond(['success' => false, 'error' => 'Ticket not found'], 404);
+        saveTicketsStore($store);
+        respond(['success' => true, 'id' => $id]);
+    }
+
+    // Create a new ticket.
+    $ticket = [
+        'id' => 'tkt_' . bin2hex(random_bytes(8)),
+        'ticket_no' => nextTicketNo($store),
+        'status' => 'open',
+        'created_by' => $u['id'] ?? '',
+        'created_by_name' => $u['name'] ?? '',
+        'created_by_email' => $u['email'] ?? '',
+        'created_at' => $now,
+        'updated_at' => $now,
+        'replies' => [],
+    ];
+    $ticket = applyTicketFields($ticket, $input);
+    if ($ticket['subject'] === '' || $ticket['message'] === '') {
+        respond(['success' => false, 'error' => 'Subject and message are required'], 400);
+    }
+    $store['tickets'][] = $ticket;
+    saveTicketsStore($store);
+    // Best-effort email out to the vendor support address (never blocks submission).
+    notifySupportEmail($ticket, 'new');
+    respond(['success' => true, 'id' => $ticket['id'], 'ticket_no' => $ticket['ticket_no']]);
+    break;
+
+case 'ticket-reply':
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $isAdmin = !empty($u['is_admin']) || !empty($u['is_super_admin']);
+    $ticketId = trim($input['ticket_id'] ?? '');
+    $message = trim($input['message'] ?? '');
+    if ($message === '') respond(['success' => false, 'error' => 'Reply cannot be empty'], 400);
+    $store = getTicketsStore();
+    $target = null;
+    foreach ($store['tickets'] as &$ticket) {
+        if (($ticket['id'] ?? '') === $ticketId) { $target = &$ticket; break; }
+    }
+    if ($target === null) respond(['success' => false, 'error' => 'Ticket not found'], 404);
+    // Owner or admin may post to the thread.
+    if (($target['created_by'] ?? '') !== ($u['id'] ?? '') && !$isAdmin) {
+        respond(['success' => false, 'error' => 'Not allowed'], 403);
+    }
+    if (!isset($target['replies']) || !is_array($target['replies'])) $target['replies'] = [];
+    $reply = [
+        'id' => 'rep_' . bin2hex(random_bytes(6)),
+        'author_id' => $u['id'] ?? '',
+        'author_name' => $u['name'] ?? '',
+        'is_staff' => $isAdmin,
+        'message' => $message,
+        'created_at' => date('c'),
+    ];
+    $target['replies'][] = $reply;
+    $target['updated_at'] = date('c');
+    $ticketCopy = $target;
+    unset($target);
+    saveTicketsStore($store);
+    notifySupportEmail($ticketCopy, 'reply', $reply);
+    respond(['success' => true]);
+    break;
+
+case 'update-ticket-status':
+    // Change status/priority. Admins only (triage on the deployed system).
+    if ($method !== 'POST') break;
+    requireAdmin();
+    global $VALID_TICKET_STATUS, $VALID_TICKET_PRIORITY;
+    $ticketId = trim($input['id'] ?? '');
+    $store = getTicketsStore();
+    $found = false;
+    foreach ($store['tickets'] as &$ticket) {
+        if (($ticket['id'] ?? '') === $ticketId) {
+            if (isset($input['status']) && in_array($input['status'], $VALID_TICKET_STATUS, true)) {
+                $ticket['status'] = $input['status'];
+            }
+            if (isset($input['priority']) && in_array($input['priority'], $VALID_TICKET_PRIORITY, true)) {
+                $ticket['priority'] = $input['priority'];
+            }
+            $ticket['updated_at'] = date('c');
+            $found = true;
+            break;
+        }
+    }
+    unset($ticket);
+    if (!$found) respond(['success' => false, 'error' => 'Ticket not found'], 404);
+    saveTicketsStore($store);
+    respond(['success' => true]);
+    break;
+
+case 'delete-ticket':
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $isAdmin = !empty($u['is_admin']) || !empty($u['is_super_admin']);
+    $id = trim($input['id'] ?? '');
+    $store = getTicketsStore();
+    // Owner or admin may delete.
+    $target = null;
+    foreach ($store['tickets'] as $t) {
+        if (($t['id'] ?? '') === $id) { $target = $t; break; }
+    }
+    if ($target === null) respond(['success' => false, 'error' => 'Ticket not found'], 404);
+    if (($target['created_by'] ?? '') !== ($u['id'] ?? '') && !$isAdmin) {
+        respond(['success' => false, 'error' => 'Not allowed'], 403);
+    }
+    $store['tickets'] = array_values(array_filter($store['tickets'], function ($t) use ($id) {
+        return ($t['id'] ?? '') !== $id;
+    }));
+    saveTicketsStore($store);
+    respond(['success' => true]);
+    break;
+
 case 'request-password-reset':
     if ($method !== 'POST') break;
     $email = trim(strtolower($input['email'] ?? ''));
@@ -2047,7 +2209,7 @@ case 'admin-settings':
         $admin = getAdmin();
 
         // LLM API keys (+ Fireflies for Document Studio)
-        foreach (['groq_key', 'gemini_key', 'anthropic_key', 'fireflies_key'] as $k) {
+        foreach (['groq_key', 'gemini_key', 'anthropic_key', 'fireflies_key', 'resend_key'] as $k) {
             if (isset($input[$k]) && strpos($input[$k], '****') === false) $admin[$k] = trim($input[$k]);
         }
         if (isset($input['default_provider'])) $admin['default_provider'] = $input['default_provider'];
@@ -2056,6 +2218,10 @@ case 'admin-settings':
             if (isset($input[$k])) $admin[$k] = trim($input[$k]);
         }
         if (isset($input['requisitions'])) $admin['requisitions'] = $input['requisitions'];
+
+        // Help & Support: where user-submitted tickets are emailed (and the From address).
+        if (isset($input['support_email'])) $admin['support_email'] = trim($input['support_email']);
+        if (isset($input['support_from'])) $admin['support_from'] = trim($input['support_from']);
 
         // Zoho CRM settings
         if (isset($input['zoho_client_id']) && strpos($input['zoho_client_id'], '****') === false) {
