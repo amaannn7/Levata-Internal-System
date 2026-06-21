@@ -51,9 +51,37 @@ function nextTicketNo(&$store) {
 }
 
 $VALID_TICKET_TYPE     = ['feedback', 'support'];
-$VALID_TICKET_CATEGORY = ['bug', 'feature', 'question', 'other'];
+// Categories are type-specific. The frontend shows the right set per type;
+// the backend accepts the union of both (plus the shared 'other').
+$SUPPORT_CATEGORIES    = ['bug', 'how_to', 'account', 'performance', 'other'];
+$FEEDBACK_CATEGORIES   = ['feature', 'improvement', 'complaint', 'praise', 'other'];
+$VALID_TICKET_CATEGORY = array_values(array_unique(array_merge($SUPPORT_CATEGORIES, $FEEDBACK_CATEGORIES)));
 $VALID_TICKET_PRIORITY = ['low', 'normal', 'high'];
 $VALID_TICKET_STATUS   = ['open', 'in_progress', 'resolved', 'closed'];
+
+// Human-readable labels for emails/notifications (must mirror the frontend dropdowns).
+$TICKET_CATEGORY_LABELS = [
+    'bug' => 'Bug / something broken',
+    'how_to' => 'How do I…? / question',
+    'account' => 'Account / login',
+    'performance' => 'Slow / not loading',
+    'feature' => 'Feature request',
+    'improvement' => 'Improvement / suggestion',
+    'complaint' => 'Complaint',
+    'praise' => 'Praise / what works well',
+    'other' => 'Other',
+];
+$TICKET_PRIORITY_LABELS = ['low' => 'Low', 'normal' => 'Normal', 'high' => 'High'];
+$TICKET_STATUS_LABELS = [
+    'open' => 'Open', 'in_progress' => 'In progress',
+    'resolved' => 'Resolved', 'closed' => 'Closed',
+];
+
+/** Map a stored code to its human label, falling back to a tidied version of the code. */
+function ticketLabel($map, $code) {
+    if (isset($map[$code])) return $map[$code];
+    return $code === '' ? '—' : ucfirst(str_replace('_', ' ', $code));
+}
 
 /** Build/validate a ticket's user-editable fields. Used by create and edit. */
 function applyTicketFields($ticket, $input) {
@@ -106,29 +134,78 @@ function notifySupportEmail($ticket, $event = 'new', $reply = null) {
     // Need both a recipient and an API key to send. Otherwise no-op (ticket still saved).
     if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL) || $apiKey === '') return false;
 
-    $typeLabel = ($ticket['type'] ?? 'support') === 'feedback' ? 'Feedback' : 'Support';
-    $no = $ticket['ticket_no'] ?? '';
-    $subject = ($event === 'reply' ? 'Re: ' : '') . '[' . $typeLabel . '] ' . $no . ' - ' . ($ticket['subject'] ?? '(no subject)');
+    global $TICKET_CATEGORY_LABELS, $TICKET_PRIORITY_LABELS, $TICKET_STATUS_LABELS;
 
-    $lines = [];
-    $lines[] = $event === 'reply' ? 'A reply was added to a ticket.' : 'A new ' . strtolower($typeLabel) . ' ticket was submitted.';
-    $lines[] = '';
-    $lines[] = 'Ticket:    ' . $no;
-    $lines[] = 'Type:      ' . ($ticket['type'] ?? '');
-    $lines[] = 'Category:  ' . ($ticket['category'] ?? '');
-    $lines[] = 'Priority:  ' . ($ticket['priority'] ?? '');
-    $lines[] = 'Status:    ' . ($ticket['status'] ?? '');
-    $lines[] = 'From:      ' . ($ticket['created_by_name'] ?? '') . ' <' . ($ticket['created_by_email'] ?? '') . '>';
-    $lines[] = 'Subject:   ' . ($ticket['subject'] ?? '');
-    $lines[] = '';
-    if ($event === 'reply' && $reply) {
-        $lines[] = 'Reply from ' . ($reply['author_name'] ?? '') . ':';
-        $lines[] = $reply['message'] ?? '';
+    // Human-readable values (no raw codes like "how_to" or "in_progress").
+    $isFeedback = ($ticket['type'] ?? 'support') === 'feedback';
+    $typeLabel = $isFeedback ? 'Feedback' : 'Support';
+    $no = $ticket['ticket_no'] ?? '';
+    $subjectText = trim($ticket['subject'] ?? '') ?: '(no subject)';
+    $catLabel = ticketLabel($TICKET_CATEGORY_LABELS, $ticket['category'] ?? '');
+    $priLabel = ticketLabel($TICKET_PRIORITY_LABELS, $ticket['priority'] ?? '');
+    $statusLabel = ticketLabel($TICKET_STATUS_LABELS, $ticket['status'] ?? '');
+    $fromName = trim($ticket['created_by_name'] ?? '') ?: 'Unknown';
+    $fromEmail = trim($ticket['created_by_email'] ?? '');
+    $fromLine = $fromEmail !== '' ? ($fromName . ' (' . $fromEmail . ')') : $fromName;
+
+    $subject = ($event === 'reply' ? 'Re: ' : '') . '[' . $typeLabel . '] ' . $no . ' - ' . $subjectText;
+
+    // A one-line summary so the email reads as a sentence, not a data dump.
+    if ($event === 'reply') {
+        $intro = ($reply['is_staff'] ?? false)
+            ? 'Levata Support replied to ' . $fromName . "'s " . strtolower($typeLabel) . ' ticket.'
+            : $fromName . ' replied to their ' . strtolower($typeLabel) . ' ticket.';
     } else {
-        $lines[] = 'Message:';
-        $lines[] = $ticket['message'] ?? '';
+        $intro = $isFeedback
+            ? $fromName . ' sent feedback: "' . $subjectText . '".'
+            : $fromName . ' raised a support request: "' . $subjectText . '".';
     }
+
+    // The message that matters for this email (the reply, or the original message).
+    $isReply = ($event === 'reply' && $reply);
+    $msgHeading = $isReply ? ('Reply from ' . ($reply['author_name'] ?? 'Unknown')) : 'Message';
+    $msgBody = $isReply ? ($reply['message'] ?? '') : ($ticket['message'] ?? '');
+
+    // ---- Plain-text version (fallback) ----
+    $lines = [];
+    $lines[] = $intro;
+    $lines[] = '';
+    $lines[] = str_repeat('-', 48);
+    $lines[] = 'Ticket    : ' . $no;
+    $lines[] = 'Type      : ' . $typeLabel;
+    $lines[] = 'Category  : ' . $catLabel;
+    $lines[] = 'Priority  : ' . $priLabel;
+    $lines[] = 'Status    : ' . $statusLabel;
+    $lines[] = 'From      : ' . $fromLine;
+    $lines[] = 'Subject   : ' . $subjectText;
+    $lines[] = str_repeat('-', 48);
+    $lines[] = '';
+    $lines[] = $msgHeading . ':';
+    $lines[] = $msgBody;
+    $lines[] = '';
+    $lines[] = 'You can reply to this email to reach ' . $fromName . ' directly,';
+    $lines[] = 'or open the ticket in Levata under Help & Support.';
     $body = implode("\n", $lines);
+
+    // ---- HTML version (renders cleanly in Gmail/Outlook) ----
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $accent = $isFeedback ? '#7c3aed' : '#2563eb';
+    $row = function ($label, $value) use ($e) {
+        return '<tr><td style="padding:4px 12px 4px 0;color:#6b7280;font-size:13px;white-space:nowrap;vertical-align:top;">' . $e($label)
+            . '</td><td style="padding:4px 0;color:#111827;font-size:13px;font-weight:600;">' . $e($value) . '</td></tr>';
+    };
+    $html = '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;color:#111827;">'
+        . '<div style="background:' . $accent . ';color:#fff;padding:14px 18px;border-radius:8px 8px 0 0;font-size:15px;font-weight:600;">'
+        . $e($typeLabel) . ' ticket ' . $e($no) . '</div>'
+        . '<div style="border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;padding:18px;">'
+        . '<p style="margin:0 0 14px;font-size:14px;line-height:1.5;">' . $e($intro) . '</p>'
+        . '<table style="border-collapse:collapse;margin-bottom:16px;">'
+        . $row('Category', $catLabel) . $row('Priority', $priLabel) . $row('Status', $statusLabel) . $row('From', $fromLine)
+        . '</table>'
+        . '<div style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#6b7280;margin-bottom:6px;">' . $e($msgHeading) . '</div>'
+        . '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px 14px;font-size:14px;line-height:1.6;white-space:pre-wrap;">' . $e($msgBody) . '</div>'
+        . '<p style="margin:16px 0 0;font-size:12px;color:#6b7280;line-height:1.5;">Reply to this email to reach ' . $e($fromName) . ' directly, or open the ticket in Levata under <strong>Help &amp; Support</strong>.</p>'
+        . '</div></div>';
 
     // Sender must be on a Resend-verified domain, or Resend's shared test sender
     // 'onboarding@resend.dev' (which only delivers to your own Resend account email).
@@ -138,6 +215,7 @@ function notifySupportEmail($ticket, $event = 'new', $reply = null) {
         'to' => [$to],
         'subject' => $subject,
         'text' => $body,
+        'html' => $html,
     ];
     // Reply-To the submitter, so replying from the support inbox reaches the user.
     $replyTo = trim($ticket['created_by_email'] ?? '');
