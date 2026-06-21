@@ -4754,7 +4754,9 @@ async function syncFromZoho() {
     } else {
         toast(`Pulled from Zoho: ${totalCreated} created, ${totalUpdated} updated`, 'success');
     }
-    loadLeads();
+    showingTrash=false;
+    const sf=document.getElementById('status-filter');if(sf)sf.value='all';
+    loadLeads(1);
     loadZohoStatus();
 }
 
@@ -4797,7 +4799,9 @@ async function fullZohoSync() {
     const totalPushed = (pushR.created || 0) + (pushR.updated || 0);
 
     toast(`Full sync complete: ${totalPulled} pulled, ${totalPushed} pushed`, 'success');
-    loadLeads();
+    showingTrash=false;
+    const sf=document.getElementById('status-filter');if(sf)sf.value='all';
+    loadLeads(1);
     loadZohoStatus();
 }
 
@@ -5077,7 +5081,7 @@ document.getElementById('login-form').addEventListener('submit',handleLogin);
 const uz=document.getElementById('upload-zone'),fi=document.getElementById('file-input');uz.addEventListener('click',()=>fi.click());uz.addEventListener('dragover',e=>{e.preventDefault();uz.classList.add('dragover')});uz.addEventListener('dragleave',()=>uz.classList.remove('dragover'));uz.addEventListener('drop',e=>{e.preventDefault();uz.classList.remove('dragover');handleFile(e.dataTransfer.files[0])});fi.addEventListener('change',e=>handleFile(e.target.files[0]));
 document.getElementById('confirm-import').addEventListener('click',confirmImport);
 document.getElementById('confirm-mapping').addEventListener('click',applyMapping);
-document.getElementById('add-lead-form').addEventListener('submit',async e=>{e.preventDefault();const r=await api('lead','POST',{first_name:document.getElementById('new-first-name').value,last_name:document.getElementById('new-last-name').value,email:document.getElementById('new-email').value,phone:document.getElementById('new-phone').value,company:document.getElementById('new-company').value,title:document.getElementById('new-title').value,industry:document.getElementById('new-industry').value,country:document.getElementById('new-country').value,website:document.getElementById('new-website').value,linkedin:document.getElementById('new-linkedin').value,company_size:document.getElementById('new-company-size').value,source:document.getElementById('new-source').value,stage:document.getElementById('new-stage').value,source_detail:document.getElementById('new-source-detail').value,notes:document.getElementById('new-notes').value});if(r.success){toast('Added!','success');e.target.reset();loadLeads();loadStats();showPage('leads')}else toast(r.error||'Failed','error')});
+document.getElementById('add-lead-form').addEventListener('submit',async e=>{e.preventDefault();const r=await api('lead','POST',{first_name:document.getElementById('new-first-name').value,last_name:document.getElementById('new-last-name').value,email:document.getElementById('new-email').value,phone:document.getElementById('new-phone').value,company:document.getElementById('new-company').value,title:document.getElementById('new-title').value,industry:document.getElementById('new-industry').value,country:document.getElementById('new-country').value,website:document.getElementById('new-website').value,linkedin:document.getElementById('new-linkedin').value,company_size:document.getElementById('new-company-size').value,source:document.getElementById('new-source').value,stage:document.getElementById('new-stage').value,source_detail:document.getElementById('new-source-detail').value,notes:document.getElementById('new-notes').value});if(r.success){toast('Added!','success');e.target.reset();showPage('leads');showingTrash=false;const sf=document.getElementById('status-filter');if(sf)sf.value='all';loadLeads(1);loadStats()}else toast(r.error||'Failed','error')});
 document.getElementById('my-settings-form').addEventListener('submit',async e=>{e.preventDefault();await api('settings','POST',{sender_name:document.getElementById('my-sender-name').value,sender_title:document.getElementById('my-sender-title').value,sender_company:document.getElementById('my-sender-company').value,company_description:document.getElementById('my-company-desc').value,value_proposition:document.getElementById('my-value-prop').value,social_proof:document.getElementById('my-social-proof').value,calendar_link:document.getElementById('my-calendar-link').value,email_tone:document.getElementById('my-email-tone').value,signature:document.getElementById('my-signature').value});toast('Saved!','success')});
 
 // ===== Document Studio (SOW) =====
@@ -6018,10 +6022,12 @@ if(r.success){
     document.getElementById('import-mapping').style.display='none';
     document.getElementById('import-preview').style.display='none';
     document.getElementById('file-input').value='';
-    loadLeads();
+    showPage('leads');
+    showingTrash=false;
+    const sf=document.getElementById('status-filter');if(sf)sf.value='all';
+    loadLeads(1);
     loadStats();
     loadProactiveDashboard();
-    showPage('leads');
 } else {
     toast(r.error||'Failed','error');
 }
