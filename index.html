@@ -205,6 +205,11 @@
         .generated-email { background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-md); margin-top: 12px; overflow: hidden; }
         .email-subject-line { font-weight: 600; color: var(--navy); padding: 14px 16px; background: var(--bg-main); border-bottom: 1px solid var(--border); font-size: 14px; }
         .email-body-content { padding: 16px; line-height: 1.7; font-size: 13px; white-space: pre-wrap; }
+        .email-edit-hint { font-size: 11px; color: var(--text-muted); padding: 6px 16px; background: var(--gold-muted); border-bottom: 1px solid var(--border); }
+        .email-subject-line[contenteditable="true"], .email-body-content[contenteditable="true"] { cursor: text; outline: none; transition: box-shadow 0.15s, background 0.15s; }
+        .email-subject-line[contenteditable="true"]:hover, .email-body-content[contenteditable="true"]:hover { background: var(--bg-white); }
+        .email-subject-line[contenteditable="true"]:focus { background: var(--bg-white); box-shadow: inset 0 0 0 2px var(--gold); }
+        .email-body-content[contenteditable="true"]:focus { box-shadow: inset 0 0 0 2px var(--gold); }
         #lead-pitch-body, #cp-pitch-body { white-space: normal; padding: 8px 4px; }
         #lead-pitch-body p, #cp-pitch-body p { margin: 0; font-size: 14px; line-height: 1.8; }
         .email-body-content p { margin: 0 0 12px 0; }
@@ -2633,6 +2638,31 @@ async function loadActivityFeed() {
         }
     } catch(e) { console.error('Activity feed error:', e); }
 }
+// Refresh all the live dashboard widgets after an action so they never go stale
+// (Recent Activity, stats, the proactive dashboard). Call this anywhere a lead
+// changes. Cheap: each is a single GET that no-ops if its element isn't present.
+function refreshDashboard(){
+    loadStats();
+    loadActivityFeed();
+    loadProactiveDashboard();
+}
+// Read the (possibly hand-edited) generated email body as plain text with blank
+// lines between paragraphs. Robust to contenteditable output: paragraphs may be
+// <p>, <div>, or text separated by <br>, depending on how the browser edits it.
+function readEmailBody(){
+    const el=document.getElementById('email-body');
+    if(!el) return '';
+    const blocks=el.querySelectorAll('p,div');
+    if(blocks.length){
+        return Array.from(blocks).map(b=>b.textContent.trim()).filter(Boolean).join('\n\n');
+    }
+    // No block elements: treat <br> as line breaks, otherwise use raw text.
+    return (el.innerText!==undefined?el.innerText:el.textContent).replace(/\n{3,}/g,'\n\n').trim();
+}
+function readEmailSubject(){
+    const el=document.getElementById('email-subject');
+    return el?el.textContent.trim():'';
+}
 function getTimeAgo(ts) {
     if (!ts) return '';
     const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
@@ -3904,7 +3934,7 @@ emailTabContent=`${emailHistoryHtml}<div class="email-type-tabs"><button class="
 <div class="form-group" style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="include-signature" class="checkbox" checked><label for="include-signature" style="font-size:13px;">Include signature</label></div>
 <input type="hidden" id="previous-email" value="${prevEmail.replace(/"/g,'&quot;')}">
 <div class="btn-group"><button class="btn btn-gold" onclick="generateEmail()" id="generate-btn">Generate Email</button><button class="btn btn-secondary" onclick="showSkipEmail()">Skip Email</button></div>
-<div class="generated-email" id="generated-email" style="display:none;"><div class="email-subject-line" id="email-subject"></div><div class="email-body-content" id="email-body"></div><div class="email-actions"><button class="btn btn-gold btn-sm" onclick="sendLeadEmail()" id="send-lead-email-btn">Send Email</button><button class="btn btn-primary btn-sm" onclick="openLeadEmailClient()">Open in Email Client</button><button class="btn btn-success btn-sm" onclick="copyEmail()">Copy</button><button class="btn btn-secondary btn-sm" onclick="generateEmail()">Regenerate</button><button class="btn btn-secondary btn-sm" onclick="markEmailSent()">Mark as Sent</button></div></div>
+<div class="generated-email" id="generated-email" style="display:none;"><div class="email-edit-hint">✎ Click the subject or body to edit before sending</div><div class="email-subject-line" id="email-subject" contenteditable="true" spellcheck="true"></div><div class="email-body-content" id="email-body" contenteditable="true" spellcheck="true"></div><div class="email-actions"><button class="btn btn-gold btn-sm" onclick="sendLeadEmail()" id="send-lead-email-btn">Send Email</button><button class="btn btn-primary btn-sm" onclick="openLeadEmailClient()">Open in Email Client</button><button class="btn btn-success btn-sm" onclick="copyEmail()">Copy</button><button class="btn btn-secondary btn-sm" onclick="generateEmail()">Regenerate</button><button class="btn btn-secondary btn-sm" onclick="markEmailSent()">Mark as Sent</button></div></div>
 <div class="skip-reason" id="skip-email-reason" style="display:none;"><div class="skip-reason-label">Reason for skipping email:</div><select class="form-select" id="skip-email-select"><option value="">Select reason...</option><option value="already_contacted">Already contacted via other channel</option><option value="phone_preferred">Phone contact preferred</option><option value="referral">Warm referral - no email needed</option><option value="other">Other</option></select><button class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick="confirmSkipEmail()">Confirm Skip</button></div>`;
 }
 
@@ -4166,7 +4196,7 @@ function showSources(){
 
 function switchTab(btn,id){btn.parentElement.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');btn.closest('.modal-body').querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.getElementById(id).classList.add('active')}
 async function updateLeadStatus(){const r=await api('update-lead','POST',{id:currentLead.id,stage:document.getElementById('lead-status').value});if(r.success){currentLead=r.lead;loadLeads();loadStats();toast('Updated','success')}}
-async function researchLead(){const btn=document.getElementById('research-btn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Researching...';const r=await api('enrich-lead','POST',{lead:currentLead});if(r.success){currentLead=r.lead;renderLeadModal();loadLeads();loadStats();toast('Research complete!','success')}else toast(r.error||'Failed','error');btn.disabled=false;btn.textContent='Research Lead'}
+async function researchLead(){const btn=document.getElementById('research-btn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Researching...';const r=await api('enrich-lead','POST',{lead:currentLead});if(r.success){currentLead=r.lead;renderLeadModal();loadLeads();refreshDashboard();toast('Research complete!','success')}else toast(r.error||'Failed','error');btn.disabled=false;btn.textContent='Research Lead'}
 
 async function recalculateGrade(){
     const btn=document.getElementById('regrade-btn');
@@ -4184,12 +4214,11 @@ async function recalculateGrade(){
     if(btn){btn.disabled=false;btn.textContent='Calculate ICP Grade';}
 }
 async function generateEmail(){const btn=document.getElementById('generate-btn');const type=document.querySelector('#modal-body .email-type-tab.active').dataset.type;const prevEmail=document.getElementById('previous-email').value;const includeSignature=document.getElementById('include-signature').checked;btn.disabled=true;btn.innerHTML='<span class="spinner spinner-light"></span>';const r=await api('generate-email','POST',{lead:currentLead,type,custom_instructions:document.getElementById('custom-instructions').value,enrichment:currentLead.enrichment||'',previous_email:type!=='initial'?prevEmail:'',include_signature:includeSignature});if(r.success){let email=r.email.trim();const m=email.match(/SUBJECT:\s*(.+?)(?:\n|$)/i);const subject=m?m[1].trim():'(No subject)';let body=email.replace(/SUBJECT:\s*.+?\n/i,'').trim();document.getElementById('email-subject').textContent=subject;document.getElementById('email-body').innerHTML=body.split('\n').map(p=>p.trim()?`<p>${p}</p>`:'').join('');document.getElementById('generated-email').style.display='block';document.getElementById('previous-email').value=body;toast('Generated!','success')}else toast(r.error||'Failed','error');btn.disabled=false;btn.textContent='Generate Email'}
-async function copyEmail(){const subject=document.getElementById('email-subject').textContent;const bodyEl=document.getElementById('email-body');const body=Array.from(bodyEl.querySelectorAll('p')).map(p=>p.textContent).join('\n\n')||bodyEl.textContent;navigator.clipboard.writeText('Subject: '+subject+'\n\n'+body).then(()=>toast('Copied!','success')).catch(()=>toast('Failed','error'))}
+async function copyEmail(){const subject=readEmailSubject();const body=readEmailBody();navigator.clipboard.writeText('Subject: '+subject+'\n\n'+body).then(()=>toast('Copied!','success')).catch(()=>toast('Failed','error'))}
 
 function openLeadEmailClient(){
-    const subject=document.getElementById('email-subject').textContent;
-    const bodyEl=document.getElementById('email-body');
-    const body=Array.from(bodyEl.querySelectorAll('p')).map(p=>p.textContent).join('\n\n')||bodyEl.textContent;
+    const subject=readEmailSubject();
+    const body=readEmailBody();
     const email=currentLead.email||'';
     window.location.href=`mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 
@@ -4202,9 +4231,8 @@ function openLeadEmailClient(){
 }
 
 async function markEmailSent(){
-    const subject=document.getElementById('email-subject').textContent;
-    const bodyEl=document.getElementById('email-body');
-    const body=Array.from(bodyEl.querySelectorAll('p')).map(p=>p.textContent).join('\n\n')||bodyEl.textContent;
+    const subject=readEmailSubject();
+    const body=readEmailBody();
     const r=await api('save-email','POST',{
         lead_id:currentLead.id,
         type:document.querySelector('#modal-body .email-type-tab.active').dataset.type,
@@ -4215,7 +4243,7 @@ async function markEmailSent(){
     if(r.success){
         currentLead=r.lead;
         document.getElementById('lead-status').value=getStage(currentLead);
-        loadLeads();loadStats();
+        loadLeads();refreshDashboard();
         toast('Email marked as sent! Call is now due.','success');
         renderLeadModal(); // Refresh to unlock Call Pitch
     }else toast(r.error||'Failed','error');
@@ -4223,9 +4251,9 @@ async function markEmailSent(){
 
 async function sendLeadEmail(){
     if(!currentLead.email){toast('This lead has no email address','error');return}
-    const subject=document.getElementById('email-subject').textContent;
-    const bodyEl=document.getElementById('email-body');
-    const body=Array.from(bodyEl.querySelectorAll('p')).map(p=>p.textContent).join('\n\n')||bodyEl.textContent;
+    const subject=readEmailSubject();
+    const body=readEmailBody();
+    if(!subject||!body){toast('Subject and message cannot be empty','error');return}
     const ok=await customConfirm(`Send this email to ${currentLead.email} now?`,'Send Email',{confirmText:'Send'});
     if(!ok)return;
     const btn=document.getElementById('send-lead-email-btn');
@@ -4240,7 +4268,7 @@ async function sendLeadEmail(){
     if(r.success){
         currentLead=r.lead;
         document.getElementById('lead-status').value=getStage(currentLead);
-        loadLeads();loadStats();
+        loadLeads();refreshDashboard();
         toast('Email sent! Call is now due.','success');
         renderLeadModal();
     }else toast(r.error||'Failed to send','error');
@@ -4252,7 +4280,7 @@ async function logEmailOutcome(leadId,emailIndex,outcome){
         currentLead=r.lead;
         toast(`Marked as ${outcome.replace(/_/g,' ')}`,'success');
         renderLeadModal();
-        loadLeads();loadStats();
+        loadLeads();refreshDashboard();
     }else toast(r.error||'Failed','error');
 }
 
@@ -4277,7 +4305,7 @@ async function startCall(){
     if(r.success){
         currentLead = r.lead;
         toast('Call started! Log outcome when done.','info');
-        loadLeads();
+        loadLeads();refreshDashboard();
         // Switch to Call Outcome tab
         document.querySelector('.tab-btn:nth-child(5)').click();
     } else {
@@ -4415,7 +4443,7 @@ async function saveCallOutcome(){
         currentLead=r.lead||currentLead;
         currentLead.stage=newStage;
         currentLead.requisitions=requisitions;
-        loadLeads();loadStats();
+        loadLeads();refreshDashboard();
         toast(newStage==='consultation_booked'?'Consultation booked!':'Outcome saved!','success');
         closeModal('lead-modal');
     }else toast(r.error||'Failed','error');
@@ -6047,7 +6075,7 @@ function showPage(p){
     document.getElementById(`page-${p}`)?.classList.add('active');
     const nav=[...document.querySelectorAll(`.nav-item[data-page="${p}"]`)].find(x=>!x.hidden);
     nav?.classList.add('active');
-    if(p==='dashboard')loadTodayOperations();
+    if(p==='dashboard'){loadTodayOperations();loadActivityFeed();loadProactiveDashboard();loadStats();}
     if(p==='command-center')loadCommandCenter();
     if(p==='workbench')loadWorkbench();
     if(p==='commitments')loadCommitments();
