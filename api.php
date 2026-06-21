@@ -3267,6 +3267,10 @@ case 'enrich-lead':
                     $l['last_action'] = 'researched';
                     $l['last_action_at'] = date('c');
                     $l['updated_at'] = date('c');
+                    // Record a permanent activity entry so Team Activity counts this
+                    // research durably (last_action gets overwritten by later actions
+                    // like email generation, so it cannot be the source of truth).
+                    $l['activities'] = logLeadActivity($l, 'research', 'AI research completed');
                     if (in_array(getLeadStage($l), ['new_lead', 'research'])) {
                         setLeadStage($l, 'research', 'research_completed', $user['id']);
                     }
@@ -3564,6 +3568,9 @@ case 'start-call':
             $lead['last_action'] = 'call_started';
             $lead['last_action_at'] = date('c');
             $lead['updated_at'] = date('c');
+            // Permanent activity entry so Team Activity counts this call durably
+            // (last_action gets overwritten by later actions on the lead).
+            $lead['activities'] = logLeadActivity($lead, 'call_started', 'Call started');
             $lead['call_history'] = $lead['call_history'] ?? [];
             $lead['call_history'][] = [
                 'id' => 'call_' . bin2hex(random_bytes(8)),
