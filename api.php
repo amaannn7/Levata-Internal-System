@@ -4211,7 +4211,10 @@ case 'command-center':
             }
         }
 
-        // Count today's activities (calls, research)
+        // Count today's activities (calls, research, outcomes). Track which
+        // categories the activities[] log already covered for this lead, so the
+        // last_action fallback below does not double-count the same action.
+        $countedCall = false; $countedResearch = false; $countedOutcome = false;
         $activities = $l['activities'] ?? [];
         foreach ($activities as $act) {
             if (isset($act['timestamp']) && substr($act['timestamp'], 0, 10) === $today) {
@@ -4219,28 +4222,33 @@ case 'command-center':
                     if ($act['type'] === 'call' || $act['type'] === 'call_started') {
                         $todaysCalls++;
                         if (isset($teamActivity[$ownerId])) $teamActivity[$ownerId]['calls']++;
+                        $countedCall = true;
                     } elseif ($act['type'] === 'research' || $act['type'] === 'enriched') {
                         $todaysResearch++;
                         if (isset($teamActivity[$ownerId])) $teamActivity[$ownerId]['research']++;
+                        $countedResearch = true;
                     } elseif (strpos($act['type'], 'outcome') !== false) {
                         $todaysOutcomes++;
                         if (isset($teamActivity[$ownerId])) $teamActivity[$ownerId]['outcomes']++;
+                        $countedOutcome = true;
                     }
                 }
             }
         }
 
-        // Also check last_action for today
+        // Fallback: count from last_action ONLY for categories the activities[]
+        // log did not already cover (e.g. research/start-call, which set
+        // last_action but do not write an activities[] entry).
         if (!empty($l['last_action_at']) && substr($l['last_action_at'], 0, 10) === $today) {
             if (!empty($l['last_action'])) {
-                if (strpos($l['last_action'], 'call') !== false) {
+                if (!$countedCall && strpos($l['last_action'], 'call') !== false) {
                     $todaysCalls++;
                     if (isset($teamActivity[$ownerId])) $teamActivity[$ownerId]['calls']++;
-                } elseif (strpos($l['last_action'], 'research') !== false || strpos($l['last_action'], 'enrich') !== false) {
+                } elseif (!$countedResearch && (strpos($l['last_action'], 'research') !== false || strpos($l['last_action'], 'enrich') !== false)) {
                     $todaysResearch++;
                     if (isset($teamActivity[$ownerId])) $teamActivity[$ownerId]['research']++;
                 }
-                if (strpos($l['last_action'], 'outcome') !== false || strpos($l['last_action'], 'call_outcome') !== false) {
+                if (!$countedOutcome && (strpos($l['last_action'], 'outcome') !== false || strpos($l['last_action'], 'call_outcome') !== false)) {
                     $todaysOutcomes++;
                     if (isset($teamActivity[$ownerId])) $teamActivity[$ownerId]['outcomes']++;
                 }
