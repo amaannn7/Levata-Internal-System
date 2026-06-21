@@ -254,3 +254,20 @@ The whole app was rebranded from Macktiles (tiles) to Levata, brand + logic:
 - **Left as-is (internal, not user-facing):** Zoho-mapping function names, `getMacktilesStages`, `macktilesCallOutcomeConfig`, and an inert Melbourne scoring fallback.
 - **Auth:** real token-based authentication is ENABLED. `getCurrentUser()` resolves the `X-User-Token` header against `users.json`; `requireAuth`/`requireAdmin`/`requireSuperAdmin` enforce 401/403. (It was previously disabled — auto-logged-in as super-admin — and has been restored.)
 - **Deployment:** target is **Namecheap shared hosting (cPanel)**, served at **levataos.com**. CORS `$allowedOrigins` in `api.php` is already set to `levataos.com`. Upload PHP files + `index.html` + the two logos + `.htaccess`; create a writable `data/` (755) with `data/uploads/`. No Docker/Render/npm — those configs were removed.
+
+## Outbound email — two SEPARATE senders (do not merge them)
+
+The app sends two kinds of email, both via the **Resend API** (`https://api.resend.com/emails`) over cURL. They share only the single account-wide `resend_key` in `admin.json`. **Their sending code and From identities are deliberately kept separate** — do not refactor them into one shared helper (this was tried and reverted on request).
+
+1. **Help & Support** — `notifySupportEmail()` in `sow.php`'s sibling `support.php`. Self-contained cURL block. From = `Levata Support <support_from>`; Reply-To = the ticket submitter. Config: `support_email` (recipient) + `support_from` (sender) in Admin → Settings.
+2. **Sales outreach to leads** — the `send-email` action in `api.php`. Its OWN self-contained cURL block (no call into support.php). Triggered by the "Send Email" button on a generated lead email (`sendLeadEmail()` in `index.html`). From = `<rep sender_name> <outreach_from>`; Reply-To = the logged-in rep's account email, so prospect replies land in the rep's real inbox, not a shared mailbox. On success it records to the lead's `email_history` (with `channel:'system'` + Resend `message_id`) and bumps the stage exactly like `save-email`. A small unsubscribe/sender footer is appended (CAN-SPAM). Config: `outreach_from` in Admin → Settings (no fallback to `support_from` — fully independent).
+
+Limitation (acceptable for internal use): mail is sent *through* Resend, not the rep's own mailbox, so it does not appear in their Gmail "Sent" folder and replies arrive as fresh (unthreaded) inbound mail. Going through the rep's real mailbox would require Gmail/Microsoft OAuth (a much larger build) — deferred.
+
+### Multi-client / white-label — model is SEPARATE COPY PER CLIENT (no tenancy code needed)
+
+Each client gets their OWN isolated deployment of this same code: own URL/subdomain, own `data/` folder, own `admin.json`, own users, own logos. There is NO multi-tenancy in the code — every copy thinks it's the only one. The per-copy `admin.json` already IS that client's private config, so there is nothing to "build" for tenancy.
+
+**Email therefore needs no per-tenant work.** Each client copy is configured (in its own Admin → Settings) with: that client's `resend_key` (their own Resend account), `outreach_from` = `sales@theirdomain.com` (a domain THEY verified in Resend via DNS — required; you can't send as a domain you don't control, Gmail/Outlook check SPF/DKIM/DMARC), plus their `support_from`/`support_email`. The existing `send-email` action works unchanged for every client because the From address is read from that copy's config, not hardcoded.
+
+**The real cost of this model is operational, not code:** N separate cPanel deployments, each with its own domain/SSL/backups, and updates must be redeployed to every client copy (no deploy-once). Fine for a handful of clients; script the deploy/update fan-out once it grows. Upside: bulletproof data isolation — clients' data never coexists.

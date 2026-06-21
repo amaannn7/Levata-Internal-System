@@ -1949,6 +1949,7 @@ Phone: +1 234 567 890"></textarea></div>
                                 <div class="form-group"><label class="form-label">Resend API Key <span style="font-weight:400;color:#888;">(sends Help &amp; Support emails)</span></label><input type="password" class="form-input" id="admin-resend-key" placeholder="re_..."></div>
                                 <div class="form-group"><label class="form-label">Support Email <span style="font-weight:400;color:#888;">(where Help &amp; Support tickets are sent)</span></label><input type="email" class="form-input" id="admin-support-email" placeholder="support@levatahq.com"></div>
                                 <div class="form-group"><label class="form-label">Support From <span style="font-weight:400;color:#888;">(verified sender; leave blank for onboarding@resend.dev)</span></label><input type="text" class="form-input" id="admin-support-from" placeholder="support@levataos.com"></div>
+                                <div class="form-group"><label class="form-label">Outreach From <span style="font-weight:400;color:#888;">(verified sender for sales emails sent to leads)</span></label><input type="text" class="form-input" id="admin-outreach-from" placeholder="outreach@send.levataos.com"></div>
                                 <div class="btn-group"><button type="submit" class="btn btn-primary btn-sm">Save Keys</button><button type="button" class="btn btn-secondary btn-sm" onclick="testAPI()">Test</button></div>
                             </form>
                         </div>
@@ -3903,7 +3904,7 @@ emailTabContent=`${emailHistoryHtml}<div class="email-type-tabs"><button class="
 <div class="form-group" style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="include-signature" class="checkbox" checked><label for="include-signature" style="font-size:13px;">Include signature</label></div>
 <input type="hidden" id="previous-email" value="${prevEmail.replace(/"/g,'&quot;')}">
 <div class="btn-group"><button class="btn btn-gold" onclick="generateEmail()" id="generate-btn">Generate Email</button><button class="btn btn-secondary" onclick="showSkipEmail()">Skip Email</button></div>
-<div class="generated-email" id="generated-email" style="display:none;"><div class="email-subject-line" id="email-subject"></div><div class="email-body-content" id="email-body"></div><div class="email-actions"><button class="btn btn-primary btn-sm" onclick="openLeadEmailClient()">Open in Email Client</button><button class="btn btn-success btn-sm" onclick="copyEmail()">Copy</button><button class="btn btn-secondary btn-sm" onclick="generateEmail()">Regenerate</button><button class="btn btn-gold btn-sm" onclick="markEmailSent()">Mark as Sent</button></div></div>
+<div class="generated-email" id="generated-email" style="display:none;"><div class="email-subject-line" id="email-subject"></div><div class="email-body-content" id="email-body"></div><div class="email-actions"><button class="btn btn-gold btn-sm" onclick="sendLeadEmail()" id="send-lead-email-btn">Send Email</button><button class="btn btn-primary btn-sm" onclick="openLeadEmailClient()">Open in Email Client</button><button class="btn btn-success btn-sm" onclick="copyEmail()">Copy</button><button class="btn btn-secondary btn-sm" onclick="generateEmail()">Regenerate</button><button class="btn btn-secondary btn-sm" onclick="markEmailSent()">Mark as Sent</button></div></div>
 <div class="skip-reason" id="skip-email-reason" style="display:none;"><div class="skip-reason-label">Reason for skipping email:</div><select class="form-select" id="skip-email-select"><option value="">Select reason...</option><option value="already_contacted">Already contacted via other channel</option><option value="phone_preferred">Phone contact preferred</option><option value="referral">Warm referral - no email needed</option><option value="other">Other</option></select><button class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick="confirmSkipEmail()">Confirm Skip</button></div>`;
 }
 
@@ -4218,6 +4219,31 @@ async function markEmailSent(){
         toast('Email marked as sent! Call is now due.','success');
         renderLeadModal(); // Refresh to unlock Call Pitch
     }else toast(r.error||'Failed','error');
+}
+
+async function sendLeadEmail(){
+    if(!currentLead.email){toast('This lead has no email address','error');return}
+    const subject=document.getElementById('email-subject').textContent;
+    const bodyEl=document.getElementById('email-body');
+    const body=Array.from(bodyEl.querySelectorAll('p')).map(p=>p.textContent).join('\n\n')||bodyEl.textContent;
+    const ok=await customConfirm(`Send this email to ${currentLead.email} now?`,'Send Email',{confirmText:'Send'});
+    if(!ok)return;
+    const btn=document.getElementById('send-lead-email-btn');
+    btn.disabled=true;btn.innerHTML='<span class="spinner spinner-light"></span>';
+    const r=await api('send-email','POST',{
+        lead_id:currentLead.id,
+        type:document.querySelector('#modal-body .email-type-tab.active').dataset.type,
+        subject:subject,
+        content:body
+    });
+    btn.disabled=false;btn.textContent='Send Email';
+    if(r.success){
+        currentLead=r.lead;
+        document.getElementById('lead-status').value=getStage(currentLead);
+        loadLeads();loadStats();
+        toast('Email sent! Call is now due.','success');
+        renderLeadModal();
+    }else toast(r.error||'Failed to send','error');
 }
 
 async function logEmailOutcome(leadId,emailIndex,outcome){
@@ -4543,6 +4569,7 @@ async function loadAdminSettings(){
         document.getElementById('admin-resend-key').value=r.settings.resend_key||'';
         document.getElementById('admin-support-email').value=r.settings.support_email||'';
         document.getElementById('admin-support-from').value=r.settings.support_from||'';
+        document.getElementById('admin-outreach-from').value=r.settings.outreach_from||'';
         document.getElementById('admin-provider').value=r.settings.default_provider||'groq';
         document.getElementById('admin-groq-model').value=r.settings.groq_model||'';
         document.getElementById('admin-gemini-model').value=r.settings.gemini_model||'';
@@ -5794,7 +5821,7 @@ document.getElementById('sow-ff-list').addEventListener('click',async e=>{
     sowFfStatus('Transcript from "'+(tr.title||'meeting')+'" added below. Review it, then click "Extract to form".','ok');
     toast('Transcript added below','success');
 });
-document.getElementById('admin-settings-form').addEventListener('submit',async e=>{e.preventDefault();await api('admin-settings','POST',{default_provider:document.getElementById('admin-provider').value,groq_key:document.getElementById('admin-groq-key').value,gemini_key:document.getElementById('admin-gemini-key').value,anthropic_key:document.getElementById('admin-anthropic-key').value,fireflies_key:document.getElementById('admin-fireflies-key').value,resend_key:document.getElementById('admin-resend-key').value,support_email:document.getElementById('admin-support-email').value,support_from:document.getElementById('admin-support-from').value,groq_model:document.getElementById('admin-groq-model').value,gemini_model:document.getElementById('admin-gemini-model').value,anthropic_model:document.getElementById('admin-anthropic-model').value});toast('Saved!','success')});
+document.getElementById('admin-settings-form').addEventListener('submit',async e=>{e.preventDefault();await api('admin-settings','POST',{default_provider:document.getElementById('admin-provider').value,groq_key:document.getElementById('admin-groq-key').value,gemini_key:document.getElementById('admin-gemini-key').value,anthropic_key:document.getElementById('admin-anthropic-key').value,fireflies_key:document.getElementById('admin-fireflies-key').value,resend_key:document.getElementById('admin-resend-key').value,support_email:document.getElementById('admin-support-email').value,support_from:document.getElementById('admin-support-from').value,outreach_from:document.getElementById('admin-outreach-from').value,groq_model:document.getElementById('admin-groq-model').value,gemini_model:document.getElementById('admin-gemini-model').value,anthropic_model:document.getElementById('admin-anthropic-model').value});toast('Saved!','success')});
 document.querySelectorAll('.provider-card').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.provider-card').forEach(x=>x.classList.remove('selected'));c.classList.add('selected');document.getElementById('admin-provider').value=c.dataset.provider}));
 document.getElementById('add-req-form').addEventListener('submit',async e=>{e.preventDefault();const idx=document.getElementById('edit-req-id').value;const type=document.getElementById('req-type-input').value;const options=type==='text'?[]:document.getElementById('req-options-input').value.split('\n').map(o=>o.trim()).filter(o=>o);if(type!=='text'&&!options.length){toast('Add at least one option','warning');return;}const newReq={id:idx!==''?reqConfig[idx].id:'req_'+Date.now(),title:document.getElementById('req-title-input').value,subtitle:document.getElementById('req-subtitle-input').value,type,options,enabled:true};if(idx!=='')reqConfig[idx]=newReq;else reqConfig.push(newReq);await api('admin-settings','POST',{requisitions:reqConfig});renderReqList();closeModal('add-req-modal');toast('Saved!','success')});
 document.getElementById('create-user-form').addEventListener('submit',async e=>{e.preventDefault();const typedPass=document.getElementById('new-user-pass').value;const r=await api('create-user','POST',{name:document.getElementById('new-user-name').value,email:document.getElementById('new-user-email').value,password:typedPass,is_admin:document.getElementById('new-user-admin').checked});if(r.success){const box=document.getElementById('new-user-password');box.innerHTML='';box.style.display='none';e.target.reset();loadUsers();closeModal('create-user-modal');toast('User created','success')}else toast(r.error||'Failed','error')});

@@ -2222,6 +2222,8 @@ case 'admin-settings':
         // Help & Support: where user-submitted tickets are emailed (and the From address).
         if (isset($input['support_email'])) $admin['support_email'] = trim($input['support_email']);
         if (isset($input['support_from'])) $admin['support_from'] = trim($input['support_from']);
+        // Sales outreach: verified From address for emails sent to leads from the system.
+        if (isset($input['outreach_from'])) $admin['outreach_from'] = trim($input['outreach_from']);
 
         // Zoho CRM settings
         if (isset($input['zoho_client_id']) && strpos($input['zoho_client_id'], '****') === false) {
@@ -3377,6 +3379,126 @@ case 'save-email':
                 setLeadStage($lead, 'email_sent', 'email_sent:' . $emailType, $user['id']);
             }
             logActivity($lead, 'email_sent', ucfirst(str_replace('_', ' ', $emailType)) . ' email sent');
+            saveUserData($user['id'], $userData);
+            respond(['success' => true, 'lead' => $lead]);
+        }
+    }
+    respond(['success' => false, 'error' => 'Lead not found'], 404);
+    break;
+
+case 'send-email':
+    // Actually send the generated email to the lead via Resend, then record it
+    // (same bookkeeping as 'save-email'). The system sends from the configured
+    // outreach address; replies go to the rep's own inbox via Reply-To.
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $userData = getUserData($user['id']);
+    $admin = getAdmin();
+    $leadId = $input['lead_id'] ?? '';
+    $emailType = $input['type'] ?? 'initial';
+    $subject = trim($input['subject'] ?? '');
+    $bodyText = trim($input['content'] ?? '');
+
+    if ($subject === '' || $bodyText === '') {
+        respond(['success' => false, 'error' => 'Subject and message are required'], 400);
+    }
+
+    // Find the lead and validate its email address up front.
+    $target = null;
+    foreach ($userData['leads'] as $l) {
+        if ($l['id'] === $leadId) { $target = $l; break; }
+    }
+    if (!$target) respond(['success' => false, 'error' => 'Lead not found'], 404);
+    $toEmail = trim($target['email'] ?? '');
+    if ($toEmail === '' || !filter_var($toEmail, FILTER_VALIDATE_EMAIL)) {
+        respond(['success' => false, 'error' => 'This lead has no valid email address'], 400);
+    }
+
+    // Sales outreach has its OWN sender config, independent of Help & Support.
+    // From: the verified outreach address ('outreach_from'); Reply-To: the rep's own
+    // account email so replies land in their inbox, not a shared mailbox.
+    $resendKey = trim($admin['resend_key'] ?? '');
+    if ($resendKey === '') {
+        respond(['success' => false, 'error' => 'Email sending is not configured (no Resend API key)'], 400);
+    }
+    $settings = $userData['settings'] ?? [];
+    $repName = trim($settings['sender_name'] ?? '') ?: trim($user['name'] ?? '') ?: 'Levata';
+    // For now lead outreach reuses the support sender; set 'outreach_from' later to split them.
+    $fromAddr = trim($admin['outreach_from'] ?? '') ?: (trim($admin['support_from'] ?? '') ?: 'onboarding@resend.dev');
+    $replyTo = trim($user['email'] ?? '');
+
+    // Build an HTML version from the plain text (paragraphs), plus a small footer
+    // with the sender and an unsubscribe line so cold outreach stays CAN-SPAM clean.
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $paras = preg_split('/\n{2,}/', $bodyText);
+    $htmlBody = '';
+    foreach ($paras as $p) {
+        $p = trim($p);
+        if ($p === '') continue;
+        $htmlBody .= '<p style="margin:0 0 12px;">' . nl2br($e($p)) . '</p>';
+    }
+    $footer = '<p style="margin:18px 0 0;font-size:12px;color:#9ca3af;line-height:1.5;">'
+        . 'Sent by ' . $e($repName) . ' at ' . $e(trim($settings['sender_company'] ?? '') ?: 'Levata') . '. '
+        . 'If this reached you in error, reply with "unsubscribe" and we will remove you.</p>';
+    $html = '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;'
+        . 'max-width:560px;margin:0 auto;color:#111827;font-size:14px;line-height:1.6;">'
+        . $htmlBody . $footer . '</div>';
+    $textWithFooter = $bodyText . "\n\n--\nSent by " . $repName . '. Reply "unsubscribe" to opt out.';
+
+    // Send via Resend over HTTPS (self-contained; the lead system does not share
+    // any sending code with Help & Support).
+    $payload = [
+        'from' => $repName . ' <' . $fromAddr . '>',
+        'to' => [$toEmail],
+        'subject' => $subject,
+        'text' => $textWithFooter,
+        'html' => $html,
+    ];
+    if ($replyTo !== '' && filter_var($replyTo, FILTER_VALIDATE_EMAIL)) {
+        $payload['reply_to'] = $replyTo;
+    }
+    $ch = curl_init('https://api.resend.com/emails');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . $resendKey,
+            'Content-Type: application/json',
+        ],
+        CURLOPT_TIMEOUT => 15,
+    ]);
+    $sendResponse = curl_exec($ch);
+    $sendCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    $sendDecoded = json_decode($sendResponse, true);
+    if ($sendCode < 200 || $sendCode >= 300) {
+        $err = is_array($sendDecoded) && !empty($sendDecoded['message'])
+            ? $sendDecoded['message'] : ('Resend returned HTTP ' . $sendCode);
+        respond(['success' => false, 'error' => 'Email not sent: ' . $err], 502);
+    }
+    $messageId = is_array($sendDecoded) ? ($sendDecoded['id'] ?? null) : null;
+
+    // Delivered. Record it exactly like 'save-email' does.
+    foreach ($userData['leads'] as &$lead) {
+        if ($lead['id'] === $leadId) {
+            $lead['email_history'][] = [
+                'type' => $emailType,
+                'subject' => $subject,
+                'content' => $bodyText,
+                'sent_at' => date('c'),
+                'channel' => 'system',
+                'message_id' => $messageId,
+            ];
+            $lead['emails_sent'] = count($lead['email_history']);
+            $lead['last_email_type'] = $emailType;
+            $lead['last_action'] = 'email_sent';
+            $lead['last_action_at'] = date('c');
+            $lead['updated_at'] = date('c');
+            if (in_array(getLeadStage($lead), ['new_lead', 'research', 'engaged'])) {
+                setLeadStage($lead, 'email_sent', 'email_sent:' . $emailType, $user['id']);
+            }
+            logActivity($lead, 'email_sent', ucfirst(str_replace('_', ' ', $emailType)) . ' email sent from system');
             saveUserData($user['id'], $userData);
             respond(['success' => true, 'lead' => $lead]);
         }
