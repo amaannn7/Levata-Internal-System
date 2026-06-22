@@ -906,6 +906,50 @@
         #cp-pdf-body table, #cp-pdf-body tr { page-break-inside: avoid; }
         #cp-pdf-body h2, #cp-pdf-body h3 { page-break-after: avoid; }
 
+        /* ===== Meeting Minutes PDF — designed for a meeting record, not a proposal =====
+           Clean memo feel: a clear title, a tidy meta info-card (Meeting/Date/Attendees),
+           restrained section headers, and comfortable readable bullets. */
+        #min-pdf-body {
+            padding: 36px 50px 56px;
+            font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
+            font-size: 11.5px; line-height: 1.7; color: #1f2937;
+        }
+        /* Document title */
+        #min-pdf-body h1 {
+            font-size: 24px; font-weight: 800; color: #111827;
+            letter-spacing: -0.3px; margin: 0 0 4px;
+        }
+        /* Meta info-card: the Meeting / Date / Attendees block (built at render time). */
+        #min-pdf-body .min-meta {
+            background: #f7f6fb; border: 1px solid #ece9f5;
+            border-left: 3px solid #7c3aed; border-radius: 6px;
+            padding: 12px 16px; margin: 14px 0 26px;
+        }
+        #min-pdf-body .min-meta-row { display: flex; gap: 8px; margin: 3px 0; font-size: 11.5px; }
+        #min-pdf-body .min-meta-label { color: #6b7280; font-weight: 600; min-width: 76px; flex-shrink: 0; }
+        #min-pdf-body .min-meta-val { color: #111827; }
+        /* Section headings: smaller, calm, purple with a soft underline (not a heavy rule). */
+        #min-pdf-body h2 {
+            font-size: 12.5px; font-weight: 700; color: #7c3aed;
+            text-transform: uppercase; letter-spacing: 1.4px;
+            margin: 26px 0 8px; padding-bottom: 5px;
+            border-bottom: 1px solid #e7e3f3;
+        }
+        #min-pdf-body h2:first-child { margin-top: 0; }
+        #min-pdf-body h3 { font-size: 11.5px; font-weight: 700; color: #111827; margin: 14px 0 3px; }
+        #min-pdf-body p { margin: 7px 0; }
+        #min-pdf-body strong { font-weight: 700; color: #111827; }
+        /* Bullets: comfortable spacing, subtle purple markers. */
+        #min-pdf-body ul, #min-pdf-body ol { margin: 8px 0; padding-left: 20px; }
+        #min-pdf-body li { margin: 6px 0; padding-left: 4px; }
+        #min-pdf-body li::marker { color: #7c3aed; }
+        #min-pdf-body hr { border: none; border-top: 1px solid #ece9f5; margin: 18px 0; }
+        /* Page-break safety */
+        #min-pdf-body h2, #min-pdf-body h3 { page-break-after: avoid; }
+        #min-pdf-body li { page-break-inside: avoid; }
+        /* Minutes masthead: tighten the doc-title label and accent for the memo feel. */
+        #min-pdf-page .sow-pdf-doc-title { text-transform: uppercase; letter-spacing: 1.5px; }
+
         /* ---- Preview wrapper (shared — shows paper-like card in app) ---- */
         .sow-preview-wrap { max-height: 70vh; overflow: auto; background: #e9e7ef; padding: 18px; border-radius: 8px; border: 1px solid #e5e7eb; }
         /* Inline editing — editable regions on the PDF preview */
@@ -5952,10 +5996,45 @@ window.minutesOnEnter=function(){
     if(!document.getElementById('min-pdf-body').textContent.trim())minGoStep(1);
 };
 // Render markdown into the branded preview (this IS the on-screen view and the PDF source).
+// Post-processes the parsed HTML so the minutes read like a tidy record: the "Meeting
+// Minutes" H1 becomes the masthead title, and the Meeting/Date/Attendees lines become a
+// styled info-card instead of three stray bold lines.
 function minRenderPreview(md){
     minMarkdown=md;
     const body=document.getElementById('min-pdf-body');
     body.innerHTML=(typeof marked!=='undefined')?marked.parse(md):md.replace(/\n/g,'<br>');
+    minDecorate(body);
+}
+function minDecorate(body){
+    // 1) Lift the leading H1 ("Meeting Minutes") into the masthead doc-title, then drop it.
+    const h1=body.querySelector('h1');
+    if(h1){
+        const t=document.getElementById('min-pdf-doc-title');
+        if(t)t.textContent=(h1.textContent||'Meeting Minutes').trim();
+        h1.remove();
+    }
+    // 2) Turn the first paragraph (the **Meeting:**/**Date:**/**Attendees:** lines) into a card.
+    const first=body.querySelector('p');
+    if(first){
+        const html=first.innerHTML;
+        // Only treat it as the meta block if it actually contains those labels.
+        if(/Meeting:|Date:|Attendees:/.test(html)){
+            // Split on <br>, then each line into label + value at the first colon.
+            const rows=html.split(/<br\s*\/?>/i).map(s=>s.trim()).filter(Boolean).map(line=>{
+                const tmp=document.createElement('div');tmp.innerHTML=line;
+                const text=(tmp.textContent||'').trim();
+                const idx=text.indexOf(':');
+                if(idx===-1)return `<div class="min-meta-row"><span class="min-meta-val">${text.replace(/</g,'&lt;')}</span></div>`;
+                const label=text.slice(0,idx).trim();
+                const val=text.slice(idx+1).trim();
+                return `<div class="min-meta-row"><span class="min-meta-label">${label.replace(/</g,'&lt;')}</span><span class="min-meta-val">${val.replace(/</g,'&lt;')}</span></div>`;
+            }).join('');
+            const card=document.createElement('div');
+            card.className='min-meta';
+            card.innerHTML=rows;
+            first.replaceWith(card);
+        }
+    }
 }
 async function minGenerate(){
     const transcript=document.getElementById('min-transcript').value.trim();
@@ -5982,12 +6061,31 @@ async function minRefine(){
     if(r.success){minRenderPreview(r.markdown);document.getElementById('min-refine-instruction').value='';toast('Refined','success');}
     else toast(r.error||'Refine failed','error');
 }
-// Read the preview back as plain text (so copy reflects hand-edits).
+// Read the preview back as plain text (so copy/refine reflect hand-edits).
+// Reconstructs the full document: the masthead title and the meta info-card were
+// lifted out of the body by minDecorate, so add them back here.
 function minReadPreview(){
     const body=document.getElementById('min-pdf-body');
     if(!body)return minMarkdown;
-    const txt=(body.innerText!==undefined?body.innerText:body.textContent)||'';
-    return txt.replace(/\n{3,}/g,'\n\n').trim()||minMarkdown;
+    const parts=[];
+    const title=(document.getElementById('min-pdf-doc-title')?.textContent||'').trim();
+    if(title)parts.push('# '+title,'');
+    const meta=body.querySelector('.min-meta');
+    if(meta){
+        meta.querySelectorAll('.min-meta-row').forEach(row=>{
+            const label=(row.querySelector('.min-meta-label')?.textContent||'').trim();
+            const val=(row.querySelector('.min-meta-val')?.textContent||'').trim();
+            parts.push(label?('**'+label+':** '+val):val);
+        });
+        parts.push('');
+    }
+    // The rest of the body (sections + bullets), minus the meta card.
+    const clone=body.cloneNode(true);
+    clone.querySelector('.min-meta')?.remove();
+    const rest=((clone.innerText!==undefined?clone.innerText:clone.textContent)||'').replace(/\n{3,}/g,'\n\n').trim();
+    if(rest)parts.push(rest);
+    const out=parts.join('\n').replace(/\n{3,}/g,'\n\n').trim();
+    return out||minMarkdown;
 }
 async function minCopy(){
     try{await navigator.clipboard.writeText(minReadPreview());toast('Copied','success');}
