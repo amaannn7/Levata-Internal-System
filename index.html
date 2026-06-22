@@ -467,9 +467,6 @@
         .skip-reason { margin-top: 12px; padding: 12px; background: var(--bg-main); border-radius: var(--radius-md); }
         .skip-reason-label { font-size: 12px; font-weight: 600; margin-bottom: 6px; color: var(--text-secondary); }
 
-        /* Lead discussion @mention highlight */
-        .chat-mention { font-weight:600;border-radius:4px;padding:0 3px;background:rgba(227,112,90,0.15);color:var(--gold-dark); }
-
         /* === CALL PITCH SECTION HEADERS === */
         /* === CALL SCRIPT === */
         .pitch-section { margin: 0 0 24px 0; }
@@ -4019,76 +4016,16 @@ ${stageOptions(getStage(l))}
 <button class="tab-btn ${emailTabClass}" onclick="${!emailTabLocked?"switchTab(this,'tab-email')":"toast('Complete Research first','warning')"}">Email</button>
 <button class="tab-btn ${callPitchTabClass}" onclick="${!callPitchTabLocked?"switchTab(this,'tab-call')":"toast('Send email first','warning')"}">Call</button>
 <button class="tab-btn" onclick="switchTab(this,'tab-outcome')">Outcome</button>
-<button class="tab-btn" onclick="switchTab(this,'tab-comments');loadLeadComments('${l.id}')">Discussion${(l.comments&&l.comments.length)?` (${l.comments.length})`:''}</button>
 </div>
 <div class="tab-content active" id="tab-profile">${profileHtml}<button class="btn btn-secondary btn-sm copy-summary-btn" onclick="copySummary()" style="margin-top:16px;">Copy Summary</button></div>
 <div class="tab-content" id="tab-research"><button class="btn btn-primary btn-sm" onclick="researchLead()" id="research-btn">${hasResearch?'Re-run Research':'Research Lead'}</button>${hasResearch && !l.fit_grade ? '<button class="btn btn-secondary btn-sm" onclick="recalculateGrade()" style="margin-left:8px;" id="regrade-btn">Calculate ICP Grade</button>':''}<div style="margin-top:12px;">${l.fit_grade?`<span class="grade-badge grade-${l.fit_grade.toLowerCase()}" style="font-size:13px;padding:6px 12px;">Grade ${l.fit_grade} (${l.fit_score || 0}%)</span>`:''}${l.grade_override?.enabled?'<span style="margin-left:8px;font-size:11px;color:var(--warning);">Overridden</span>':''}</div>${researchHtml}</div>
 <div class="tab-content" id="tab-email">${emailTabContent}</div>
 <div class="tab-content" id="tab-call">${callPitchContent}</div>
-<div class="tab-content" id="tab-outcome">${callOutcomeContent}</div>
-<div class="tab-content" id="tab-comments">
-    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">Team discussion about this lead — visible to everyone. Use @ to notify a teammate.</p>
-    <div id="lead-comments-list" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;max-height:340px;overflow-y:auto;"></div>
-    <div style="display:flex;gap:8px;align-items:flex-end;">
-        <textarea id="lead-comment-input" rows="2" placeholder="Add a comment... use @name to notify" style="flex:1;resize:none;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px;font-family:inherit;outline:none;"></textarea>
-        <button class="btn btn-gold btn-sm" onclick="postLeadComment('${l.id}')">Post</button>
-    </div>
-</div>`;
+<div class="tab-content" id="tab-outcome">${callOutcomeContent}</div>`;
 
 // Setup event listeners
 document.querySelectorAll('#modal-body .email-type-tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('#modal-body .email-type-tab').forEach(x=>x.classList.remove('active'));t.classList.add('active')}));
 document.querySelectorAll('.outcome-option').forEach(opt=>{opt.addEventListener('click',function(){const parent=this.parentElement;const isMulti=parent.dataset.type==='multi';if(!isMulti)parent.querySelectorAll('.outcome-option').forEach(o=>o.classList.remove('selected'));this.classList.toggle('selected');if(this.dataset.value==='followup_date')document.getElementById('followup-date-picker').style.display=this.classList.contains('selected')?'block':'none'})});
-}
-
-async function loadLeadComments(leadId) {
-    const r = await api(`lead-comment&lead_id=${leadId}`);
-    const list = document.getElementById('lead-comments-list');
-    if (!list) return;
-    if (!r.success || !r.comments || !r.comments.length) {
-        list.innerHTML = '<div style="color:var(--text-muted);font-size:13px;text-align:center;padding:20px;">No comments yet. Start the discussion 💬</div>';
-        return;
-    }
-    list.innerHTML = r.comments.map(c => {
-        const isMe = c.user_id === user?.id;
-        const canDelete = isMe || user?.is_admin === true;
-        const time = new Date(c.created_at).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
-        const text = esc(c.text).replace(/@([a-zA-Z0-9_\- ]+)/g, '<span class="chat-mention">@$1</span>').replace(/\n/g,'<br>');
-        return `<div style="display:flex;gap:10px;align-items:flex-start;">
-            <div class="chat-avatar" style="width:28px;height:28px;font-size:12px;">${(c.user_name||'?')[0].toUpperCase()}</div>
-            <div style="flex:1;min-width:0;">
-                <div style="display:flex;align-items:center;gap:8px;"><span style="font-weight:600;font-size:12px;">${esc(c.user_name)}</span><span style="font-size:11px;color:var(--text-muted);">${time}</span>${canDelete?`<span onclick="deleteLeadComment('${leadId}','${c.id}')" style="cursor:pointer;font-size:11px;color:var(--text-muted);margin-left:auto;" title="Delete">🗑</span>`:''}</div>
-                <div style="font-size:13px;color:var(--text-primary);margin-top:2px;background:var(--bg-main);padding:8px 12px;border-radius:8px;">${text}</div>
-            </div>
-        </div>`;
-    }).join('');
-    list.scrollTop = list.scrollHeight;
-}
-
-async function postLeadComment(leadId) {
-    const input = document.getElementById('lead-comment-input');
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = '';
-    const r = await api('lead-comment', 'POST', {lead_id: leadId, text});
-    if (r.success) {
-        // keep currentLead.comments in sync so tab count updates next render
-        if (currentLead && currentLead.id === leadId) {
-            currentLead.comments = currentLead.comments || [];
-            currentLead.comments.push(r.comment);
-        }
-        loadLeadComments(leadId);
-    } else toast(r.error || 'Failed', 'error');
-}
-
-async function deleteLeadComment(leadId, commentId) {
-    if (!confirm('Delete this comment?')) return;
-    const r = await api('lead-comment', 'POST', {lead_id: leadId, comment_id: commentId, delete: true});
-    if (r.success) {
-        if (currentLead && currentLead.comments) {
-            currentLead.comments = currentLead.comments.filter(c => c.id !== commentId);
-        }
-        loadLeadComments(leadId);
-    } else toast(r.error || 'Failed', 'error');
 }
 
 function renderResearchCollapsible(data,callAnchor){
