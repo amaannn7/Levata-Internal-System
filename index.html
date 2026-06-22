@@ -1752,8 +1752,8 @@
                                 <div class="form-row"><div class="form-group"><label class="form-label">Client (optional)</label><input type="text" class="form-input" id="min-client" placeholder="e.g. Acme Corp"></div><div class="form-group"><label class="form-label">Meeting date (optional)</label><input type="text" class="form-input" id="min-date" placeholder="e.g. 21 June 2026"></div></div>
                                 <div class="form-group"><label class="form-label">Meeting title (optional)</label><input type="text" class="form-input" id="min-title" placeholder="e.g. Website Kickoff"></div>
                                 <div style="display:flex;gap:8px;align-items:center;">
-                                    <button type="button" class="btn btn-primary" id="min-generate-btn" onclick="minGenerate()">Generate Minutes &rarr;</button>
-                                    <button type="button" class="btn btn-secondary" onclick="minNew()">Clear</button>
+                                    <button type="button" class="btn btn-primary" id="min-generate-btn">Generate Minutes &rarr;</button>
+                                    <button type="button" class="btn btn-secondary" id="min-clear-btn">Clear</button>
                                 </div>
                             </form>
                         </div></div>
@@ -1763,9 +1763,9 @@
                     <div id="min-step-2" style="display:none;">
                         <div class="card"><div class="card-body">
                             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
-                                <button type="button" class="btn btn-secondary btn-sm" onclick="minGoStep(1)">&larr; Back</button>
-                                <button class="btn btn-success btn-sm" onclick="minCopy()">Copy</button>
-                                <button class="btn btn-primary btn-sm" onclick="minDownloadPdf()">Download PDF</button>
+                                <button type="button" class="btn btn-secondary btn-sm" id="min-back-btn">&larr; Back</button>
+                                <button type="button" class="btn btn-success btn-sm" id="min-copy-btn">Copy</button>
+                                <button type="button" class="btn btn-primary btn-sm" id="min-pdf-btn">Download PDF</button>
                                 <span class="pdf-edit-hint" style="margin-left:auto;">Click any text on the preview to edit it directly</span>
                             </div>
                             <!-- Styled preview: the same .sow-pdf used for the PDF, shown as a paper-like page. -->
@@ -1790,7 +1790,7 @@
                             </div>
                             <div style="display:flex;gap:8px;align-items:flex-end;margin-top:14px;">
                                 <div style="flex:1;"><label class="form-label" style="font-size:12px;">Refine (optional)</label><input type="text" class="form-input" id="min-refine-instruction" placeholder="e.g. Make the summary shorter, add a decision about the budget"></div>
-                                <button class="btn btn-secondary btn-sm" id="min-refine-btn" onclick="minRefine()">Refine</button>
+                                <button type="button" class="btn btn-secondary btn-sm" id="min-refine-btn">Refine</button>
                             </div>
                         </div></div>
                     </div>
@@ -5922,6 +5922,19 @@ function minWireFireflies(){
     });}
 }
 minWireFireflies();
+// Wire the minutes buttons here (inside DOMContentLoaded) rather than via inline
+// onclick attributes: these functions live in this closure and are NOT global, so
+// HTML onclick="minGenerate()" cannot see them. addEventListener does. (This is the
+// same pattern CP/SOW use for their generate/refine buttons.)
+(function(){
+    const wire=(id,fn)=>{const el=document.getElementById(id);if(el&&!el._wired){el._wired=true;el.addEventListener('click',fn);}};
+    wire('min-generate-btn',minGenerate);
+    wire('min-clear-btn',minNew);
+    wire('min-back-btn',()=>minGoStep(1));
+    wire('min-copy-btn',minCopy);
+    wire('min-pdf-btn',minDownloadPdf);
+    wire('min-refine-btn',minRefine);
+})();
 // Set the masthead logo (mirrors the SOW/CP one-time logo set).
 (function(){const img=document.getElementById('min-pdf-logo-img');if(img)img.src='levatalogo.png';})();
 // Collapsible "Start from meeting notes" (mirrors SOW/CP).
