@@ -914,7 +914,8 @@
         [contenteditable="true"]:focus { background: rgba(124,58,237,0.10); box-shadow: 0 0 0 2px rgba(124,58,237,0.25); }
         .pdf-edit-hint { font-size: 11px; color: #9ca3af; text-align: right; margin-bottom: 6px; }
         .sow-preview-wrap .sow-pdf,
-        .sow-preview-wrap #cp-pdf-page { width: 794px; max-width: 100%; margin: 0 auto; box-shadow: 0 2px 12px rgba(20,20,40,0.12); }
+        .sow-preview-wrap #cp-pdf-page,
+        .sow-preview-wrap #min-pdf-page { width: 794px; max-width: 100%; margin: 0 auto; box-shadow: 0 2px 12px rgba(20,20,40,0.12); }
         .sow-view-tab.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
         .sow-hub-tab.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
         .sow-step-pill { padding: 4px 12px; border-radius: 999px; background: #efeef4; color: #888; font-weight: 600; }
@@ -974,7 +975,6 @@
                 <div class="nav-item" data-page="saved-documents" onclick="loadSavedDocuments()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg><span>Saved Documents</span></div>
                 <div class="nav-item" data-page="cost-proposals"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg><span>Cost Proposals</span></div>
                 <div class="nav-item" data-page="sow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg><span>Statements of Work</span></div>
-                <div class="nav-item" data-page="minutes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>Meeting Minutes</span></div>
 
                 <!-- ============ JOB REGISTRY ============ -->
                 <div class="nav-section-title">Job Registry</div>
@@ -1605,7 +1605,7 @@
             </section>
 
             <section class="page-section" id="page-sow">
-                <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1 id="sow-page-title">Statements of Work</h1><p id="sow-page-sub">Create and manage SOWs linked to approved cost proposals</p></div></div></div>
+                <div class="top-bar"><div class="top-bar-content" style="display:flex;justify-content:space-between;align-items:center;gap:12px;"><div class="page-title"><h1 id="sow-page-title">Statements of Work</h1><p id="sow-page-sub">Create and manage SOWs linked to approved cost proposals</p></div><button class="btn btn-secondary btn-sm" onclick="showPage('minutes')" title="Generate meeting minutes from a transcript"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Meeting Minutes</button></div></div>
                 <div class="page-content">
                     <!-- ===== Create wizard view ===== -->
                     <div id="sow-hub-create">
@@ -1715,53 +1715,84 @@
 
             <!-- ===================== MEETING MINUTES ===================== -->
             <section class="page-section" id="page-minutes">
-                <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1>Meeting Minutes</h1><p>Turn a client meeting into clean, client-ready minutes</p></div></div></div>
+                <div class="top-bar"><div class="top-bar-content" style="display:flex;justify-content:space-between;align-items:center;gap:12px;"><div class="page-title"><h1>Meeting Minutes</h1><p>Turn a client meeting into clean, client-ready minutes</p></div><button class="btn btn-secondary btn-sm" onclick="showPage('sow')" title="Back to Statements of Work"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>Back to Documents</button></div></div>
                 <div class="page-content">
-                    <div style="display:grid;grid-template-columns:minmax(0,440px) minmax(0,1fr);gap:20px;align-items:start;">
-                        <!-- Left: input -->
+                    <!-- Step indicator (matches CP/SOW) -->
+                    <div class="sow-steps" style="display:flex;gap:6px;align-items:center;margin-bottom:16px;font-size:13px;color:#888;">
+                        <span class="min-step-pill sow-step-pill active" data-step="1">1. Notes</span>
+                        <span style="opacity:.5;">&rarr;</span>
+                        <span class="min-step-pill sow-step-pill" data-step="2">2. Minutes</span>
+                    </div>
+
+                    <!-- Step 1: meeting notes + details, stacked (matches CP/SOW) -->
+                    <div id="min-step-1" class="sow-step1-grid">
+                        <!-- Start from meeting notes -->
                         <div class="card"><div class="card-body">
-                            <!-- Start from a meeting -->
-                            <div style="border:1px solid #ececf2;border-radius:8px;padding:14px;margin-bottom:16px;">
-                                <div style="margin-bottom:10px;"><strong>Start from a meeting</strong><div style="font-size:12px;color:#888;">Pull a Fireflies meeting, or paste a transcript below.</div></div>
-                                <button type="button" class="btn btn-secondary btn-sm" id="min-ff-refresh">Load meetings</button>
-                                <div id="min-ff-status" style="font-size:13px;color:#888;margin-top:8px;">Click "Load meetings" to fetch your recent Fireflies meetings.</div>
-                                <div id="min-ff-list" style="display:none;max-height:300px;overflow:auto;border:1px solid #ececf2;border-radius:6px;margin-top:10px;"></div>
+                            <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" id="min-notes-toggle">
+                                <div><strong>Start from meeting notes</strong><div style="font-size:12px;color:#888;">Pull a Fireflies meeting or paste a transcript. Required.</div></div>
+                                <span id="min-notes-caret" style="font-size:18px;color:#888;">▾</span>
                             </div>
-
-                            <div class="form-group"><label class="form-label">Meeting transcript or notes</label>
-                                <textarea class="form-textarea" id="min-transcript" rows="8" placeholder="Paste the meeting transcript or notes here, or load one from Fireflies above..."></textarea>
+                            <div id="min-notes-body" style="margin-top:16px;">
+                                <div style="border:1px solid #ececf2;border-radius:8px;padding:14px;margin-bottom:14px;">
+                                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+                                        <label class="form-label" style="margin:0;">From Fireflies</label>
+                                        <button type="button" class="btn btn-secondary btn-sm" id="min-ff-refresh">Load meetings</button>
+                                    </div>
+                                    <div id="min-ff-status" style="font-size:13px;color:#888;">Click "Load meetings" to fetch your recent Fireflies meetings.</div>
+                                    <div id="min-ff-list" style="display:none;max-height:360px;overflow:auto;border:1px solid #ececf2;border-radius:6px;margin-top:10px;"></div>
+                                </div>
+                                <label class="form-label">Or paste a transcript</label>
+                                <textarea class="form-textarea" id="min-transcript" rows="6" placeholder="Paste the meeting transcript or notes here..."></textarea>
                             </div>
-                            <div class="form-row">
-                                <div class="form-group"><label class="form-label">Client (optional)</label><input type="text" class="form-input" id="min-client" placeholder="Acme Corp"></div>
-                                <div class="form-group"><label class="form-label">Meeting date (optional)</label><input type="text" class="form-input" id="min-date" placeholder="21 June 2026"></div>
-                            </div>
-                            <div class="form-group"><label class="form-label">Meeting title (optional)</label><input type="text" class="form-input" id="min-title" placeholder="Website Kickoff"></div>
-
-                            <button class="btn btn-gold" id="min-generate-btn" onclick="minGenerate()">Generate Minutes</button>
-                            <button type="button" class="btn btn-secondary" onclick="minNew()" style="margin-left:8px;">Clear</button>
                         </div></div>
 
-                        <!-- Right: output -->
+                        <!-- Meeting details + generate -->
                         <div class="card"><div class="card-body">
-                            <div id="min-empty" style="color:#888;font-size:14px;padding:30px 10px;text-align:center;">Generated minutes appear here. You can edit them before copying or downloading.</div>
-                            <div id="min-result" style="display:none;">
-                                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
-                                    <button class="btn btn-success btn-sm" onclick="minCopy()">Copy</button>
-                                    <button class="btn btn-primary btn-sm" onclick="minDownloadPdf()">Download PDF</button>
+                            <form id="min-form" onsubmit="return false;">
+                                <div class="form-row"><div class="form-group"><label class="form-label">Client (optional)</label><input type="text" class="form-input" id="min-client" placeholder="e.g. Acme Corp"></div><div class="form-group"><label class="form-label">Meeting date (optional)</label><input type="text" class="form-input" id="min-date" placeholder="e.g. 21 June 2026"></div></div>
+                                <div class="form-group"><label class="form-label">Meeting title (optional)</label><input type="text" class="form-input" id="min-title" placeholder="e.g. Website Kickoff"></div>
+                                <div style="display:flex;gap:8px;align-items:center;">
+                                    <button type="button" class="btn btn-primary" id="min-generate-btn" onclick="minGenerate()">Generate Minutes &rarr;</button>
+                                    <button type="button" class="btn btn-secondary" onclick="minNew()">Clear</button>
                                 </div>
-                                <div class="email-edit-hint">✎ Click below to edit the minutes before copying or downloading</div>
-                                <div id="min-editor" contenteditable="true" spellcheck="true" style="border:1px solid var(--border);border-radius:8px;padding:16px;min-height:300px;max-height:62vh;overflow:auto;font-size:13px;line-height:1.7;outline:none;background:var(--bg-white);"></div>
-                                <div style="display:flex;gap:8px;align-items:flex-end;margin-top:14px;">
-                                    <div style="flex:1;"><label class="form-label" style="font-size:12px;">Refine (optional)</label><input type="text" class="form-input" id="min-refine-instruction" placeholder="e.g. Make the summary shorter, add a decision about the budget"></div>
-                                    <button class="btn btn-secondary btn-sm" id="min-refine-btn" onclick="minRefine()">Refine</button>
-                                </div>
-                            </div>
+                            </form>
                         </div></div>
                     </div>
-                    <!-- Hidden PDF render target, styled with the shared .sow-pdf rules -->
-                    <div id="min-pdf-page" class="sow-pdf" style="position:absolute;left:-9999px;top:0;width:794px;">
-                        <div class="sow-pdf-masthead"><div class="sow-pdf-doc-title">Meeting Minutes — Confidential</div><hr class="sow-pdf-title-rule"><div class="sow-pdf-accent"></div></div>
-                        <div id="min-pdf-body"></div>
+
+                    <!-- Step 2: branded preview (matches CP/SOW) -->
+                    <div id="min-step-2" style="display:none;">
+                        <div class="card"><div class="card-body">
+                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="minGoStep(1)">&larr; Back</button>
+                                <button class="btn btn-success btn-sm" onclick="minCopy()">Copy</button>
+                                <button class="btn btn-primary btn-sm" onclick="minDownloadPdf()">Download PDF</button>
+                                <span class="pdf-edit-hint" style="margin-left:auto;">Click any text on the preview to edit it directly</span>
+                            </div>
+                            <!-- Styled preview: the same .sow-pdf used for the PDF, shown as a paper-like page. -->
+                            <div id="min-preview-wrap" class="sow-preview-wrap">
+                                <div id="min-loading" style="display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:80px 20px;text-align:center;color:#666;">
+                                    <span class="spinner" style="width:34px;height:34px;border-width:3px;"></span>
+                                    <div style="font-size:15px;font-weight:600;color:var(--navy);">Generating your meeting minutes...</div>
+                                    <div style="font-size:13px;">This usually takes 10 to 30 seconds. Please wait.</div>
+                                </div>
+                                <div id="min-pdf-page" class="sow-pdf">
+                                    <div class="sow-pdf-masthead">
+                                        <p class="sow-pdf-doc-title" id="min-pdf-doc-title">Meeting Minutes</p>
+                                        <hr class="sow-pdf-title-rule">
+                                        <img class="sow-pdf-logo" id="min-pdf-logo-img" alt="Levata">
+                                        <div class="sow-pdf-accent"></div>
+                                    </div>
+                                    <div id="min-pdf-body" contenteditable="true" spellcheck="true"></div>
+                                    <div class="sow-pdf-footer">
+                                        <span>Levata &nbsp;|&nbsp; levatahq.com &nbsp;|&nbsp; <a href="mailto:hello@levatahq.com">hello@levatahq.com</a> &nbsp;|&nbsp; <em>Confidential</em></span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="display:flex;gap:8px;align-items:flex-end;margin-top:14px;">
+                                <div style="flex:1;"><label class="form-label" style="font-size:12px;">Refine (optional)</label><input type="text" class="form-input" id="min-refine-instruction" placeholder="e.g. Make the summary shorter, add a decision about the budget"></div>
+                                <button class="btn btn-secondary btn-sm" id="min-refine-btn" onclick="minRefine()">Refine</button>
+                            </div>
+                        </div></div>
                     </div>
                 </div>
             </section>
@@ -1784,7 +1815,7 @@
 
             <!-- ===================== COST PROPOSALS ===================== -->
             <section class="page-section" id="page-cost-proposals">
-                <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1>Cost Proposals</h1><p>Create priced proposals to send to clients. Once approved, a proposal feeds into an SOW and a job.</p></div></div></div>
+                <div class="top-bar"><div class="top-bar-content" style="display:flex;justify-content:space-between;align-items:center;gap:12px;"><div class="page-title"><h1>Cost Proposals</h1><p>Create priced proposals to send to clients. Once approved, a proposal feeds into an SOW and a job.</p></div><button class="btn btn-secondary btn-sm" onclick="showPage('minutes')" title="Generate meeting minutes from a transcript"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:4px;"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Meeting Minutes</button></div></div>
                 <div class="page-content">
                     <!-- Step indicator -->
                     <div class="sow-steps" style="display:flex;gap:6px;align-items:center;margin-bottom:16px;font-size:13px;color:#888;">
@@ -5891,59 +5922,74 @@ function minWireFireflies(){
     });}
 }
 minWireFireflies();
-function minRenderEditor(md){
+// Set the masthead logo (mirrors the SOW/CP one-time logo set).
+(function(){const img=document.getElementById('min-pdf-logo-img');if(img)img.src='levatalogo.png';})();
+// Collapsible "Start from meeting notes" (mirrors SOW/CP).
+(function(){const t=document.getElementById('min-notes-toggle');if(t&&!t._wired){t._wired=true;t.addEventListener('click',()=>{const b=document.getElementById('min-notes-body');const c=document.getElementById('min-notes-caret');const open=b.style.display!=='none';b.style.display=open?'none':'block';if(c)c.textContent=open?'▸':'▾';});}})();
+
+// Step switch (1 = notes, 2 = preview), matching CP/SOW.
+function minGoStep(n){
+    document.getElementById('min-step-1').style.display=n===2?'none':'flex';
+    document.getElementById('min-step-2').style.display=n===2?'block':'none';
+    document.querySelectorAll('.min-step-pill').forEach(p=>p.classList.toggle('active',Number(p.dataset.step)===n));
+    document.getElementById('page-minutes').scrollIntoView({behavior:'smooth',block:'start'});
+}
+window.minutesOnEnter=function(){
+    // Reset to step 1 unless minutes already exist in the preview.
+    if(!document.getElementById('min-pdf-body').textContent.trim())minGoStep(1);
+};
+// Render markdown into the branded preview (this IS the on-screen view and the PDF source).
+function minRenderPreview(md){
     minMarkdown=md;
-    document.getElementById('min-empty').style.display='none';
-    document.getElementById('min-result').style.display='block';
-    const ed=document.getElementById('min-editor');
-    ed.innerHTML=(typeof marked!=='undefined')?marked.parse(md):md.replace(/\n/g,'<br>');
+    const body=document.getElementById('min-pdf-body');
+    body.innerHTML=(typeof marked!=='undefined')?marked.parse(md):md.replace(/\n/g,'<br>');
 }
 async function minGenerate(){
     const transcript=document.getElementById('min-transcript').value.trim();
     if(!transcript){toast('Add the meeting transcript or notes first','warning');return;}
     const btn=document.getElementById('min-generate-btn');btn.disabled=true;btn.innerHTML='<span class="spinner spinner-light"></span> Generating...';
+    // Move to step 2 and show the loading state in the preview area.
+    minGoStep(2);
+    document.getElementById('min-loading').style.display='flex';
+    document.getElementById('min-pdf-page').style.display='none';
     const r=await api('generate-minutes','POST',{transcript,client_name:document.getElementById('min-client').value,meeting_title:document.getElementById('min-title').value,meeting_date:document.getElementById('min-date').value});
-    btn.disabled=false;btn.textContent='Generate Minutes';
-    if(r.success){minRenderEditor(r.markdown);toast('Minutes generated','success');}
-    else toast(r.error||'Generation failed','error');
+    btn.disabled=false;btn.innerHTML='Generate Minutes &rarr;';
+    document.getElementById('min-loading').style.display='none';
+    document.getElementById('min-pdf-page').style.display='block';
+    if(r.success){minRenderPreview(r.markdown);toast('Minutes generated','success');}
+    else{toast(r.error||'Generation failed','error');minGoStep(1);}
 }
 async function minRefine(){
     const instruction=document.getElementById('min-refine-instruction').value.trim();
     if(!instruction){toast('Describe what to change','warning');return;}
-    // Use the current (possibly hand-edited) editor content as the source.
-    const current=minReadEditor();
+    const current=minReadPreview(); // use the (possibly hand-edited) preview as the source
     const btn=document.getElementById('min-refine-btn');btn.disabled=true;btn.textContent='Refining...';
     const r=await api('refine-minutes','POST',{markdown:current,instruction});
     btn.disabled=false;btn.textContent='Refine';
-    if(r.success){minRenderEditor(r.markdown);document.getElementById('min-refine-instruction').value='';toast('Refined','success');}
+    if(r.success){minRenderPreview(r.markdown);document.getElementById('min-refine-instruction').value='';toast('Refined','success');}
     else toast(r.error||'Refine failed','error');
 }
-// Read the editor back as plain text (so copy/PDF reflect hand-edits).
-function minReadEditor(){
-    const ed=document.getElementById('min-editor');
-    if(!ed)return minMarkdown;
-    const txt=(ed.innerText!==undefined?ed.innerText:ed.textContent)||'';
+// Read the preview back as plain text (so copy reflects hand-edits).
+function minReadPreview(){
+    const body=document.getElementById('min-pdf-body');
+    if(!body)return minMarkdown;
+    const txt=(body.innerText!==undefined?body.innerText:body.textContent)||'';
     return txt.replace(/\n{3,}/g,'\n\n').trim()||minMarkdown;
 }
 async function minCopy(){
-    try{await navigator.clipboard.writeText(minReadEditor());toast('Copied','success');}
+    try{await navigator.clipboard.writeText(minReadPreview());toast('Copied','success');}
     catch(e){toast('Could not copy','error');}
 }
 function minNew(){
     minMarkdown='';
     ['min-transcript','min-client','min-date','min-title','min-refine-instruction'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
-    document.getElementById('min-editor').innerHTML='';
-    document.getElementById('min-result').style.display='none';
-    document.getElementById('min-empty').style.display='block';
+    document.getElementById('min-pdf-body').innerHTML='';
     const list=document.getElementById('min-ff-list');if(list){list.style.display='none';list.innerHTML='';}
     minFfStatus('Click "Load meetings" to fetch your recent Fireflies meetings.','');
+    minGoStep(1);
 }
 async function minDownloadPdf(){
     if(typeof html2pdf==='undefined'){toast('PDF library still loading, try again in a moment','warning');return;}
-    const ed=document.getElementById('min-editor');
-    const body=document.getElementById('min-pdf-body');
-    // Render the edited content into the PDF target. The editor already holds HTML.
-    body.innerHTML=ed.innerHTML;
     const client=(document.getElementById('min-client').value||'minutes').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
     const opt={margin:0,filename:'meeting-minutes-'+client+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'px',format:[794,1123],orientation:'portrait'}};
     try{await html2pdf().set(opt).from(document.getElementById('min-pdf-page')).save();}

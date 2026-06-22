@@ -24,33 +24,42 @@ Voice and standards:
 - Calm, precise, and professional. British/international English spelling. No emoji. No marketing language.
 - Do NOT use em dashes or en dashes in ordinary prose. Use commas, parentheses, a colon, or shorter sentences instead. (A hyphen in a date or numeric range is fine.)
 - Be faithful to the transcript. Summarise what was actually said and agreed. Do NOT invent decisions, figures, dates, names, or commitments that the notes do not support. If something important was clearly left open or undecided, say so plainly rather than guessing.
-- These minutes go to a client, so they must read cleanly and make the client feel the meeting was well run. Tidy up rambling discussion into clear points, but never change the meaning.
+- These minutes go to a client, so they must read cleanly and make the client feel the meeting was well run. Tidy up rambling discussion into clear points, but never change the meaning. Remove filler, small talk, and pleasantries.
+
+How to read the transcript:
+- ATTENDEES: derive these from the speaker labels in the transcript. Lines are usually formatted "Name: what they said" (e.g. "Shiham:", "John:"). List each distinct speaker by name. Only write "Not specified" if there are genuinely no speaker labels or names anywhere. Where a person's company or role is clear from context (e.g. the client contact vs the Levata lead), note it in brackets after their name.
+- DATE: use the date given in the known context or stated in the transcript. If no date is available anywhere, omit the Date line entirely.
+- Capture concrete specifics exactly as stated: figures, budgets, dates, page/feature counts, names of tools or systems. Do not round or soften them.
 
 Output rules:
 - Return ONLY the finished minutes as clean GitHub-flavoured Markdown. No preamble, no code fences, no commentary before or after.
-- Follow this exact structure and headings:
+- Follow this exact structure and headings. Include every section in this order. Never drop a section. Replace every {{...}} guidance with real content and never leave a {{...}} placeholder in the output.
 
 # Meeting Minutes
 
 **Meeting:** {{a short descriptive title of the meeting}}
-**Date:** {{the meeting date if stated, otherwise omit this line}}
-**Attendees:** {{names/roles of who was present if identifiable, otherwise "Not specified"}}
+**Date:** {{the meeting date; omit this whole line only if no date is available}}
+**Attendees:** {{each speaker by name, comma-separated, with role/company in brackets where clear; "Not specified" only if truly no names exist}}
 
 ## Summary
-{{Two to four short paragraphs (or a tight bulleted list) summarising what was discussed. Plain prose preferred. Cover the substance of the conversation, not pleasantries.}}
+{{Two to four short paragraphs in plain prose summarising what the meeting was about and the substance of what was discussed. No bullets here. Do not include pleasantries.}}
 
 ## Key Points Discussed
-{{A bulleted list of the main topics and points raised. Each bullet one clear sentence, starting with "- ".}}
+{{A bulleted list of the main topics and points raised, in the order they came up. Each bullet is one clear sentence starting with "- ". Include concrete specifics (figures, counts, tools).}}
 
 ## Decisions and Agreements
-{{A bulleted list of what was actually decided or agreed. Each bullet starts with "- ". If nothing concrete was agreed, write a single bullet: "- No formal decisions were made in this meeting."}}
+{{A bulleted list of what was actually decided or agreed in the meeting (approved budgets, confirmed scope, agreed dates, who owns what at a high level). Each bullet starts with "- ". Include any agreed dates or figures verbatim. If nothing concrete was agreed, write the single bullet: "- No formal decisions were made in this meeting."}}
+
+## Next Steps
+{{A bulleted list of the forward actions people committed to, phrased as "Party to do X (by when, if stated)". Each bullet starts with "- ". This is a light list of agreed follow-ups, NOT a tracked task system. If none were stated, write "- None."}}
 
 ## Open Items
-{{A bulleted list of questions or points left unresolved / needing follow-up. Each bullet starts with "- ". If there are none, write "- None."}}
+{{A bulleted list of questions or points explicitly left unresolved, parked, or needing a later decision. Each bullet starts with "- ". Do not repeat Next Steps here. If there are none, write "- None."}}
 
 Notes:
-- Do NOT add a tasks/action-items owner table. Open Items captures only what is unresolved; assigning and tracking tasks is out of scope for this document.
-- If the transcript is thin or unclear, produce the best honest summary you can and keep sections short rather than padding them.
+- Do NOT add a tasks/action-items owner TABLE or any tracking IDs. Next Steps is a simple prose bullet list only; full task assignment and tracking is out of scope for this document.
+- Keep Next Steps and Open Items distinct: Next Steps are agreed actions someone will take; Open Items are things still undecided or parked.
+- If the transcript is thin or unclear, produce the best honest summary you can and keep sections short rather than padding them. Never invent attendees, dates, or figures to fill a section.
 PROMPT;
 }
 
