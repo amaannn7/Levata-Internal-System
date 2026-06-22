@@ -35,6 +35,8 @@ if (!is_dir(DATA_DIR)) mkdir(DATA_DIR, 0755, true);
 require_once __DIR__ . '/sow.php';
 // Document Studio: Cost Proposal generation (depends on sow.php).
 require_once __DIR__ . '/cp.php';
+// Meeting Minutes generation (depends on sow.php for LLM + Fireflies plumbing).
+require_once __DIR__ . '/minutes.php';
 // Job Registry (shared company-wide jobs/invoices) — added module.
 require_once __DIR__ . '/jobs.php';
 // Help & Support (feedback + support tickets) — added module.
@@ -1615,6 +1617,41 @@ case 'extract-cost-proposal':
     $res = extractCostProposalInput($provider, $apiKey, $transcript);
     if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 502);
     respond(['success' => true, 'input' => $res['input']]);
+    break;
+
+case 'generate-minutes':
+    if ($method !== 'POST') break;
+    requireAuth();
+    $admin = getAdmin();
+    $provider = $admin['default_provider'] ?? 'groq';
+    $apiKey = $admin[$provider . '_key'] ?? '';
+    if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
+    $transcript = $input['transcript'] ?? '';
+    if (!trim($transcript)) respond(['success' => false, 'error' => 'Add the meeting transcript or notes first'], 400);
+    $context = [
+        'clientName'   => $input['client_name'] ?? '',
+        'meetingTitle' => $input['meeting_title'] ?? '',
+        'meetingDate'  => $input['meeting_date'] ?? '',
+    ];
+    $res = generateMeetingMinutes($provider, $apiKey, $transcript, $context);
+    if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 502);
+    respond(['success' => true, 'markdown' => $res['content']]);
+    break;
+
+case 'refine-minutes':
+    if ($method !== 'POST') break;
+    requireAuth();
+    $admin = getAdmin();
+    $provider = $admin['default_provider'] ?? 'groq';
+    $apiKey = $admin[$provider . '_key'] ?? '';
+    if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
+    $markdown = $input['markdown'] ?? '';
+    $instruction = $input['instruction'] ?? '';
+    if (!trim($markdown)) respond(['success' => false, 'error' => 'Nothing to refine yet'], 400);
+    if (!trim($instruction)) respond(['success' => false, 'error' => 'Describe what to change'], 400);
+    $res = refineMeetingMinutes($provider, $apiKey, $markdown, $instruction);
+    if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 502);
+    respond(['success' => true, 'markdown' => $res['content']]);
     break;
 
 // ===== Document Studio: saved documents (SOWs, and later cost proposals) =====

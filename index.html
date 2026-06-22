@@ -974,6 +974,7 @@
                 <div class="nav-item" data-page="saved-documents" onclick="loadSavedDocuments()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg><span>Saved Documents</span></div>
                 <div class="nav-item" data-page="cost-proposals"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg><span>Cost Proposals</span></div>
                 <div class="nav-item" data-page="sow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg><span>Statements of Work</span></div>
+                <div class="nav-item" data-page="minutes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>Meeting Minutes</span></div>
 
                 <!-- ============ JOB REGISTRY ============ -->
                 <div class="nav-section-title">Job Registry</div>
@@ -1708,6 +1709,59 @@
                                 <pre id="sow-output" style="display:none;white-space:pre-wrap;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.6;background:var(--surface,#0f172a0a);padding:16px;border-radius:8px;border:1px solid #e5e7eb;max-height:70vh;overflow:auto;"></pre>
                             </div></div>
                         </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ===================== MEETING MINUTES ===================== -->
+            <section class="page-section" id="page-minutes">
+                <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1>Meeting Minutes</h1><p>Turn a client meeting into clean, client-ready minutes</p></div></div></div>
+                <div class="page-content">
+                    <div style="display:grid;grid-template-columns:minmax(0,440px) minmax(0,1fr);gap:20px;align-items:start;">
+                        <!-- Left: input -->
+                        <div class="card"><div class="card-body">
+                            <!-- Start from a meeting -->
+                            <div style="border:1px solid #ececf2;border-radius:8px;padding:14px;margin-bottom:16px;">
+                                <div style="margin-bottom:10px;"><strong>Start from a meeting</strong><div style="font-size:12px;color:#888;">Pull a Fireflies meeting, or paste a transcript below.</div></div>
+                                <button type="button" class="btn btn-secondary btn-sm" id="min-ff-refresh">Load meetings</button>
+                                <div id="min-ff-status" style="font-size:13px;color:#888;margin-top:8px;">Click "Load meetings" to fetch your recent Fireflies meetings.</div>
+                                <div id="min-ff-list" style="display:none;max-height:300px;overflow:auto;border:1px solid #ececf2;border-radius:6px;margin-top:10px;"></div>
+                            </div>
+
+                            <div class="form-group"><label class="form-label">Meeting transcript or notes</label>
+                                <textarea class="form-textarea" id="min-transcript" rows="8" placeholder="Paste the meeting transcript or notes here, or load one from Fireflies above..."></textarea>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group"><label class="form-label">Client (optional)</label><input type="text" class="form-input" id="min-client" placeholder="Acme Corp"></div>
+                                <div class="form-group"><label class="form-label">Meeting date (optional)</label><input type="text" class="form-input" id="min-date" placeholder="21 June 2026"></div>
+                            </div>
+                            <div class="form-group"><label class="form-label">Meeting title (optional)</label><input type="text" class="form-input" id="min-title" placeholder="Website Kickoff"></div>
+
+                            <button class="btn btn-gold" id="min-generate-btn" onclick="minGenerate()">Generate Minutes</button>
+                            <button type="button" class="btn btn-secondary" onclick="minNew()" style="margin-left:8px;">Clear</button>
+                        </div></div>
+
+                        <!-- Right: output -->
+                        <div class="card"><div class="card-body">
+                            <div id="min-empty" style="color:#888;font-size:14px;padding:30px 10px;text-align:center;">Generated minutes appear here. You can edit them before copying or downloading.</div>
+                            <div id="min-result" style="display:none;">
+                                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+                                    <button class="btn btn-success btn-sm" onclick="minCopy()">Copy</button>
+                                    <button class="btn btn-primary btn-sm" onclick="minDownloadPdf()">Download PDF</button>
+                                </div>
+                                <div class="email-edit-hint">✎ Click below to edit the minutes before copying or downloading</div>
+                                <div id="min-editor" contenteditable="true" spellcheck="true" style="border:1px solid var(--border);border-radius:8px;padding:16px;min-height:300px;max-height:62vh;overflow:auto;font-size:13px;line-height:1.7;outline:none;background:var(--bg-white);"></div>
+                                <div style="display:flex;gap:8px;align-items:flex-end;margin-top:14px;">
+                                    <div style="flex:1;"><label class="form-label" style="font-size:12px;">Refine (optional)</label><input type="text" class="form-input" id="min-refine-instruction" placeholder="e.g. Make the summary shorter, add a decision about the budget"></div>
+                                    <button class="btn btn-secondary btn-sm" id="min-refine-btn" onclick="minRefine()">Refine</button>
+                                </div>
+                            </div>
+                        </div></div>
+                    </div>
+                    <!-- Hidden PDF render target, styled with the shared .sow-pdf rules -->
+                    <div id="min-pdf-page" class="sow-pdf" style="position:absolute;left:-9999px;top:0;width:794px;">
+                        <div class="sow-pdf-masthead"><div class="sow-pdf-doc-title">Meeting Minutes — Confidential</div><hr class="sow-pdf-title-rule"><div class="sow-pdf-accent"></div></div>
+                        <div id="min-pdf-body"></div>
                     </div>
                 </div>
             </section>
@@ -5790,6 +5844,112 @@ document.getElementById('sow-ff-list').addEventListener('click',async e=>{
     sowFfStatus('Transcript from "'+(tr.title||'meeting')+'" added below. Review it, then click "Extract to form".','ok');
     toast('Transcript added below','success');
 });
+
+/* ===================== MEETING MINUTES ===================== */
+let minMarkdown='';
+window.minutesOnEnter=function(){/* nothing to preload; Fireflies loads on demand */};
+function minFfStatus(text,kind){const el=document.getElementById('min-ff-status');if(!el)return;el.textContent=text;el.style.color=kind==='error'?'var(--danger)':(kind==='ok'?'#10b981':'#888');}
+async function minLoadMeetings(){
+    const btn=document.getElementById('min-ff-refresh');const list=document.getElementById('min-ff-list');
+    btn.disabled=true;btn.textContent='Loading...';
+    minFfStatus('Fetching your recent Fireflies meetings...');list.style.display='none';
+    const r=await api('fireflies-meetings','POST',{});
+    btn.disabled=false;btn.textContent='Refresh';
+    if(!r.success){
+        list.style.display='none';
+        if(r.error&&r.error.indexOf('Fireflies API key')!==-1)minFfStatus('No Fireflies API key set. Add one in Settings, then load meetings.','error');
+        else minFfStatus(r.error||'Could not reach Fireflies.','error');
+        return;
+    }
+    if(!r.meetings.length){minFfStatus('No recent Fireflies meetings found.','');return;}
+    minFfStatus(r.meetings.length+' recent meeting'+(r.meetings.length>1?'s':'')+'. Click one to load its transcript.','ok');
+    list.innerHTML=r.meetings.map(m=>{
+        const when=m.date?new Date(m.date).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'';
+        return `<div class="min-ff-item" data-ff-id="${m.id}" data-ff-title="${(m.title||'').replace(/"/g,'&quot;')}" data-ff-date="${when}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #f0eff4;cursor:pointer;">
+            <div style="min-width:0;"><div style="font-weight:600;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(m.title||'Untitled meeting').replace(/</g,'&lt;')}</div><div style="font-size:12px;color:#888;">${when}</div></div>
+            <span class="btn btn-secondary btn-sm" style="flex-shrink:0;pointer-events:none;">Use</span>
+        </div>`;
+    }).join('');
+    list.style.display='block';
+}
+function minWireFireflies(){
+    const refresh=document.getElementById('min-ff-refresh');
+    if(refresh&&!refresh._wired){refresh._wired=true;refresh.addEventListener('click',minLoadMeetings);}
+    const list=document.getElementById('min-ff-list');
+    if(list&&!list._wired){list._wired=true;list.addEventListener('click',async e=>{
+        const row=e.target.closest('[data-ff-id]');if(!row)return;
+        const id=row.getAttribute('data-ff-id');
+        document.querySelectorAll('.min-ff-item').forEach(x=>x.style.background='');row.style.background='#f4effc';
+        minFfStatus('Fetching transcript...');
+        const tr=await api('fireflies-transcript','POST',{id});
+        if(!tr.success){minFfStatus(tr.error||'Could not fetch transcript.','error');return;}
+        document.getElementById('min-transcript').value=tr.text;
+        if(!document.getElementById('min-title').value)document.getElementById('min-title').value=row.getAttribute('data-ff-title')||tr.title||'';
+        if(!document.getElementById('min-date').value)document.getElementById('min-date').value=row.getAttribute('data-ff-date')||'';
+        minFfStatus('Transcript from "'+(tr.title||'meeting')+'" loaded. Review it, then Generate Minutes.','ok');
+        toast('Transcript loaded','success');
+    });}
+}
+minWireFireflies();
+function minRenderEditor(md){
+    minMarkdown=md;
+    document.getElementById('min-empty').style.display='none';
+    document.getElementById('min-result').style.display='block';
+    const ed=document.getElementById('min-editor');
+    ed.innerHTML=(typeof marked!=='undefined')?marked.parse(md):md.replace(/\n/g,'<br>');
+}
+async function minGenerate(){
+    const transcript=document.getElementById('min-transcript').value.trim();
+    if(!transcript){toast('Add the meeting transcript or notes first','warning');return;}
+    const btn=document.getElementById('min-generate-btn');btn.disabled=true;btn.innerHTML='<span class="spinner spinner-light"></span> Generating...';
+    const r=await api('generate-minutes','POST',{transcript,client_name:document.getElementById('min-client').value,meeting_title:document.getElementById('min-title').value,meeting_date:document.getElementById('min-date').value});
+    btn.disabled=false;btn.textContent='Generate Minutes';
+    if(r.success){minRenderEditor(r.markdown);toast('Minutes generated','success');}
+    else toast(r.error||'Generation failed','error');
+}
+async function minRefine(){
+    const instruction=document.getElementById('min-refine-instruction').value.trim();
+    if(!instruction){toast('Describe what to change','warning');return;}
+    // Use the current (possibly hand-edited) editor content as the source.
+    const current=minReadEditor();
+    const btn=document.getElementById('min-refine-btn');btn.disabled=true;btn.textContent='Refining...';
+    const r=await api('refine-minutes','POST',{markdown:current,instruction});
+    btn.disabled=false;btn.textContent='Refine';
+    if(r.success){minRenderEditor(r.markdown);document.getElementById('min-refine-instruction').value='';toast('Refined','success');}
+    else toast(r.error||'Refine failed','error');
+}
+// Read the editor back as plain text (so copy/PDF reflect hand-edits).
+function minReadEditor(){
+    const ed=document.getElementById('min-editor');
+    if(!ed)return minMarkdown;
+    const txt=(ed.innerText!==undefined?ed.innerText:ed.textContent)||'';
+    return txt.replace(/\n{3,}/g,'\n\n').trim()||minMarkdown;
+}
+async function minCopy(){
+    try{await navigator.clipboard.writeText(minReadEditor());toast('Copied','success');}
+    catch(e){toast('Could not copy','error');}
+}
+function minNew(){
+    minMarkdown='';
+    ['min-transcript','min-client','min-date','min-title','min-refine-instruction'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+    document.getElementById('min-editor').innerHTML='';
+    document.getElementById('min-result').style.display='none';
+    document.getElementById('min-empty').style.display='block';
+    const list=document.getElementById('min-ff-list');if(list){list.style.display='none';list.innerHTML='';}
+    minFfStatus('Click "Load meetings" to fetch your recent Fireflies meetings.','');
+}
+async function minDownloadPdf(){
+    if(typeof html2pdf==='undefined'){toast('PDF library still loading, try again in a moment','warning');return;}
+    const ed=document.getElementById('min-editor');
+    const body=document.getElementById('min-pdf-body');
+    // Render the edited content into the PDF target. The editor already holds HTML.
+    body.innerHTML=ed.innerHTML;
+    const client=(document.getElementById('min-client').value||'minutes').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
+    const opt={margin:0,filename:'meeting-minutes-'+client+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'px',format:[794,1123],orientation:'portrait'}};
+    try{await html2pdf().set(opt).from(document.getElementById('min-pdf-page')).save();}
+    catch(e){toast('PDF export failed','error');}
+}
+
 document.getElementById('admin-settings-form').addEventListener('submit',async e=>{e.preventDefault();await api('admin-settings','POST',{default_provider:document.getElementById('admin-provider').value,groq_key:document.getElementById('admin-groq-key').value,gemini_key:document.getElementById('admin-gemini-key').value,anthropic_key:document.getElementById('admin-anthropic-key').value,fireflies_key:document.getElementById('admin-fireflies-key').value,resend_key:document.getElementById('admin-resend-key').value,support_email:document.getElementById('admin-support-email').value,support_from:document.getElementById('admin-support-from').value,outreach_from:document.getElementById('admin-outreach-from').value,groq_model:document.getElementById('admin-groq-model').value,gemini_model:document.getElementById('admin-gemini-model').value,anthropic_model:document.getElementById('admin-anthropic-model').value});toast('Saved!','success')});
 document.querySelectorAll('.provider-card').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.provider-card').forEach(x=>x.classList.remove('selected'));c.classList.add('selected');document.getElementById('admin-provider').value=c.dataset.provider}));
 document.getElementById('add-req-form').addEventListener('submit',async e=>{e.preventDefault();const idx=document.getElementById('edit-req-id').value;const type=document.getElementById('req-type-input').value;const options=type==='text'?[]:document.getElementById('req-options-input').value.split('\n').map(o=>o.trim()).filter(o=>o);if(type!=='text'&&!options.length){toast('Add at least one option','warning');return;}const newReq={id:idx!==''?reqConfig[idx].id:'req_'+Date.now(),title:document.getElementById('req-title-input').value,subtitle:document.getElementById('req-subtitle-input').value,type,options,enabled:true};if(idx!=='')reqConfig[idx]=newReq;else reqConfig.push(newReq);await api('admin-settings','POST',{requisitions:reqConfig});renderReqList();closeModal('add-req-modal');toast('Saved!','success')});
@@ -6018,6 +6178,7 @@ function showPage(p){
     if(p==='commitments')loadCommitments();
     // Documents: default to the Create wizard at step 1 unless a document is open in the preview.
     if(p==='sow'&&typeof window.sowOnEnter==='function')window.sowOnEnter();
+    if(p==='minutes'&&typeof window.minutesOnEnter==='function')window.minutesOnEnter();
     if(p==='cost-proposals'&&typeof window.cpOnEnter==='function')window.cpOnEnter();
     if(p==='saved-documents')loadSavedDocuments();
     if(p==='job-registry'&&typeof window.loadJobRegistry==='function')window.loadJobRegistry();
