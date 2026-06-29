@@ -6140,7 +6140,7 @@ function minNew(){
 async function minDownloadPdf(){
     if(typeof html2pdf==='undefined'){toast('PDF library still loading, try again in a moment','warning');return;}
     const client=(document.getElementById('min-client').value||'minutes').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
-    const opt={margin:0,filename:'meeting-minutes-'+client+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'px',format:[794,1123],orientation:'portrait'}};
+    const opt={margin:[0,0,32,0],filename:'meeting-minutes-'+client+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff'},jsPDF:{unit:'pt',format:'a4',orientation:'portrait'},pagebreak:{mode:['css','legacy','avoid-all']}};
     try{await html2pdf().set(opt).from(document.getElementById('min-pdf-page')).save();}
     catch(e){toast('PDF export failed','error');}
 }
@@ -6173,7 +6173,7 @@ async function minSendEmail(){
     try{
         const client=(document.getElementById('min-client').value||'minutes').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
         const filename='meeting-minutes-'+client+'.pdf';
-        const opt={margin:0,filename,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'px',format:[794,1123],orientation:'portrait'}};
+        const opt={margin:[0,0,32,0],filename,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,backgroundColor:'#ffffff'},jsPDF:{unit:'pt',format:'a4',orientation:'portrait'},pagebreak:{mode:['css','legacy','avoid-all']}};
         const blob=await html2pdf().set(opt).from(document.getElementById('min-pdf-page')).outputPdf('blob');
         pdfBase64=await new Promise((res,rej)=>{
             const r=new FileReader();
