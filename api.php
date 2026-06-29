@@ -39,6 +39,8 @@ require_once __DIR__ . '/cp.php';
 require_once __DIR__ . '/minutes.php';
 // Job Registry (shared company-wide jobs/invoices) — added module.
 require_once __DIR__ . '/jobs.php';
+// Task system (shared company-wide tasks; extraction depends on minutes.php LLM plumbing).
+require_once __DIR__ . '/tasks.php';
 // Help & Support (feedback + support tickets) — added module.
 require_once __DIR__ . '/support.php';
 
@@ -1743,6 +1745,102 @@ case 'send-minutes-email':
         respond(['success' => false, 'error' => 'Email not sent: ' . $err], 502);
     }
     respond(['success' => true, 'message_id' => $sendDecoded['id'] ?? null]);
+    break;
+
+// ===== Task system =====
+
+case 'tasks':
+    if ($method !== 'GET') break;
+    requireAuth();
+    $store = getTasksStore();
+    $tasks = $store['tasks'];
+    // Optional filters via query string.
+    if (!empty($_GET['status']))   $tasks = array_values(array_filter($tasks, fn($t) => ($t['status'] ?? '') === $_GET['status']));
+    if (!empty($_GET['assignee'])) $tasks = array_values(array_filter($tasks, fn($t) => stripos($t['assignee'] ?? '', $_GET['assignee']) !== false));
+    if (!empty($_GET['client']))   $tasks = array_values(array_filter($tasks, fn($t) => stripos($t['client'] ?? '', $_GET['client']) !== false));
+    // Newest first.
+    usort($tasks, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
+    respond(['success' => true, 'tasks' => $tasks]);
+    break;
+
+case 'save-task':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $store = getTasksStore();
+    $id = trim($input['id'] ?? '');
+    $title = trim($input['title'] ?? '');
+    if ($title === '') respond(['success' => false, 'error' => 'Task title is required'], 400);
+
+    if ($id === '') {
+        // Create.
+        [$store, $id] = nextTaskId($store);
+        $task = [
+            'id'            => $id,
+            'title'         => $title,
+            'assignee'      => trim($input['assignee'] ?? ''),
+            'client'        => trim($input['client'] ?? ''),
+            'due_date'      => trim($input['due_date'] ?? ''),
+            'notes'         => trim($input['notes'] ?? ''),
+            'status'        => 'open',
+            'source'        => trim($input['source'] ?? 'manual'),
+            'meeting_title' => trim($input['meeting_title'] ?? ''),
+            'meeting_date'  => trim($input['meeting_date'] ?? ''),
+            'created_at'    => date('c'),
+            'created_by'    => $user['id'],
+        ];
+        $store['tasks'][] = $task;
+    } else {
+        // Update.
+        $found = false;
+        foreach ($store['tasks'] as &$t) {
+            if ($t['id'] === $id) {
+                if (isset($input['title']))         $t['title']    = $title;
+                if (isset($input['assignee']))      $t['assignee'] = trim($input['assignee']);
+                if (isset($input['client']))        $t['client']   = trim($input['client']);
+                if (isset($input['due_date']))      $t['due_date'] = trim($input['due_date']);
+                if (isset($input['notes']))         $t['notes']    = trim($input['notes']);
+                if (isset($input['status']))        $t['status']   = trim($input['status']);
+                $t['updated_at'] = date('c');
+                $task = $t;
+                $found = true;
+                break;
+            }
+        }
+        unset($t);
+        if (!$found) respond(['success' => false, 'error' => 'Task not found'], 404);
+    }
+    saveTasksStore($store);
+    respond(['success' => true, 'task' => $task]);
+    break;
+
+case 'delete-task':
+    if ($method !== 'POST') break;
+    requireAuth();
+    $store = getTasksStore();
+    $id = trim($input['id'] ?? '');
+    if ($id === '') respond(['success' => false, 'error' => 'No task id'], 400);
+    $before = count($store['tasks']);
+    $store['tasks'] = array_values(array_filter($store['tasks'], fn($t) => $t['id'] !== $id));
+    if (count($store['tasks']) === $before) respond(['success' => false, 'error' => 'Task not found'], 404);
+    saveTasksStore($store);
+    respond(['success' => true]);
+    break;
+
+case 'extract-tasks':
+    // LLM call: finished minutes markdown → candidate task list.
+    // Returns JSON for the rep to review; does NOT save anything.
+    if ($method !== 'POST') break;
+    requireAuth();
+    $admin = getAdmin();
+    $provider = $admin['default_provider'] ?? 'groq';
+    $apiKey   = $admin[$provider . '_key'] ?? '';
+    if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
+    $markdown = trim($input['markdown'] ?? '');
+    if ($markdown === '') respond(['success' => false, 'error' => 'No minutes content provided'], 400);
+    $client = trim($input['client'] ?? '');
+    $res = extractTasksFromMinutes($provider, $apiKey, $markdown, $client);
+    if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 502);
+    respond(['success' => true, 'tasks' => $res['tasks']]);
     break;
 
 // ===== Document Studio: saved documents (SOWs, and later cost proposals) =====

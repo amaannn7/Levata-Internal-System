@@ -113,6 +113,27 @@
         .jr-stat-body { display: flex; flex-direction: column; gap: 8px; min-height: 84px; }
         .jr-stat-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; line-height: 1.3; min-height: 2.6em; }
         .jr-stat-value { font-size: 26px; font-weight: 700; line-height: 1.1; margin-top: auto; }
+        /* ---- Task cards ---- */
+        .task-card { background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px 16px; display: flex; align-items: flex-start; gap: 12px; transition: box-shadow .15s; }
+        .task-card:hover { box-shadow: var(--shadow-sm); }
+        .task-card.done { opacity: .55; }
+        .task-check { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border); cursor: pointer; flex-shrink: 0; margin-top: 2px; display: flex; align-items: center; justify-content: center; transition: all .15s; }
+        .task-check.open { border-color: #d1d5db; }
+        .task-check.in_progress { border-color: #f59e0b; background: #fef3c7; }
+        .task-check.done { border-color: var(--success); background: var(--success); }
+        .task-check.done::after { content: ''; width: 5px; height: 9px; border: 2px solid #fff; border-top: none; border-left: none; transform: rotate(45deg) translateY(-1px); display: block; }
+        .task-body { flex: 1; min-width: 0; }
+        .task-title { font-size: 14px; font-weight: 600; color: var(--navy); line-height: 1.4; margin-bottom: 4px; }
+        .task-card.done .task-title { text-decoration: line-through; color: var(--text-muted); }
+        .task-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--text-muted); }
+        .task-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+        .task-badge-source { background: #ede9fe; color: #5b21b6; }
+        .task-badge-status-open { background: #f3f4f6; color: #6b7280; }
+        .task-badge-status-in_progress { background: #fef3c7; color: #92400e; }
+        .task-badge-status-done { background: #d1fae5; color: #065f46; }
+        .task-actions { display: flex; gap: 6px; flex-shrink: 0; }
+        .task-group-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .7px; color: var(--text-muted); margin: 20px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+        .task-group-label:first-child { margin-top: 0; }
 
         .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; text-transform: capitalize; line-height: 1.4; border: 1px solid transparent; }
         .badge-new { background: var(--info-bg); color: var(--info); }
@@ -1023,6 +1044,7 @@
                 <!-- ============ JOB REGISTRY ============ -->
                 <div class="nav-section-title">Job Registry</div>
                 <div class="nav-item" data-page="job-registry"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg><span>Jobs</span></div>
+                <div class="nav-item" data-page="tasks" onclick="loadTasks()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span>Tasks</span></div>
 
                 <!-- ============ HELP & SUPPORT ============ -->
                 <div class="nav-section-title">Help &amp; Support</div>
@@ -1811,6 +1833,7 @@
                                 <button type="button" class="btn btn-success btn-sm" id="min-copy-btn">Copy</button>
                                 <button type="button" class="btn btn-primary btn-sm" id="min-pdf-btn">Download PDF</button>
                                 <button type="button" class="btn btn-secondary btn-sm" id="min-email-btn">&#9993; Email to Client</button>
+                                <button type="button" class="btn btn-secondary btn-sm" id="min-extract-tasks-btn">&#10003; Extract Tasks</button>
                                 <span class="pdf-edit-hint" style="margin-left:auto;">Click any text on the preview to edit it directly</span>
                             </div>
                             <!-- Styled preview: the same .sow-pdf used for the PDF, shown as a paper-like page. -->
@@ -2058,6 +2081,32 @@ Phone: +1 234 567 890"></textarea></div>
                 </div>
             </section>
 
+            <!-- ===================== TASKS ===================== -->
+            <section class="page-section" id="page-tasks">
+                <div class="top-bar">
+                    <div class="top-bar-content">
+                        <div class="page-title"><h1>Tasks</h1><p>Action items extracted from meetings or added manually, shared across the team.</p></div>
+                        <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
+                            <select class="form-select" id="task-filter-status" style="width:140px;font-size:13px;" onchange="loadTasks()">
+                                <option value="">All statuses</option>
+                                <option value="open">Open</option>
+                                <option value="in_progress">In Progress</option>
+                                <option value="done">Done</option>
+                            </select>
+                            <button class="btn btn-primary btn-sm" onclick="openAddTaskModal()">+ Add Task</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="page-content">
+                    <div id="task-list-wrap">
+                        <div class="empty-state" id="task-empty" style="display:none;">
+                            <p>No tasks yet. Extract them from Meeting Minutes or add one manually.</p>
+                        </div>
+                        <div id="task-list"></div>
+                    </div>
+                </div>
+            </section>
+
             <section class="page-section" id="page-admin">
                 <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1>Settings</h1><p>AI providers, meeting notes, lead scoring, and workflow rules</p></div></div></div>
                 <div class="page-content">
@@ -2266,6 +2315,73 @@ Phone: +1 234 567 890"></textarea></div>
                     <div style="display:flex;gap:8px;">
                         <button type="button" class="btn btn-primary" id="min-email-send-btn" style="flex:1;">Send</button>
                         <button type="button" class="btn btn-secondary" onclick="closeModal('min-email-modal')">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <!-- Tasks: extracted tasks review modal -->
+    <div class="modal-overlay" id="task-extract-modal">
+        <div class="modal" style="max-width:640px;">
+            <div class="modal-header">
+                <h3 class="modal-title">Extracted Tasks</h3>
+                <button class="modal-close" onclick="closeModal('task-extract-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">Review and edit before saving. Uncheck any you don't want to keep.</p>
+                <div id="task-extract-list" style="display:flex;flex-direction:column;gap:10px;max-height:420px;overflow-y:auto;"></div>
+                <div style="display:flex;gap:8px;margin-top:16px;">
+                    <button type="button" class="btn btn-primary" id="task-extract-save-btn" style="flex:1;">Save Tasks</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('task-extract-modal')">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Tasks: add/edit task modal -->
+    <div class="modal-overlay" id="task-edit-modal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3 class="modal-title" id="task-edit-modal-title">Add Task</h3>
+                <button class="modal-close" onclick="closeModal('task-edit-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="task-edit-form" onsubmit="return false;">
+                    <input type="hidden" id="task-edit-id">
+                    <div class="form-group">
+                        <label class="form-label">Task <span style="color:var(--danger)">*</span></label>
+                        <input type="text" class="form-input" id="task-edit-title" placeholder="e.g. Send revised proposal to client" required>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Assignee</label>
+                            <input type="text" class="form-input" id="task-edit-assignee" placeholder="Name">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Client</label>
+                            <input type="text" class="form-input" id="task-edit-client" placeholder="Client name">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Due date</label>
+                            <input type="date" class="form-input" id="task-edit-due">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Status</label>
+                            <select class="form-select" id="task-edit-status">
+                                <option value="open">Open</option>
+                                <option value="in_progress">In Progress</option>
+                                <option value="done">Done</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Notes</label>
+                        <input type="text" class="form-input" id="task-edit-notes" placeholder="Optional context">
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button type="button" class="btn btn-primary" id="task-edit-save-btn" style="flex:1;">Save</button>
+                        <button type="button" class="btn btn-secondary" onclick="closeModal('task-edit-modal')">Cancel</button>
                     </div>
                 </form>
             </div>
@@ -6016,6 +6132,7 @@ minWireFireflies();
     wire('min-refine-btn',minRefine);
     wire('min-email-btn',minOpenEmailModal);
     wire('min-email-send-btn',minSendEmail);
+    wire('min-extract-tasks-btn',minExtractTasks);
 })();
 // Set the masthead logo (mirrors the SOW/CP one-time logo set).
 (function(){const img=document.getElementById('min-pdf-logo-img');if(img)img.src='levatalogo.png';})();
@@ -6192,6 +6309,199 @@ async function minSendEmail(){
     btn.disabled=false;btn.textContent='Send';
     if(r.success){closeModal('min-email-modal');toast('Minutes emailed to '+to,'success');}
     else toast(r.error||'Failed to send','error');
+}
+
+/* ===================== TASKS ===================== */
+async function minExtractTasks(){
+    const markdown=minReadPreview();
+    if(!markdown.trim()){toast('Generate minutes first','warning');return;}
+    const btn=document.getElementById('min-extract-tasks-btn');
+    btn.disabled=true;btn.textContent='Extracting...';
+    const client=document.getElementById('min-client').value.trim();
+    const r=await api('extract-tasks','POST',{markdown,client});
+    btn.disabled=false;btn.textContent='✓ Extract Tasks';
+    if(!r.success){toast(r.error||'Extraction failed','error');return;}
+    if(!r.tasks||!r.tasks.length){toast('No action items found in these minutes','info');return;}
+    taskExtractShowReview(r.tasks,{
+        client,
+        meeting_title:document.getElementById('min-title').value.trim(),
+        meeting_date:document.getElementById('min-date').value.trim(),
+    });
+}
+
+function taskExtractShowReview(tasks, meta){
+    const list=document.getElementById('task-extract-list');
+    list.innerHTML='';
+    tasks.forEach((t,i)=>{
+        const card=document.createElement('div');
+        card.style.cssText='border:1px solid var(--border);border-radius:8px;padding:12px 14px;background:var(--bg-white);';
+        card.innerHTML=`
+        <div style="display:flex;gap:10px;align-items:flex-start;">
+            <input type="checkbox" id="tex-chk-${i}" checked style="margin-top:3px;width:15px;height:15px;flex-shrink:0;accent-color:var(--gold);">
+            <div style="flex:1;min-width:0;">
+                <input type="text" class="form-input" id="tex-title-${i}" value="${t.title.replace(/"/g,'&quot;')}" style="font-weight:600;margin-bottom:6px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                    <input type="text" class="form-input" id="tex-assignee-${i}" value="${(t.assignee||'').replace(/"/g,'&quot;')}" placeholder="Assignee" style="font-size:12px;">
+                    <input type="date" class="form-input" id="tex-due-${i}" value="${t.due_date||''}" style="font-size:12px;">
+                </div>
+                ${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:5px;">${t.notes}</div>`:''}
+            </div>
+        </div>`;
+        list._taskMeta=meta;
+        list.appendChild(card);
+    });
+    list._taskCount=tasks.length;
+    document.getElementById('task-extract-save-btn').textContent='Save Tasks';
+    openModal('task-extract-modal');
+}
+
+document.getElementById('task-extract-save-btn').addEventListener('click', async function(){
+    const list=document.getElementById('task-extract-list');
+    const meta=list._taskMeta||{};
+    const n=list._taskCount||0;
+    const toSave=[];
+    for(let i=0;i<n;i++){
+        const chk=document.getElementById('tex-chk-'+i);
+        if(!chk||!chk.checked)continue;
+        const title=(document.getElementById('tex-title-'+i)?.value||'').trim();
+        if(!title)continue;
+        toSave.push({
+            title,
+            assignee:(document.getElementById('tex-assignee-'+i)?.value||'').trim(),
+            due_date:(document.getElementById('tex-due-'+i)?.value||'').trim(),
+            client:meta.client||'',
+            meeting_title:meta.meeting_title||'',
+            meeting_date:meta.meeting_date||'',
+            source:'meeting',
+        });
+    }
+    if(!toSave.length){toast('No tasks selected','warning');return;}
+    this.disabled=true;this.textContent='Saving...';
+    let saved=0,failed=0;
+    for(const t of toSave){
+        const r=await api('save-task','POST',t);
+        if(r.success)saved++;else failed++;
+    }
+    this.disabled=false;this.textContent='Save Tasks';
+    closeModal('task-extract-modal');
+    if(saved)toast(saved+' task'+(saved>1?'s':'')+' saved','success');
+    if(failed)toast(failed+' task'+(failed>1?'s':'')+' failed to save','error');
+});
+
+window.loadTasks=async function(){
+    const list=document.getElementById('task-list');
+    const empty=document.getElementById('task-empty');
+    if(!list)return;
+    list.innerHTML='<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading...</div>';
+    const status=document.getElementById('task-filter-status')?.value||'';
+    const params=new URLSearchParams();
+    if(status)params.set('status',status);
+    const r=await api('tasks'+(params.toString()?'&'+params.toString():''));
+    if(!r.success){list.innerHTML='';toast(r.error||'Could not load tasks','error');return;}
+    const tasks=r.tasks||[];
+    list.innerHTML='';
+    if(!tasks.length){empty&&(empty.style.display='');return;}
+    empty&&(empty.style.display='none');
+    // Group by status.
+    const groups=[['open','Open'],['in_progress','In Progress'],['done','Done']];
+    groups.forEach(([st,label])=>{
+        const group=tasks.filter(t=>t.status===st);
+        if(!group.length)return;
+        const gl=document.createElement('div');
+        gl.className='task-group-label';
+        gl.textContent=label+' ('+group.length+')';
+        list.appendChild(gl);
+        group.forEach(t=>list.appendChild(taskCard(t)));
+    });
+};
+
+function taskCard(t){
+    const div=document.createElement('div');
+    div.className='task-card'+(t.status==='done'?' done':'');
+    div.dataset.id=t.id;
+    const nextStatus={open:'in_progress',in_progress:'done',done:'open'};
+    const statusLabel={open:'Open',in_progress:'In Progress',done:'Done'};
+    const dueStr=t.due_date?'Due '+t.due_date:'';
+    const sourceLabel=t.source==='meeting'?'Meeting':'Manual';
+    div.innerHTML=`
+    <div class="task-check ${t.status}" title="Click to advance status" onclick="taskCycleStatus('${t.id}','${nextStatus[t.status]||'open'}',this)"></div>
+    <div class="task-body">
+        <div class="task-title">${escHtml(t.title)}</div>
+        <div class="task-meta">
+            ${t.assignee?`<span>${escHtml(t.assignee)}</span><span style="opacity:.4">·</span>`:''}
+            ${t.client?`<span>${escHtml(t.client)}</span><span style="opacity:.4">·</span>`:''}
+            ${dueStr?`<span>${escHtml(dueStr)}</span><span style="opacity:.4">·</span>`:''}
+            <span class="task-badge task-badge-source">${sourceLabel}</span>
+            <span class="task-badge task-badge-status-${t.status}">${statusLabel[t.status]||t.status}</span>
+        </div>
+        ${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escHtml(t.notes)}</div>`:''}
+    </div>
+    <div class="task-actions">
+        <button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;" onclick="openEditTaskModal(${JSON.stringify(t).replace(/"/g,'&quot;')})">Edit</button>
+        <button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;color:var(--danger);" onclick="deleteTask('${t.id}')">Delete</button>
+    </div>`;
+    return div;
+}
+
+function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+async function taskCycleStatus(id,newStatus,el){
+    el.className='task-check '+newStatus;
+    const r=await api('save-task','POST',{id,status:newStatus});
+    if(r.success)loadTasks();
+    else{toast('Failed to update','error');loadTasks();}
+}
+
+function openAddTaskModal(){
+    document.getElementById('task-edit-id').value='';
+    document.getElementById('task-edit-title').value='';
+    document.getElementById('task-edit-assignee').value='';
+    document.getElementById('task-edit-client').value='';
+    document.getElementById('task-edit-due').value='';
+    document.getElementById('task-edit-notes').value='';
+    document.getElementById('task-edit-status').value='open';
+    document.getElementById('task-edit-modal-title').textContent='Add Task';
+    openModal('task-edit-modal');
+}
+
+function openEditTaskModal(t){
+    document.getElementById('task-edit-id').value=t.id||'';
+    document.getElementById('task-edit-title').value=t.title||'';
+    document.getElementById('task-edit-assignee').value=t.assignee||'';
+    document.getElementById('task-edit-client').value=t.client||'';
+    document.getElementById('task-edit-due').value=t.due_date||'';
+    document.getElementById('task-edit-notes').value=t.notes||'';
+    document.getElementById('task-edit-status').value=t.status||'open';
+    document.getElementById('task-edit-modal-title').textContent='Edit Task';
+    openModal('task-edit-modal');
+}
+
+document.getElementById('task-edit-save-btn').addEventListener('click',async function(){
+    const id=document.getElementById('task-edit-id').value;
+    const title=document.getElementById('task-edit-title').value.trim();
+    if(!title){toast('Task title is required','warning');return;}
+    this.disabled=true;this.textContent='Saving...';
+    const payload={
+        title,
+        assignee:document.getElementById('task-edit-assignee').value.trim(),
+        client:document.getElementById('task-edit-client').value.trim(),
+        due_date:document.getElementById('task-edit-due').value,
+        notes:document.getElementById('task-edit-notes').value.trim(),
+        status:document.getElementById('task-edit-status').value,
+        source:'manual',
+    };
+    if(id)payload.id=id;
+    const r=await api('save-task','POST',payload);
+    this.disabled=false;this.textContent='Save';
+    if(r.success){closeModal('task-edit-modal');toast('Task saved','success');if(document.getElementById('page-tasks')?.classList.contains('active'))loadTasks();}
+    else toast(r.error||'Failed','error');
+});
+
+async function deleteTask(id){
+    if(!confirm('Delete this task?'))return;
+    const r=await api('delete-task','POST',{id});
+    if(r.success){toast('Task deleted','success');loadTasks();}
+    else toast(r.error||'Failed','error');
 }
 
 document.getElementById('admin-settings-form').addEventListener('submit',async e=>{e.preventDefault();await api('admin-settings','POST',{default_provider:document.getElementById('admin-provider').value,groq_key:document.getElementById('admin-groq-key').value,gemini_key:document.getElementById('admin-gemini-key').value,anthropic_key:document.getElementById('admin-anthropic-key').value,fireflies_key:document.getElementById('admin-fireflies-key').value,resend_key:document.getElementById('admin-resend-key').value,support_email:document.getElementById('admin-support-email').value,support_from:document.getElementById('admin-support-from').value,outreach_from:document.getElementById('admin-outreach-from').value,groq_model:document.getElementById('admin-groq-model').value,gemini_model:document.getElementById('admin-gemini-model').value,anthropic_model:document.getElementById('admin-anthropic-model').value});toast('Saved!','success')});
@@ -6426,6 +6736,7 @@ function showPage(p){
     if(p==='cost-proposals'&&typeof window.cpOnEnter==='function')window.cpOnEnter();
     if(p==='saved-documents')loadSavedDocuments();
     if(p==='job-registry'&&typeof window.loadJobRegistry==='function')window.loadJobRegistry();
+    if(p==='tasks'&&typeof window.loadTasks==='function')window.loadTasks();
     if(p==='support'&&typeof window.loadSupport==='function')window.loadSupport();
 }
 function openSidebar(){document.getElementById('sidebar').classList.add('open');document.getElementById('sidebar-overlay').classList.add('active')}
