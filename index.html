@@ -6339,7 +6339,7 @@ async function taskLoadFfMeetings(){
         const row=document.createElement('div');
         row.style.cssText='display:flex;align-items:center;justify-content:space-between;padding:10px 12px;gap:8px;border-bottom:1px solid #f0eff4;cursor:pointer;';
         const date=m.date?new Date(m.date).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'';
-        row.innerHTML=`<div style="min-width:0;"><div style="font-weight:600;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(m.title||'Untitled meeting')}</div>${date?`<div style="font-size:12px;color:#888;">${date}</div>`:''}</div><button class="btn btn-primary btn-sm" style="flex-shrink:0;">Extract Tasks</button>`;
+        row.innerHTML=`<div style="min-width:0;"><div style="font-weight:600;font-size:13px;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(m.title||'Untitled meeting')}</div>${date?`<div style="font-size:11px;color:#888;">${date}</div>`:''}</div><button class="btn btn-primary btn-sm" style="flex-shrink:0;">Extract Tasks</button>`;
         row.querySelector('button').addEventListener('click',()=>taskExtractFromMeeting(m));
         list.appendChild(row);
     });
