@@ -1810,6 +1810,7 @@
                                 <button type="button" class="btn btn-secondary btn-sm" id="min-back-btn">&larr; Back</button>
                                 <button type="button" class="btn btn-success btn-sm" id="min-copy-btn">Copy</button>
                                 <button type="button" class="btn btn-primary btn-sm" id="min-pdf-btn">Download PDF</button>
+                                <button type="button" class="btn btn-secondary btn-sm" id="min-email-btn">&#9993; Email to Client</button>
                                 <span class="pdf-edit-hint" style="margin-left:auto;">Click any text on the preview to edit it directly</span>
                             </div>
                             <!-- Styled preview: the same .sow-pdf used for the PDF, shown as a paper-like page. -->
@@ -2235,6 +2236,41 @@ Phone: +1 234 567 890"></textarea></div>
 
     <div class="modal-overlay" id="lead-modal"><div class="modal modal-lg"><div class="modal-header"><h3 class="modal-title" id="modal-lead-name">Lead</h3><button class="modal-close" onclick="closeModal('lead-modal')">&times;</button></div><div class="modal-body" id="modal-body"></div></div></div>
     <div class="modal-overlay" id="req-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title">Client Requisitions</h3><button class="modal-close" onclick="closeModal('req-modal')">&times;</button></div><div class="modal-body" id="req-modal-body"></div></div></div>
+    <!-- Meeting Minutes: email to client -->
+    <div class="modal-overlay" id="min-email-modal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3 class="modal-title">Email Minutes to Client</h3>
+                <button class="modal-close" onclick="closeModal('min-email-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="min-email-form" onsubmit="return false;">
+                    <div class="form-group">
+                        <label class="form-label">To <span style="color:var(--danger)">*</span></label>
+                        <input type="email" class="form-input" id="min-email-to" placeholder="client@example.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">From</label>
+                        <input type="email" class="form-input" id="min-email-from" placeholder="your@domain.com">
+                        <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Pre-filled from your outreach address. Edit to override.</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Subject</label>
+                        <input type="text" class="form-input" id="min-email-subject" placeholder="Meeting Minutes — ...">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Intro note (optional)</label>
+                        <textarea class="form-input" id="min-email-note" rows="3" placeholder="e.g. Hi Sarah, please find the minutes from today&#39;s call attached."></textarea>
+                    </div>
+                    <div style="font-size:12px;color:#9ca3af;margin-bottom:14px;">The minutes will be attached as a PDF.</div>
+                    <div style="display:flex;gap:8px;">
+                        <button type="button" class="btn btn-primary" id="min-email-send-btn" style="flex:1;">Send</button>
+                        <button type="button" class="btn btn-secondary" onclick="closeModal('min-email-modal')">Cancel</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
     <!-- Job Registry: add/edit a job -->
     <div class="modal-overlay" id="job-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title" id="job-modal-title">New Job</h3><button class="modal-close" onclick="closeModal('job-modal')">&times;</button></div><div class="modal-body">
         <form id="job-form">
@@ -5978,6 +6014,8 @@ minWireFireflies();
     wire('min-copy-btn',minCopy);
     wire('min-pdf-btn',minDownloadPdf);
     wire('min-refine-btn',minRefine);
+    wire('min-email-btn',minOpenEmailModal);
+    wire('min-email-send-btn',minSendEmail);
 })();
 // Set the masthead logo (mirrors the SOW/CP one-time logo set).
 (function(){const img=document.getElementById('min-pdf-logo-img');if(img)img.src='levatalogo.png';})();
@@ -6105,6 +6143,55 @@ async function minDownloadPdf(){
     const opt={margin:0,filename:'meeting-minutes-'+client+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'px',format:[794,1123],orientation:'portrait'}};
     try{await html2pdf().set(opt).from(document.getElementById('min-pdf-page')).save();}
     catch(e){toast('PDF export failed','error');}
+}
+function minOpenEmailModal(){
+    // Pre-fill subject from title + date fields.
+    const title=document.getElementById('min-title').value.trim();
+    const date=document.getElementById('min-date').value.trim();
+    let subject='Meeting Minutes';
+    if(title) subject+=' — '+title;
+    if(date) subject+=' ('+date+')';
+    document.getElementById('min-email-subject').value=subject;
+    // Pre-fill From from the outreach address field in Admin Settings (if the admin panel has been visited this session).
+    const fromEl=document.getElementById('admin-outreach-from');
+    document.getElementById('min-email-from').value=fromEl?fromEl.value:'';
+    document.getElementById('min-email-to').value='';
+    document.getElementById('min-email-note').value='';
+    openModal('min-email-modal');
+}
+async function minSendEmail(){
+    const to=document.getElementById('min-email-to').value.trim();
+    const from=document.getElementById('min-email-from').value.trim();
+    const subject=document.getElementById('min-email-subject').value.trim();
+    const note=document.getElementById('min-email-note').value.trim();
+    if(!to){toast('Enter a recipient email address','warning');return;}
+    if(!subject){toast('Enter a subject','warning');return;}
+    if(typeof html2pdf==='undefined'){toast('PDF library still loading, try again in a moment','warning');return;}
+    const btn=document.getElementById('min-email-send-btn');
+    btn.disabled=true;btn.textContent='Generating PDF...';
+    let pdfBase64='';
+    try{
+        const client=(document.getElementById('min-client').value||'minutes').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
+        const filename='meeting-minutes-'+client+'.pdf';
+        const opt={margin:0,filename,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'px',format:[794,1123],orientation:'portrait'}};
+        const blob=await html2pdf().set(opt).from(document.getElementById('min-pdf-page')).outputPdf('blob');
+        pdfBase64=await new Promise((res,rej)=>{
+            const r=new FileReader();
+            r.onload=()=>res(r.result.split(',')[1]);
+            r.onerror=rej;
+            r.readAsDataURL(blob);
+        });
+    } catch(e){
+        btn.disabled=false;btn.textContent='Send';
+        toast('Could not generate PDF: '+e.message,'error');return;
+    }
+    btn.textContent='Sending...';
+    const client=(document.getElementById('min-client').value||'minutes').replace(/[^a-z0-9]+/gi,'-').toLowerCase();
+    const filename='meeting-minutes-'+client+'.pdf';
+    const r=await api('send-minutes-email','POST',{to,from,subject,note,pdf_base64:pdfBase64,filename});
+    btn.disabled=false;btn.textContent='Send';
+    if(r.success){closeModal('min-email-modal');toast('Minutes emailed to '+to,'success');}
+    else toast(r.error||'Failed to send','error');
 }
 
 document.getElementById('admin-settings-form').addEventListener('submit',async e=>{e.preventDefault();await api('admin-settings','POST',{default_provider:document.getElementById('admin-provider').value,groq_key:document.getElementById('admin-groq-key').value,gemini_key:document.getElementById('admin-gemini-key').value,anthropic_key:document.getElementById('admin-anthropic-key').value,fireflies_key:document.getElementById('admin-fireflies-key').value,resend_key:document.getElementById('admin-resend-key').value,support_email:document.getElementById('admin-support-email').value,support_from:document.getElementById('admin-support-from').value,outreach_from:document.getElementById('admin-outreach-from').value,groq_model:document.getElementById('admin-groq-model').value,gemini_model:document.getElementById('admin-gemini-model').value,anthropic_model:document.getElementById('admin-anthropic-model').value});toast('Saved!','success')});

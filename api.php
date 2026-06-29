@@ -1654,6 +1654,97 @@ case 'refine-minutes':
     respond(['success' => true, 'markdown' => $res['content']]);
     break;
 
+case 'send-minutes-email':
+    // Email the generated Meeting Minutes PDF to a client via Resend.
+    // The browser generates the branded PDF, converts it to base64, and sends it here.
+    // Self-contained sender block — does not share code with lead outreach or support email.
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $admin = getAdmin();
+
+    $toEmail    = trim($input['to']         ?? '');
+    $fromAddr   = trim($input['from']       ?? '');
+    $subject    = trim($input['subject']    ?? '');
+    $note       = trim($input['note']       ?? '');
+    $pdfBase64  = trim($input['pdf_base64'] ?? '');
+    $filename   = trim($input['filename']   ?? 'meeting-minutes.pdf');
+
+    if (!$toEmail || !filter_var($toEmail, FILTER_VALIDATE_EMAIL)) {
+        respond(['success' => false, 'error' => 'A valid recipient email is required'], 400);
+    }
+    if ($subject === '') {
+        respond(['success' => false, 'error' => 'Subject is required'], 400);
+    }
+    if ($pdfBase64 === '') {
+        respond(['success' => false, 'error' => 'No PDF data received'], 400);
+    }
+
+    $resendKey = trim($admin['resend_key'] ?? '');
+    if ($resendKey === '') {
+        respond(['success' => false, 'error' => 'Email sending is not configured (no Resend API key in Settings)'], 400);
+    }
+
+    // Fall back to the configured outreach address if the rep did not override.
+    if ($fromAddr === '' || !filter_var($fromAddr, FILTER_VALIDATE_EMAIL)) {
+        $fromAddr = trim($admin['outreach_from'] ?? '') ?: (trim($admin['support_from'] ?? '') ?: 'onboarding@resend.dev');
+    }
+    $repName  = trim($user['name'] ?? '') ?: 'Levata';
+    $replyTo  = trim($user['email'] ?? '');
+
+    $e = function ($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); };
+    $bodyHtml = '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;color:#111827;font-size:14px;line-height:1.6;">';
+    if ($note !== '') {
+        foreach (preg_split('/\n{2,}/', $note) as $p) {
+            $p = trim($p);
+            if ($p !== '') $bodyHtml .= '<p style="margin:0 0 12px;">' . nl2br($e($p)) . '</p>';
+        }
+        $bodyHtml .= '<p style="margin:0 0 12px;">&nbsp;</p>';
+    }
+    $bodyHtml .= '<p style="margin:0 0 12px;">Please find the Meeting Minutes attached as a PDF.</p>';
+    $bodyHtml .= '<p style="margin:18px 0 0;font-size:12px;color:#9ca3af;">Sent by ' . $e($repName) . ' at Levata.</p>';
+    $bodyHtml .= '</div>';
+
+    $bodyText = ($note !== '' ? $note . "\n\n" : '') . "Please find the Meeting Minutes attached as a PDF.\n\n-- " . $repName . ", Levata";
+
+    $payload = [
+        'from'        => $repName . ' <' . $fromAddr . '>',
+        'to'          => [$toEmail],
+        'subject'     => $subject,
+        'text'        => $bodyText,
+        'html'        => $bodyHtml,
+        'attachments' => [[
+            'filename'    => $filename,
+            'content'     => $pdfBase64,
+            'content_type' => 'application/pdf',
+        ]],
+    ];
+    if ($replyTo !== '' && filter_var($replyTo, FILTER_VALIDATE_EMAIL)) {
+        $payload['reply_to'] = $replyTo;
+    }
+
+    $ch = curl_init('https://api.resend.com/emails');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($payload),
+        CURLOPT_HTTPHEADER     => [
+            'Authorization: Bearer ' . $resendKey,
+            'Content-Type: application/json',
+        ],
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $sendResponse = curl_exec($ch);
+    $sendCode     = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    $sendDecoded = json_decode($sendResponse, true);
+    if ($sendCode < 200 || $sendCode >= 300) {
+        $err = is_array($sendDecoded) && !empty($sendDecoded['message'])
+            ? $sendDecoded['message'] : ('Resend returned HTTP ' . $sendCode);
+        respond(['success' => false, 'error' => 'Email not sent: ' . $err], 502);
+    }
+    respond(['success' => true, 'message_id' => $sendDecoded['id'] ?? null]);
+    break;
+
 // ===== Document Studio: saved documents (SOWs, and later cost proposals) =====
 case 'list-documents':
 case 'all-documents':
