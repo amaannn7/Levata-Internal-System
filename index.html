@@ -6320,10 +6320,7 @@ async function minSendEmail(){
 }
 
 /* ===================== TASKS ===================== */
-
-// Fireflies meeting picker state for the Tasks page.
 let _taskFfMeetings=[];
-
 async function taskLoadFfMeetings(){
     const btn=document.getElementById('task-ff-load-btn');
     const status=document.getElementById('task-ff-status');
@@ -6343,11 +6340,8 @@ async function taskLoadFfMeetings(){
         row.querySelector('button').addEventListener('click',()=>taskExtractFromMeeting(m));
         list.appendChild(row);
     });
-    list.style.display='flex';
-    list.style.flexDirection='column';
-    list.style.gap='6px';
+    list.style.display='flex';list.style.flexDirection='column';list.style.gap='6px';
 }
-
 async function taskExtractFromMeeting(meeting){
     const status=document.getElementById('task-ff-status');
     status.textContent='Fetching transcript...';
@@ -6358,39 +6352,23 @@ async function taskExtractFromMeeting(meeting){
     status.textContent='';
     if(!r.success){toast(r.error||'Extraction failed','error');return;}
     if(!r.tasks||!r.tasks.length){toast('No action items found in this meeting','info');return;}
-    taskShowReviewModal(r.tasks, meeting);
+    taskShowReviewModal(r.tasks,meeting);
 }
-
-function taskShowReviewModal(tasks, meeting){
+function taskShowReviewModal(tasks,meeting){
     const list=document.getElementById('task-extract-list');
     list.innerHTML='';
     tasks.forEach((t,i)=>{
         const card=document.createElement('div');
         card.style.cssText='border:1px solid var(--border);border-radius:8px;padding:12px 14px;background:var(--bg-white);';
-        card.innerHTML=`
-        <div style="display:flex;gap:10px;align-items:flex-start;">
-            <input type="checkbox" id="tex-chk-${i}" checked style="margin-top:3px;width:15px;height:15px;flex-shrink:0;accent-color:var(--gold);">
-            <div style="flex:1;min-width:0;">
-                <input type="text" class="form-input" id="tex-title-${i}" value="${escHtml(t.title)}" style="font-weight:600;margin-bottom:6px;">
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-                    <input type="text" class="form-input" id="tex-assignee-${i}" value="${escHtml(t.assignee||'')}" placeholder="Assignee" style="font-size:12px;">
-                    <input type="date" class="form-input" id="tex-due-${i}" value="${t.due_date||''}" style="font-size:12px;">
-                </div>
-                ${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:5px;">${escHtml(t.notes)}</div>`:''}
-            </div>
-        </div>`;
+        card.innerHTML=`<div style="display:flex;gap:10px;align-items:flex-start;"><input type="checkbox" id="tex-chk-${i}" checked style="margin-top:3px;width:15px;height:15px;flex-shrink:0;accent-color:var(--gold);"><div style="flex:1;min-width:0;"><input type="text" class="form-input" id="tex-title-${i}" value="${escHtml(t.title)}" style="font-weight:600;margin-bottom:6px;"><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"><input type="text" class="form-input" id="tex-assignee-${i}" value="${escHtml(t.assignee||'')}" placeholder="Assignee" style="font-size:12px;"><input type="date" class="form-input" id="tex-due-${i}" value="${t.due_date||''}" style="font-size:12px;"></div>${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:5px;">${escHtml(t.notes)}</div>`:''}</div></div>`;
         list.appendChild(card);
     });
-    list._taskMeta={
-        fireflies_id: meeting.id,
-        fireflies_meeting_title: meeting.title||'',
-    };
+    list._taskMeta={fireflies_id:meeting.id,fireflies_meeting_title:meeting.title||''};
     list._taskCount=tasks.length;
     document.getElementById('task-extract-save-btn').textContent='Save Tasks';
     openModal('task-extract-modal');
 }
-
-document.getElementById('task-extract-save-btn').addEventListener('click', async function(){
+document.getElementById('task-extract-save-btn').addEventListener('click',async function(){
     const list=document.getElementById('task-extract-list');
     const meta=list._taskMeta||{};
     const n=list._taskCount||0;
@@ -6400,29 +6378,18 @@ document.getElementById('task-extract-save-btn').addEventListener('click', async
         if(!chk||!chk.checked)continue;
         const title=(document.getElementById('tex-title-'+i)?.value||'').trim();
         if(!title)continue;
-        toSave.push({
-            title,
-            assignee:(document.getElementById('tex-assignee-'+i)?.value||'').trim(),
-            due_date:(document.getElementById('tex-due-'+i)?.value||'').trim(),
-            fireflies_id: meta.fireflies_id||'',
-            fireflies_meeting_title: meta.fireflies_meeting_title||'',
-            source:'meeting',
-        });
+        toSave.push({title,assignee:(document.getElementById('tex-assignee-'+i)?.value||'').trim(),due_date:(document.getElementById('tex-due-'+i)?.value||'').trim(),fireflies_id:meta.fireflies_id||'',fireflies_meeting_title:meta.fireflies_meeting_title||'',source:'meeting'});
     }
     if(!toSave.length){toast('No tasks selected','warning');return;}
     this.disabled=true;this.textContent='Saving...';
     let saved=0,failed=0;
-    for(const t of toSave){
-        const r=await api('save-task','POST',t);
-        if(r.success)saved++;else failed++;
-    }
+    for(const t of toSave){const r=await api('save-task','POST',t);if(r.success)saved++;else failed++;}
     this.disabled=false;this.textContent='Save Tasks';
     closeModal('task-extract-modal');
     if(saved)toast(saved+' task'+(saved>1?'s':'')+' saved','success');
     if(failed)toast(failed+' task'+(failed>1?'s':'')+' failed to save','error');
     if(saved)loadTasks();
 });
-
 window.loadTasks=async function(){
     const list=document.getElementById('task-list');
     const empty=document.getElementById('task-empty');
@@ -6437,19 +6404,15 @@ window.loadTasks=async function(){
     list.innerHTML='';
     if(!tasks.length){empty&&(empty.style.display='');return;}
     empty&&(empty.style.display='none');
-    // Group by status.
     const groups=[['open','Open'],['in_progress','In Progress'],['done','Done']];
     groups.forEach(([st,label])=>{
         const group=tasks.filter(t=>t.status===st);
         if(!group.length)return;
-        const gl=document.createElement('div');
-        gl.className='task-group-label';
-        gl.textContent=label+' ('+group.length+')';
+        const gl=document.createElement('div');gl.className='task-group-label';gl.textContent=label+' ('+group.length+')';
         list.appendChild(gl);
         group.forEach(t=>list.appendChild(taskCard(t)));
     });
 };
-
 function taskCard(t){
     const div=document.createElement('div');
     div.className='task-card'+(t.status==='done'?' done':'');
@@ -6457,38 +6420,16 @@ function taskCard(t){
     const nextStatus={open:'in_progress',in_progress:'done',done:'open'};
     const statusLabel={open:'Open',in_progress:'In Progress',done:'Done'};
     const dueStr=t.due_date?'Due '+t.due_date:'';
-    const sourceLabel=t.source==='meeting'?'Meeting':'Manual';
     const ffUrl=t.fireflies_id?`https://app.fireflies.ai/view/${encodeURIComponent(t.fireflies_meeting_title||'meeting')}::${t.fireflies_id}`:'';
-    div.innerHTML=`
-    <div class="task-check ${t.status}" title="Click to advance status" onclick="taskCycleStatus('${t.id}','${nextStatus[t.status]||'open'}',this)"></div>
-    <div class="task-body">
-        <div class="task-title">${escHtml(t.title)}</div>
-        <div class="task-meta">
-            ${t.assignee?`<span>${escHtml(t.assignee)}</span><span style="opacity:.4">·</span>`:''}
-            ${t.client?`<span>${escHtml(t.client)}</span><span style="opacity:.4">·</span>`:''}
-            ${dueStr?`<span>${escHtml(dueStr)}</span><span style="opacity:.4">·</span>`:''}
-            ${ffUrl?`<a href="${ffUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--gold);text-decoration:none;font-weight:600;" title="${escHtml(t.fireflies_meeting_title||'View meeting')}">${escHtml(t.fireflies_meeting_title||'View Meeting')} ↗</a><span style="opacity:.4">·</span>`:''}
-            <span class="task-badge task-badge-source">${sourceLabel}</span>
-            <span class="task-badge task-badge-status-${t.status}">${statusLabel[t.status]||t.status}</span>
-        </div>
-        ${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escHtml(t.notes)}</div>`:''}
-    </div>
-    <div class="task-actions">
-        <button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;" onclick="openEditTaskModal(${JSON.stringify(t).replace(/"/g,'&quot;')})">Edit</button>
-        <button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;color:var(--danger);" onclick="deleteTask('${t.id}')">Delete</button>
-    </div>`;
+    div.innerHTML=`<div class="task-check ${t.status}" title="Click to advance status" onclick="taskCycleStatus('${t.id}','${nextStatus[t.status]||'open'}',this)"></div><div class="task-body"><div class="task-title">${escHtml(t.title)}</div><div class="task-meta">${t.assignee?`<span>${escHtml(t.assignee)}</span><span style="opacity:.4">·</span>`:''} ${t.client?`<span>${escHtml(t.client)}</span><span style="opacity:.4">·</span>`:''} ${dueStr?`<span>${escHtml(dueStr)}</span><span style="opacity:.4">·</span>`:''} ${ffUrl?`<a href="${ffUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--gold);text-decoration:none;font-weight:600;">${escHtml(t.fireflies_meeting_title||'View Meeting')} ↗</a><span style="opacity:.4">·</span>`:''}<span class="task-badge task-badge-source">${t.source==='meeting'?'Meeting':'Manual'}</span> <span class="task-badge task-badge-status-${t.status}">${statusLabel[t.status]||t.status}</span></div>${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escHtml(t.notes)}</div>`:''}</div><div class="task-actions"><button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;" onclick="openEditTaskModal(${JSON.stringify(t).replace(/"/g,'&quot;')})">Edit</button><button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;color:var(--danger);" onclick="deleteTask('${t.id}')">Delete</button></div>`;
     return div;
 }
-
 function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-
 async function taskCycleStatus(id,newStatus,el){
     el.className='task-check '+newStatus;
     const r=await api('save-task','POST',{id,status:newStatus});
-    if(r.success)loadTasks();
-    else{toast('Failed to update','error');loadTasks();}
+    if(r.success)loadTasks();else{toast('Failed to update','error');loadTasks();}
 }
-
 function openAddTaskModal(){
     document.getElementById('task-edit-id').value='';
     document.getElementById('task-edit-title').value='';
@@ -6500,7 +6441,6 @@ function openAddTaskModal(){
     document.getElementById('task-edit-modal-title').textContent='Add Task';
     openModal('task-edit-modal');
 }
-
 function openEditTaskModal(t){
     document.getElementById('task-edit-id').value=t.id||'';
     document.getElementById('task-edit-title').value=t.title||'';
@@ -6512,34 +6452,30 @@ function openEditTaskModal(t){
     document.getElementById('task-edit-modal-title').textContent='Edit Task';
     openModal('task-edit-modal');
 }
-
 document.getElementById('task-edit-save-btn').addEventListener('click',async function(){
     const id=document.getElementById('task-edit-id').value;
     const title=document.getElementById('task-edit-title').value.trim();
     if(!title){toast('Task title is required','warning');return;}
     this.disabled=true;this.textContent='Saving...';
-    const payload={
-        title,
-        assignee:document.getElementById('task-edit-assignee').value.trim(),
-        client:document.getElementById('task-edit-client').value.trim(),
-        due_date:document.getElementById('task-edit-due').value,
-        notes:document.getElementById('task-edit-notes').value.trim(),
-        status:document.getElementById('task-edit-status').value,
-        source:'manual',
-    };
+    const payload={title,assignee:document.getElementById('task-edit-assignee').value.trim(),client:document.getElementById('task-edit-client').value.trim(),due_date:document.getElementById('task-edit-due').value,notes:document.getElementById('task-edit-notes').value.trim(),status:document.getElementById('task-edit-status').value,source:'manual'};
     if(id)payload.id=id;
     const r=await api('save-task','POST',payload);
     this.disabled=false;this.textContent='Save';
     if(r.success){closeModal('task-edit-modal');toast('Task saved','success');if(document.getElementById('page-tasks')?.classList.contains('active'))loadTasks();}
     else toast(r.error||'Failed','error');
 });
-
 async function deleteTask(id){
     if(!confirm('Delete this task?'))return;
     const r=await api('delete-task','POST',{id});
     if(r.success){toast('Task deleted','success');loadTasks();}
     else toast(r.error||'Failed','error');
 }
+// Expose to onclick= attributes and showPage
+window.openAddTaskModal=openAddTaskModal;
+window.openEditTaskModal=openEditTaskModal;
+window.taskCycleStatus=taskCycleStatus;
+window.deleteTask=deleteTask;
+window.taskLoadFfMeetings=taskLoadFfMeetings;
 
 document.getElementById('admin-settings-form').addEventListener('submit',async e=>{e.preventDefault();await api('admin-settings','POST',{default_provider:document.getElementById('admin-provider').value,groq_key:document.getElementById('admin-groq-key').value,gemini_key:document.getElementById('admin-gemini-key').value,anthropic_key:document.getElementById('admin-anthropic-key').value,fireflies_key:document.getElementById('admin-fireflies-key').value,resend_key:document.getElementById('admin-resend-key').value,support_email:document.getElementById('admin-support-email').value,support_from:document.getElementById('admin-support-from').value,outreach_from:document.getElementById('admin-outreach-from').value,groq_model:document.getElementById('admin-groq-model').value,gemini_model:document.getElementById('admin-gemini-model').value,anthropic_model:document.getElementById('admin-anthropic-model').value});toast('Saved!','success')});
 document.querySelectorAll('.provider-card').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.provider-card').forEach(x=>x.classList.remove('selected'));c.classList.add('selected');document.getElementById('admin-provider').value=c.dataset.provider}));
