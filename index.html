@@ -5960,7 +5960,7 @@ async function cpLoadMeetings(){
     if(!r.success){list.style.display='none';if(r.error&&r.error.indexOf('Fireflies API key')!==-1){cpFfStatus('No Fireflies API key set. Add one in Settings, then load meetings.','error');}else{cpFfStatus(r.error||'Could not reach Fireflies.','error');}return;}
     if(!r.meetings.length){cpFfStatus('No recent Fireflies meetings found.','');list.style.display='none';return;}
     cpFfStatus(r.meetings.length+' recent meeting'+(r.meetings.length>1?'s':'')+'. Click one to load its transcript below.','ok');
-    list.innerHTML=r.meetings.map(m=>{const when=m.date?new Date(m.date).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'';return `<div class="cp-ff-item" data-ff-id="${m.id}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #f0eff4;cursor:pointer;"><div style="min-width:0;"><div style="font-weight:600;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(m.title||'Untitled meeting').replace(/</g,'&lt;')}</div><div style="font-size:12px;color:#888;">${when}</div></div><span class="btn btn-secondary btn-sm" style="flex-shrink:0;pointer-events:none;">Use</span></div>`;}).join('');
+    list.innerHTML=r.meetings.map(m=>{const when=m.date?new Date(m.date).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'';return `<div class="cp-ff-item" data-ff-id="${m.id}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #f0eff4;cursor:pointer;"><div style="min-width:0;"><div style="font-weight:600;font-size:13px;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(m.title||'Untitled meeting').replace(/</g,'&lt;')}</div>${when?`<div style="font-size:11px;color:#888;">${when}</div>`:''}</div><span class="btn btn-secondary btn-sm" style="flex-shrink:0;pointer-events:none;">Use</span></div>`;}).join('');
     list.style.display='block';
 }
 document.getElementById('cp-ff-refresh').addEventListener('click',cpLoadMeetings);
@@ -6061,7 +6061,7 @@ async function sowLoadMeetings(){
     list.innerHTML=r.meetings.map(m=>{
         const when=m.date?new Date(m.date).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'';
         return `<div class="sow-ff-item" data-ff-id="${m.id}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #f0eff4;cursor:pointer;">
-            <div style="min-width:0;"><div style="font-weight:600;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(m.title||'Untitled meeting').replace(/</g,'&lt;')}</div><div style="font-size:12px;color:#888;">${when}</div></div>
+            <div style="min-width:0;"><div style="font-weight:600;font-size:13px;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(m.title||'Untitled meeting').replace(/</g,'&lt;')}</div>${when?`<div style="font-size:11px;color:#888;">${when}</div>`:''}</div>
             <span class="btn btn-secondary btn-sm" style="flex-shrink:0;pointer-events:none;">Use</span>
         </div>`;
     }).join('');
@@ -6105,7 +6105,7 @@ async function minLoadMeetings(){
     list.innerHTML=r.meetings.map(m=>{
         const when=m.date?new Date(m.date).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'';
         return `<div class="min-ff-item" data-ff-id="${m.id}" data-ff-title="${(m.title||'').replace(/"/g,'&quot;')}" data-ff-date="${when}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #f0eff4;cursor:pointer;">
-            <div style="min-width:0;"><div style="font-weight:600;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(m.title||'Untitled meeting').replace(/</g,'&lt;')}</div><div style="font-size:12px;color:#888;">${when}</div></div>
+            <div style="min-width:0;"><div style="font-weight:600;font-size:13px;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(m.title||'Untitled meeting').replace(/</g,'&lt;')}</div>${when?`<div style="font-size:11px;color:#888;">${when}</div>`:''}</div>
             <span class="btn btn-secondary btn-sm" style="flex-shrink:0;pointer-events:none;">Use</span>
         </div>`;
     }).join('');
