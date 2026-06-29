@@ -46,30 +46,30 @@ function nextTaskId($store) {
 }
 
 /**
- * Extract tasks from finished meeting minutes markdown via LLM.
+ * Extract tasks from a Fireflies meeting transcript via LLM.
  * Returns a plain array of task objects (not saved — caller reviews first).
  */
-function extractTasksFromMinutes($provider, $apiKey, $minutesMarkdown, $client = '') {
+function extractTasksFromMinutes($provider, $apiKey, $transcript, $client = '') {
     $system = <<<'PROMPT'
-You extract action items from meeting minutes and return them as a JSON array. You are precise and faithful — only extract tasks that were genuinely committed to by someone in the meeting. Do not invent tasks, guess owners, or pad the list.
+You extract action items from a meeting transcript and return them as a JSON array. You are precise and faithful — only extract tasks that were genuinely committed to by someone in the meeting. Do not invent tasks, guess owners, or pad the list.
 
 Return ONLY a valid JSON array with no preamble, no code fences, no commentary. Each element:
 {
   "title": "short imperative description of the action (max 12 words)",
-  "assignee": "full name of the person responsible, exactly as it appears in the minutes, or empty string if unclear",
+  "assignee": "full name of the person responsible, exactly as it appears in the transcript, or empty string if unclear",
   "due_date": "YYYY-MM-DD if a specific date was stated, otherwise empty string",
   "notes": "one short sentence of context if useful, otherwise empty string"
 }
 
 Rules:
-- Draw from Next Steps and any concrete commitments in Key Points or Decisions.
-- Do not duplicate: if the same action appears in multiple sections, include it once.
-- If a Next Step says "Party A to coordinate with Party B to do X" — one task, assignee = Party A.
+- Only extract concrete commitments — "I will do X", "can you send Y", "let's get Z done by Friday".
+- Do not duplicate: if the same action appears multiple times, include it once.
+- If someone says "Party A to coordinate with Party B to do X" — one task, assignee = Party A.
 - If no tasks exist, return an empty array [].
 PROMPT;
 
     $clientHint = $client ? "Client: $client\n\n" : '';
-    $user = $clientHint . "MEETING MINUTES:\n\n" . $minutesMarkdown;
+    $user = $clientHint . "MEETING TRANSCRIPT:\n\n" . $transcript;
 
     $res = callLLMForSow($provider, $apiKey, $system, $user);
     if (!$res['success']) return $res;

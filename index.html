@@ -1833,7 +1833,6 @@
                                 <button type="button" class="btn btn-success btn-sm" id="min-copy-btn">Copy</button>
                                 <button type="button" class="btn btn-primary btn-sm" id="min-pdf-btn">Download PDF</button>
                                 <button type="button" class="btn btn-secondary btn-sm" id="min-email-btn">&#9993; Email to Client</button>
-                                <button type="button" class="btn btn-secondary btn-sm" id="min-extract-tasks-btn">&#10003; Extract Tasks</button>
                                 <span class="pdf-edit-hint" style="margin-left:auto;">Click any text on the preview to edit it directly</span>
                             </div>
                             <!-- Styled preview: the same .sow-pdf used for the PDF, shown as a paper-like page. -->
@@ -2085,7 +2084,7 @@ Phone: +1 234 567 890"></textarea></div>
             <section class="page-section" id="page-tasks">
                 <div class="top-bar">
                     <div class="top-bar-content">
-                        <div class="page-title"><h1>Tasks</h1><p>Action items extracted from meetings or added manually, shared across the team.</p></div>
+                        <div class="page-title"><h1>Tasks</h1><p>Action items extracted from Fireflies meetings or added manually, shared across the team.</p></div>
                         <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
                             <select class="form-select" id="task-filter-status" style="width:140px;font-size:13px;" onchange="loadTasks()">
                                 <option value="">All statuses</option>
@@ -2098,12 +2097,22 @@ Phone: +1 234 567 890"></textarea></div>
                     </div>
                 </div>
                 <div class="page-content">
-                    <div id="task-list-wrap">
-                        <div class="empty-state" id="task-empty" style="display:none;">
-                            <p>No tasks yet. Extract them from Meeting Minutes or add one manually.</p>
+                    <!-- Fireflies meeting picker -->
+                    <div class="card" style="margin-bottom:20px;">
+                        <div class="card-body">
+                            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                                <div style="font-weight:700;font-size:14px;">Extract Tasks from a Fireflies Meeting</div>
+                                <button class="btn btn-secondary btn-sm" id="task-ff-load-btn" onclick="taskLoadFfMeetings()">Load Meetings</button>
+                            </div>
+                            <div id="task-ff-status" style="font-size:13px;color:var(--text-muted);"></div>
+                            <div id="task-ff-list" style="display:none;margin-top:10px;"></div>
                         </div>
-                        <div id="task-list"></div>
                     </div>
+                    <!-- Task list -->
+                    <div class="empty-state" id="task-empty" style="display:none;">
+                        <p>No tasks yet. Extract them from a Fireflies meeting or add one manually.</p>
+                    </div>
+                    <div id="task-list"></div>
                 </div>
             </section>
 
@@ -6132,7 +6141,6 @@ minWireFireflies();
     wire('min-refine-btn',minRefine);
     wire('min-email-btn',minOpenEmailModal);
     wire('min-email-send-btn',minSendEmail);
-    wire('min-extract-tasks-btn',minExtractTasks);
 })();
 // Set the masthead logo (mirrors the SOW/CP one-time logo set).
 (function(){const img=document.getElementById('min-pdf-logo-img');if(img)img.src='levatalogo.png';})();
@@ -6312,24 +6320,48 @@ async function minSendEmail(){
 }
 
 /* ===================== TASKS ===================== */
-async function minExtractTasks(){
-    const markdown=minReadPreview();
-    if(!markdown.trim()){toast('Generate minutes first','warning');return;}
-    const btn=document.getElementById('min-extract-tasks-btn');
-    btn.disabled=true;btn.textContent='Extracting...';
-    const client=document.getElementById('min-client').value.trim();
-    const r=await api('extract-tasks','POST',{markdown,client});
-    btn.disabled=false;btn.textContent='✓ Extract Tasks';
-    if(!r.success){toast(r.error||'Extraction failed','error');return;}
-    if(!r.tasks||!r.tasks.length){toast('No action items found in these minutes','info');return;}
-    taskExtractShowReview(r.tasks,{
-        client,
-        meeting_title:document.getElementById('min-title').value.trim(),
-        meeting_date:document.getElementById('min-date').value.trim(),
+
+// Fireflies meeting picker state for the Tasks page.
+let _taskFfMeetings=[];
+
+async function taskLoadFfMeetings(){
+    const btn=document.getElementById('task-ff-load-btn');
+    const status=document.getElementById('task-ff-status');
+    const list=document.getElementById('task-ff-list');
+    btn.disabled=true;btn.textContent='Loading...';
+    status.textContent='';list.style.display='none';list.innerHTML='';
+    const r=await api('fireflies-meetings','POST',{});
+    btn.disabled=false;btn.textContent='Load Meetings';
+    if(!r.success){status.textContent=r.error||'Failed to load meetings';return;}
+    _taskFfMeetings=r.meetings||[];
+    if(!_taskFfMeetings.length){status.textContent='No meetings found.';return;}
+    _taskFfMeetings.forEach(m=>{
+        const row=document.createElement('div');
+        row.style.cssText='display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-white);gap:10px;';
+        const date=m.date?new Date(m.date).toLocaleDateString():'';
+        row.innerHTML=`<div><div style="font-weight:600;font-size:13px;">${escHtml(m.title)}</div>${date?`<div style="font-size:11px;color:var(--text-muted);">${date}</div>`:''}</div><button class="btn btn-primary btn-sm" style="flex-shrink:0;">Extract Tasks</button>`;
+        row.querySelector('button').addEventListener('click',()=>taskExtractFromMeeting(m));
+        list.appendChild(row);
     });
+    list.style.display='flex';
+    list.style.flexDirection='column';
+    list.style.gap='6px';
 }
 
-function taskExtractShowReview(tasks, meta){
+async function taskExtractFromMeeting(meeting){
+    const status=document.getElementById('task-ff-status');
+    status.textContent='Fetching transcript...';
+    const tr=await api('fireflies-transcript','POST',{id:meeting.id});
+    if(!tr.success){status.textContent=tr.error||'Could not fetch transcript';return;}
+    status.textContent='Extracting tasks...';
+    const r=await api('extract-tasks','POST',{transcript:tr.text,client:''});
+    status.textContent='';
+    if(!r.success){toast(r.error||'Extraction failed','error');return;}
+    if(!r.tasks||!r.tasks.length){toast('No action items found in this meeting','info');return;}
+    taskShowReviewModal(r.tasks, meeting);
+}
+
+function taskShowReviewModal(tasks, meeting){
     const list=document.getElementById('task-extract-list');
     list.innerHTML='';
     tasks.forEach((t,i)=>{
@@ -6339,17 +6371,20 @@ function taskExtractShowReview(tasks, meta){
         <div style="display:flex;gap:10px;align-items:flex-start;">
             <input type="checkbox" id="tex-chk-${i}" checked style="margin-top:3px;width:15px;height:15px;flex-shrink:0;accent-color:var(--gold);">
             <div style="flex:1;min-width:0;">
-                <input type="text" class="form-input" id="tex-title-${i}" value="${t.title.replace(/"/g,'&quot;')}" style="font-weight:600;margin-bottom:6px;">
+                <input type="text" class="form-input" id="tex-title-${i}" value="${escHtml(t.title)}" style="font-weight:600;margin-bottom:6px;">
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-                    <input type="text" class="form-input" id="tex-assignee-${i}" value="${(t.assignee||'').replace(/"/g,'&quot;')}" placeholder="Assignee" style="font-size:12px;">
+                    <input type="text" class="form-input" id="tex-assignee-${i}" value="${escHtml(t.assignee||'')}" placeholder="Assignee" style="font-size:12px;">
                     <input type="date" class="form-input" id="tex-due-${i}" value="${t.due_date||''}" style="font-size:12px;">
                 </div>
-                ${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:5px;">${t.notes}</div>`:''}
+                ${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:5px;">${escHtml(t.notes)}</div>`:''}
             </div>
         </div>`;
-        list._taskMeta=meta;
         list.appendChild(card);
     });
+    list._taskMeta={
+        fireflies_id: meeting.id,
+        fireflies_meeting_title: meeting.title||'',
+    };
     list._taskCount=tasks.length;
     document.getElementById('task-extract-save-btn').textContent='Save Tasks';
     openModal('task-extract-modal');
@@ -6369,9 +6404,8 @@ document.getElementById('task-extract-save-btn').addEventListener('click', async
             title,
             assignee:(document.getElementById('tex-assignee-'+i)?.value||'').trim(),
             due_date:(document.getElementById('tex-due-'+i)?.value||'').trim(),
-            client:meta.client||'',
-            meeting_title:meta.meeting_title||'',
-            meeting_date:meta.meeting_date||'',
+            fireflies_id: meta.fireflies_id||'',
+            fireflies_meeting_title: meta.fireflies_meeting_title||'',
             source:'meeting',
         });
     }
@@ -6386,6 +6420,7 @@ document.getElementById('task-extract-save-btn').addEventListener('click', async
     closeModal('task-extract-modal');
     if(saved)toast(saved+' task'+(saved>1?'s':'')+' saved','success');
     if(failed)toast(failed+' task'+(failed>1?'s':'')+' failed to save','error');
+    if(saved)loadTasks();
 });
 
 window.loadTasks=async function(){
@@ -6423,6 +6458,7 @@ function taskCard(t){
     const statusLabel={open:'Open',in_progress:'In Progress',done:'Done'};
     const dueStr=t.due_date?'Due '+t.due_date:'';
     const sourceLabel=t.source==='meeting'?'Meeting':'Manual';
+    const ffUrl=t.fireflies_id?`https://app.fireflies.ai/view/${encodeURIComponent(t.fireflies_meeting_title||'meeting')}::${t.fireflies_id}`:'';
     div.innerHTML=`
     <div class="task-check ${t.status}" title="Click to advance status" onclick="taskCycleStatus('${t.id}','${nextStatus[t.status]||'open'}',this)"></div>
     <div class="task-body">
@@ -6431,6 +6467,7 @@ function taskCard(t){
             ${t.assignee?`<span>${escHtml(t.assignee)}</span><span style="opacity:.4">·</span>`:''}
             ${t.client?`<span>${escHtml(t.client)}</span><span style="opacity:.4">·</span>`:''}
             ${dueStr?`<span>${escHtml(dueStr)}</span><span style="opacity:.4">·</span>`:''}
+            ${ffUrl?`<a href="${ffUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--gold);text-decoration:none;font-weight:600;" title="${escHtml(t.fireflies_meeting_title||'View meeting')}">${escHtml(t.fireflies_meeting_title||'View Meeting')} ↗</a><span style="opacity:.4">·</span>`:''}
             <span class="task-badge task-badge-source">${sourceLabel}</span>
             <span class="task-badge task-badge-status-${t.status}">${statusLabel[t.status]||t.status}</span>
         </div>

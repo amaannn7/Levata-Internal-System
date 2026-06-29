@@ -1781,12 +1781,12 @@ case 'save-task':
             'client'        => trim($input['client'] ?? ''),
             'due_date'      => trim($input['due_date'] ?? ''),
             'notes'         => trim($input['notes'] ?? ''),
-            'status'        => 'open',
-            'source'        => trim($input['source'] ?? 'manual'),
-            'meeting_title' => trim($input['meeting_title'] ?? ''),
-            'meeting_date'  => trim($input['meeting_date'] ?? ''),
-            'created_at'    => date('c'),
-            'created_by'    => $user['id'],
+            'status'                  => 'open',
+            'source'                  => trim($input['source'] ?? 'manual'),
+            'fireflies_id'            => trim($input['fireflies_id'] ?? ''),
+            'fireflies_meeting_title' => trim($input['fireflies_meeting_title'] ?? ''),
+            'created_at'              => date('c'),
+            'created_by'              => $user['id'],
         ];
         $store['tasks'][] = $task;
     } else {
@@ -1827,7 +1827,7 @@ case 'delete-task':
     break;
 
 case 'extract-tasks':
-    // LLM call: finished minutes markdown → candidate task list.
+    // LLM call: Fireflies transcript → candidate task list.
     // Returns JSON for the rep to review; does NOT save anything.
     if ($method !== 'POST') break;
     requireAuth();
@@ -1835,10 +1835,10 @@ case 'extract-tasks':
     $provider = $admin['default_provider'] ?? 'groq';
     $apiKey   = $admin[$provider . '_key'] ?? '';
     if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
-    $markdown = trim($input['markdown'] ?? '');
-    if ($markdown === '') respond(['success' => false, 'error' => 'No minutes content provided'], 400);
+    $transcript = trim($input['transcript'] ?? '');
+    if ($transcript === '') respond(['success' => false, 'error' => 'No transcript content provided'], 400);
     $client = trim($input['client'] ?? '');
-    $res = extractTasksFromMinutes($provider, $apiKey, $markdown, $client);
+    $res = extractTasksFromMinutes($provider, $apiKey, $transcript, $client);
     if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 502);
     respond(['success' => true, 'tasks' => $res['tasks']]);
     break;
