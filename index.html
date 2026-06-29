@@ -6344,6 +6344,7 @@ async function taskLoadFfMeetings(){
         list.appendChild(row);
     });
     list.style.display='flex';list.style.flexDirection='column';list.style.gap='6px';
+    list.scrollIntoView({behavior:'smooth',block:'start'});
 }
 async function taskExtractFromMeeting(meeting){
     const status=document.getElementById('task-ff-status');
@@ -6423,7 +6424,7 @@ function taskCard(t){
     const nextStatus={open:'in_progress',in_progress:'done',done:'open'};
     const statusLabel={open:'Open',in_progress:'In Progress',done:'Done'};
     const dueStr=t.due_date?'Due '+t.due_date:'';
-    const ffUrl=t.fireflies_id?`https://app.fireflies.ai/view/${encodeURIComponent(t.fireflies_meeting_title||'meeting')}::${t.fireflies_id}`:'';
+    const ffUrl=t.fireflies_id?`https://app.fireflies.ai/view/${(t.fireflies_meeting_title||'meeting').replace(/\s+/g,'-').replace(/[^a-zA-Z0-9\-]/g,'')}::${t.fireflies_id}`:'';
     div.innerHTML=`<div class="task-check ${t.status}" title="Click to advance status" onclick="taskCycleStatus('${t.id}','${nextStatus[t.status]||'open'}',this)"></div><div class="task-body"><div class="task-title">${escHtml(t.title)}</div><div class="task-meta">${t.assignee?`<span>${escHtml(t.assignee)}</span><span style="opacity:.4">·</span>`:''} ${t.client?`<span>${escHtml(t.client)}</span><span style="opacity:.4">·</span>`:''} ${dueStr?`<span>${escHtml(dueStr)}</span><span style="opacity:.4">·</span>`:''} ${ffUrl?`<a href="${ffUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--gold);text-decoration:none;font-weight:600;">${escHtml(t.fireflies_meeting_title||'View Meeting')} ↗</a><span style="opacity:.4">·</span>`:''}<span class="task-badge task-badge-source">${t.source==='meeting'?'Meeting':'Manual'}</span> <span class="task-badge task-badge-status-${t.status}">${statusLabel[t.status]||t.status}</span></div>${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escHtml(t.notes)}</div>`:''}</div><div class="task-actions"><button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;" onclick="openEditTaskModal(${JSON.stringify(t).replace(/"/g,'&quot;')})">Edit</button><button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;color:var(--danger);" onclick="deleteTask('${t.id}')">Delete</button></div>`;
     return div;
 }
