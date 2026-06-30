@@ -6495,12 +6495,62 @@ function taskCard(t){
 async function taskCycleStatus(id,newStatus,el){
     el.className='task-check '+newStatus;  // optimistic UI
     const r=await api('save-task','POST',{id,status:newStatus});
-    if(r.success){
-        if(_taskStore[id])_taskStore[id].status=newStatus;
-        window.loadTasks();
-    } else {
+    if(!r.success){
         toast('Failed to update status','error');
         window.loadTasks();
+        return;
+    }
+    if(_taskStore[id])_taskStore[id].status=newStatus;
+    // If a status filter is active and this card no longer matches, reload the list.
+    const filterStatus=document.getElementById('task-filter-status')?.value||'';
+    if(filterStatus&&filterStatus!==newStatus){window.loadTasks();return;}
+    // Otherwise update the card in place — no flicker, no re-render.
+    const card=el.closest('.task-card');
+    if(!card){window.loadTasks();return;}
+    const statusLabel={open:'Open',in_progress:'In Progress',done:'Done'};
+    const nextStatus={open:'in_progress',in_progress:'done',done:'open'};
+    const nextLabel={open:'Mark In Progress',in_progress:'Mark Done',done:'Reopen'};
+    // Update card done-class and title strikethrough
+    card.classList.toggle('done',newStatus==='done');
+    // Update status badge
+    const badge=card.querySelector('[class*="task-badge-status-"]');
+    if(badge){badge.className='task-badge task-badge-status-'+newStatus;badge.textContent=statusLabel[newStatus]||newStatus;}
+    // Update circle title for next click
+    el.title=nextLabel[newStatus]||'Advance status';
+    // Re-wire circle click for next status
+    el.onclick=null;
+    el.replaceWith(el.cloneNode(true));  // remove old listener
+    const newEl=card.querySelector('.task-check');
+    newEl.addEventListener('click',()=>taskCycleStatus(id,nextStatus[newStatus]||'open',newEl));
+    // Move card to correct group if groups are visible
+    const listEl=document.getElementById('task-list');
+    const groupLabels=[...listEl.querySelectorAll('.task-group-label')];
+    if(groupLabels.length){
+        // Find or create the target group label
+        const groupText={open:'Open',in_progress:'In Progress',done:'Done'};
+        let targetLabel=groupLabels.find(g=>g.textContent.startsWith(groupText[newStatus]));
+        // Remove card from current position
+        card.remove();
+        if(targetLabel){
+            // Insert after the label, before the next label or end
+            let insertBefore=targetLabel.nextSibling;
+            while(insertBefore&&!insertBefore.classList?.contains('task-group-label'))insertBefore=insertBefore.nextSibling;
+            listEl.insertBefore(card,insertBefore||null);
+            // Update group count
+            const groupCards=[...listEl.querySelectorAll('.task-card')].filter(c=>_taskStore[c.dataset.id]?.status===newStatus);
+            targetLabel.textContent=groupText[newStatus]+' ('+groupCards.length+')';
+        } else {
+            // Group doesn't exist yet, just reload cleanly
+            window.loadTasks();
+        }
+        // Update old group count
+        const oldStatus=Object.keys(nextStatus).find(s=>nextStatus[s]===newStatus)||'';
+        const oldLabel=groupLabels.find(g=>g.textContent.startsWith(groupText[oldStatus]));
+        if(oldLabel){
+            const oldCards=[...listEl.querySelectorAll('.task-card')].filter(c=>_taskStore[c.dataset.id]?.status===oldStatus);
+            if(oldCards.length)oldLabel.textContent=groupText[oldStatus]+' ('+oldCards.length+')';
+            else oldLabel.remove();
+        }
     }
 }
 
