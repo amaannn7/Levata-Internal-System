@@ -1769,7 +1769,7 @@ case 'save-task':
     $store = getTasksStore();
     $id = trim($input['id'] ?? '');
     $title = trim($input['title'] ?? '');
-    if ($title === '') respond(['success' => false, 'error' => 'Task title is required'], 400);
+    if ($id === '' && $title === '') respond(['success' => false, 'error' => 'Task title is required'], 400);
 
     if ($id === '') {
         // Create.
