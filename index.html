@@ -6323,21 +6323,23 @@ async function minSendEmail(){
 }
 
 /* ===================== TASKS ===================== */
-let _taskFfMeetings=[];
+const _taskStore={};  // id → task object, populated on each loadTasks
+function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
 async function taskLoadFfMeetings(){
     const btn=document.getElementById('task-ff-load-btn');
-    const status=document.getElementById('task-ff-status');
+    const statusEl=document.getElementById('task-ff-status');
     const list=document.getElementById('task-ff-list');
     btn.disabled=true;btn.textContent='Loading...';
-    status.textContent='';list.style.display='none';list.innerHTML='';
+    statusEl.textContent='';list.style.display='none';list.innerHTML='';
     const r=await api('fireflies-meetings','POST',{});
     btn.disabled=false;btn.textContent='Load Meetings';
-    if(!r.success){status.textContent=r.error||'Failed to load meetings';return;}
-    _taskFfMeetings=r.meetings||[];
-    if(!_taskFfMeetings.length){status.textContent='No meetings found.';return;}
-    _taskFfMeetings.forEach(m=>{
+    if(!r.success){statusEl.textContent=r.error||'Failed to load meetings';return;}
+    const meetings=r.meetings||[];
+    if(!meetings.length){statusEl.textContent='No meetings found.';return;}
+    meetings.forEach(m=>{
         const row=document.createElement('div');
-        row.style.cssText='display:flex;align-items:center;justify-content:space-between;padding:10px 12px;gap:8px;border-bottom:1px solid #f0eff4;cursor:pointer;';
+        row.style.cssText='display:flex;align-items:center;justify-content:space-between;padding:10px 12px;gap:8px;border-bottom:1px solid #f0eff4;';
         const date=m.date?new Date(m.date).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}):'';
         row.innerHTML=`<div style="min-width:0;"><div style="font-weight:600;font-size:13px;color:#1f232b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(m.title||'Untitled meeting')}</div>${date?`<div style="font-size:11px;color:#888;">${date}</div>`:''}</div><button class="btn btn-primary btn-sm" style="flex-shrink:0;">Extract Tasks</button>`;
         row.querySelector('button').addEventListener('click',()=>taskExtractFromMeeting(m));
@@ -6345,25 +6347,37 @@ async function taskLoadFfMeetings(){
     });
     list.style.display='block';
 }
+
 async function taskExtractFromMeeting(meeting){
-    const status=document.getElementById('task-ff-status');
-    status.textContent='Fetching transcript...';
+    const statusEl=document.getElementById('task-ff-status');
+    statusEl.textContent='Fetching transcript...';
     const tr=await api('fireflies-transcript','POST',{id:meeting.id});
-    if(!tr.success){status.textContent=tr.error||'Could not fetch transcript';return;}
-    status.textContent='Extracting tasks...';
+    if(!tr.success){statusEl.textContent=tr.error||'Could not fetch transcript';return;}
+    statusEl.textContent='Extracting tasks with AI...';
     const r=await api('extract-tasks','POST',{transcript:tr.text,client:''});
-    status.textContent='';
+    statusEl.textContent='';
     if(!r.success){toast(r.error||'Extraction failed','error');return;}
     if(!r.tasks||!r.tasks.length){toast('No action items found in this meeting','info');return;}
     taskShowReviewModal(r.tasks,meeting);
 }
+
 function taskShowReviewModal(tasks,meeting){
     const list=document.getElementById('task-extract-list');
     list.innerHTML='';
     tasks.forEach((t,i)=>{
         const card=document.createElement('div');
         card.style.cssText='border:1px solid var(--border);border-radius:8px;padding:12px 14px;background:var(--bg-white);';
-        card.innerHTML=`<div style="display:flex;gap:10px;align-items:flex-start;"><input type="checkbox" id="tex-chk-${i}" checked style="margin-top:3px;width:15px;height:15px;flex-shrink:0;accent-color:var(--gold);"><div style="flex:1;min-width:0;"><input type="text" class="form-input" id="tex-title-${i}" value="${escHtml(t.title)}" style="font-weight:600;margin-bottom:6px;"><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"><input type="text" class="form-input" id="tex-assignee-${i}" value="${escHtml(t.assignee||'')}" placeholder="Assignee" style="font-size:12px;"><input type="date" class="form-input" id="tex-due-${i}" value="${t.due_date||''}" style="font-size:12px;"></div>${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:5px;">${escHtml(t.notes)}</div>`:''}</div></div>`;
+        card.innerHTML=`<div style="display:flex;gap:10px;align-items:flex-start;">
+            <input type="checkbox" id="tex-chk-${i}" checked style="margin-top:3px;width:15px;height:15px;flex-shrink:0;accent-color:var(--gold);">
+            <div style="flex:1;min-width:0;">
+                <input type="text" class="form-input" id="tex-title-${i}" value="${escHtml(t.title)}" style="font-weight:600;margin-bottom:6px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                    <input type="text" class="form-input" id="tex-assignee-${i}" value="${escHtml(t.assignee||'')}" placeholder="Assignee" style="font-size:12px;">
+                    <input type="date" class="form-input" id="tex-due-${i}" value="${t.due_date||''}" style="font-size:12px;">
+                </div>
+                ${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:5px;">${escHtml(t.notes)}</div>`:''}
+            </div>
+        </div>`;
         list.appendChild(card);
     });
     list._taskMeta={fireflies_id:meeting.id,fireflies_meeting_title:meeting.title||''};
@@ -6371,17 +6385,24 @@ function taskShowReviewModal(tasks,meeting){
     document.getElementById('task-extract-save-btn').textContent='Save Tasks';
     openModal('task-extract-modal');
 }
+
 document.getElementById('task-extract-save-btn').addEventListener('click',async function(){
     const list=document.getElementById('task-extract-list');
     const meta=list._taskMeta||{};
     const n=list._taskCount||0;
     const toSave=[];
     for(let i=0;i<n;i++){
-        const chk=document.getElementById('tex-chk-'+i);
-        if(!chk||!chk.checked)continue;
+        if(!document.getElementById('tex-chk-'+i)?.checked)continue;
         const title=(document.getElementById('tex-title-'+i)?.value||'').trim();
         if(!title)continue;
-        toSave.push({title,assignee:(document.getElementById('tex-assignee-'+i)?.value||'').trim(),due_date:(document.getElementById('tex-due-'+i)?.value||'').trim(),fireflies_id:meta.fireflies_id||'',fireflies_meeting_title:meta.fireflies_meeting_title||'',source:'meeting'});
+        toSave.push({
+            title,
+            assignee:(document.getElementById('tex-assignee-'+i)?.value||'').trim(),
+            due_date:(document.getElementById('tex-due-'+i)?.value||'').trim(),
+            fireflies_id:meta.fireflies_id||'',
+            fireflies_meeting_title:meta.fireflies_meeting_title||'',
+            source:'meeting'
+        });
     }
     if(!toSave.length){toast('No tasks selected','warning');return;}
     this.disabled=true;this.textContent='Saving...';
@@ -6390,49 +6411,99 @@ document.getElementById('task-extract-save-btn').addEventListener('click',async 
     this.disabled=false;this.textContent='Save Tasks';
     closeModal('task-extract-modal');
     if(saved)toast(saved+' task'+(saved>1?'s':'')+' saved','success');
-    if(failed)toast(failed+' task'+(failed>1?'s':'')+' failed to save','error');
-    if(saved)loadTasks();
+    if(failed)toast(failed+' failed to save','error');
+    if(saved)window.loadTasks();
 });
+
 window.loadTasks=async function(){
-    const list=document.getElementById('task-list');
-    const empty=document.getElementById('task-empty');
-    if(!list)return;
-    list.innerHTML='<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading...</div>';
-    const status=document.getElementById('task-filter-status')?.value||'';
-    const params=new URLSearchParams();
-    if(status)params.set('status',status);
-    const r=await api('tasks'+(params.toString()?'&'+params.toString():''));
-    if(!r.success){list.innerHTML='';toast(r.error||'Could not load tasks','error');return;}
+    const listEl=document.getElementById('task-list');
+    const emptyEl=document.getElementById('task-empty');
+    if(!listEl)return;
+    listEl.innerHTML='<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading...</div>';
+    const filterStatus=document.getElementById('task-filter-status')?.value||'';
+    const r=await api('tasks'+(filterStatus?'&status='+encodeURIComponent(filterStatus):''));
+    if(!r.success){listEl.innerHTML='';toast(r.error||'Could not load tasks','error');return;}
     const tasks=r.tasks||[];
-    list.innerHTML='';
-    if(!tasks.length){empty&&(empty.style.display='');return;}
-    empty&&(empty.style.display='none');
+    // Populate store for safe edit lookups
+    Object.keys(_taskStore).forEach(k=>delete _taskStore[k]);
+    tasks.forEach(t=>{_taskStore[t.id]=t;});
+    listEl.innerHTML='';
+    if(!tasks.length){emptyEl&&(emptyEl.style.display='');return;}
+    emptyEl&&(emptyEl.style.display='none');
     const groups=[['open','Open'],['in_progress','In Progress'],['done','Done']];
     groups.forEach(([st,label])=>{
         const group=tasks.filter(t=>t.status===st);
         if(!group.length)return;
-        const gl=document.createElement('div');gl.className='task-group-label';gl.textContent=label+' ('+group.length+')';
-        list.appendChild(gl);
-        group.forEach(t=>list.appendChild(taskCard(t)));
+        const gl=document.createElement('div');
+        gl.className='task-group-label';
+        gl.textContent=label+' ('+group.length+')';
+        listEl.appendChild(gl);
+        group.forEach(t=>{
+            const card=taskCard(t);
+            listEl.appendChild(card);
+        });
     });
 };
+
 function taskCard(t){
     const div=document.createElement('div');
     div.className='task-card'+(t.status==='done'?' done':'');
     div.dataset.id=t.id;
+    div.style.marginBottom='8px';
     const nextStatus={open:'in_progress',in_progress:'done',done:'open'};
+    const nextLabel={open:'Mark In Progress',in_progress:'Mark Done',done:'Reopen'};
     const statusLabel={open:'Open',in_progress:'In Progress',done:'Done'};
     const dueStr=t.due_date?'Due '+t.due_date:'';
-    const ffUrl=t.fireflies_id?`https://app.fireflies.ai/view/${(t.fireflies_meeting_title||'meeting').replace(/\s+/g,'-').replace(/[^a-zA-Z0-9\-]/g,'')}::${t.fireflies_id}`:'';
-    div.innerHTML=`<div class="task-check ${t.status}" title="Click to advance status" onclick="taskCycleStatus('${t.id}','${nextStatus[t.status]||'open'}',this)"></div><div class="task-body"><div class="task-title">${escHtml(t.title)}</div><div class="task-meta">${t.assignee?`<span>${escHtml(t.assignee)}</span><span style="opacity:.4">·</span>`:''} ${t.client?`<span>${escHtml(t.client)}</span><span style="opacity:.4">·</span>`:''} ${dueStr?`<span>${escHtml(dueStr)}</span><span style="opacity:.4">·</span>`:''} ${ffUrl?`<a href="${ffUrl}" target="_blank" rel="noopener" style="font-size:12px;color:var(--gold);text-decoration:none;font-weight:600;">${escHtml(t.fireflies_meeting_title||'View Meeting')} ↗</a><span style="opacity:.4">·</span>`:''}<span class="task-badge task-badge-source">${t.source==='meeting'?'Meeting':'Manual'}</span> <span class="task-badge task-badge-status-${t.status}">${statusLabel[t.status]||t.status}</span></div>${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escHtml(t.notes)}</div>`:''}</div><div class="task-actions"><button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;" onclick="openEditTaskModal(${JSON.stringify(t).replace(/"/g,'&quot;')})">Edit</button><button class="btn btn-secondary btn-sm" style="padding:4px 10px;font-size:12px;color:var(--danger);" onclick="deleteTask('${t.id}')">Delete</button></div>`;
+    const ffUrl=t.fireflies_id?`https://app.fireflies.ai/view/${(t.fireflies_meeting_title||'meeting').replace(/\s+/g,'-').replace(/[^a-zA-Z0-9-]/g,'')}::${t.fireflies_id}`:'';
+    // Status circle button
+    const check=document.createElement('div');
+    check.className='task-check '+t.status;
+    check.title=nextLabel[t.status]||'Advance status';
+    check.addEventListener('click',()=>taskCycleStatus(t.id,nextStatus[t.status]||'open',check));
+    // Body
+    const body=document.createElement('div');
+    body.className='task-body';
+    const metaParts=[];
+    if(t.assignee)metaParts.push(`<span>${escHtml(t.assignee)}</span>`);
+    if(t.client)metaParts.push(`<span>${escHtml(t.client)}</span>`);
+    if(dueStr)metaParts.push(`<span>${escHtml(dueStr)}</span>`);
+    if(ffUrl)metaParts.push(`<a href="${ffUrl}" target="_blank" rel="noopener" style="color:var(--gold);text-decoration:none;font-weight:600;">${escHtml(t.fireflies_meeting_title||'View Meeting')} ↗</a>`);
+    metaParts.push(`<span class="task-badge task-badge-source">${t.source==='meeting'?'Meeting':'Manual'}</span>`);
+    metaParts.push(`<span class="task-badge task-badge-status-${t.status}">${statusLabel[t.status]||t.status}</span>`);
+    body.innerHTML=`<div class="task-title">${escHtml(t.title)}</div><div class="task-meta">${metaParts.join('<span style="opacity:.35;margin:0 2px;">·</span>')}</div>${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escHtml(t.notes)}</div>`:''}`;
+    // Actions
+    const actions=document.createElement('div');
+    actions.className='task-actions';
+    const editBtn=document.createElement('button');
+    editBtn.className='btn btn-secondary btn-sm';
+    editBtn.style.cssText='padding:4px 10px;font-size:12px;';
+    editBtn.textContent='Edit';
+    editBtn.addEventListener('click',()=>openEditTaskModal(t.id));
+    const delBtn=document.createElement('button');
+    delBtn.className='btn btn-secondary btn-sm';
+    delBtn.style.cssText='padding:4px 10px;font-size:12px;color:var(--danger);';
+    delBtn.textContent='Delete';
+    delBtn.addEventListener('click',()=>deleteTask(t.id));
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+    div.appendChild(check);
+    div.appendChild(body);
+    div.appendChild(actions);
     return div;
 }
-function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
 async function taskCycleStatus(id,newStatus,el){
-    el.className='task-check '+newStatus;
+    el.className='task-check '+newStatus;  // optimistic UI
     const r=await api('save-task','POST',{id,status:newStatus});
-    if(r.success)loadTasks();else{toast('Failed to update','error');loadTasks();}
+    if(r.success){
+        if(_taskStore[id])_taskStore[id].status=newStatus;
+        window.loadTasks();
+    } else {
+        toast('Failed to update status','error');
+        window.loadTasks();
+    }
 }
+
 function openAddTaskModal(){
     document.getElementById('task-edit-id').value='';
     document.getElementById('task-edit-title').value='';
@@ -6444,7 +6515,10 @@ function openAddTaskModal(){
     document.getElementById('task-edit-modal-title').textContent='Add Task';
     openModal('task-edit-modal');
 }
-function openEditTaskModal(t){
+
+function openEditTaskModal(id){
+    const t=_taskStore[id];
+    if(!t){toast('Task not found','error');return;}
     document.getElementById('task-edit-id').value=t.id||'';
     document.getElementById('task-edit-title').value=t.title||'';
     document.getElementById('task-edit-assignee').value=t.assignee||'';
@@ -6455,25 +6529,41 @@ function openEditTaskModal(t){
     document.getElementById('task-edit-modal-title').textContent='Edit Task';
     openModal('task-edit-modal');
 }
+
 document.getElementById('task-edit-save-btn').addEventListener('click',async function(){
     const id=document.getElementById('task-edit-id').value;
     const title=document.getElementById('task-edit-title').value.trim();
     if(!title){toast('Task title is required','warning');return;}
     this.disabled=true;this.textContent='Saving...';
-    const payload={title,assignee:document.getElementById('task-edit-assignee').value.trim(),client:document.getElementById('task-edit-client').value.trim(),due_date:document.getElementById('task-edit-due').value,notes:document.getElementById('task-edit-notes').value.trim(),status:document.getElementById('task-edit-status').value,source:'manual'};
+    const payload={
+        title,
+        assignee:document.getElementById('task-edit-assignee').value.trim(),
+        client:document.getElementById('task-edit-client').value.trim(),
+        due_date:document.getElementById('task-edit-due').value,
+        notes:document.getElementById('task-edit-notes').value.trim(),
+        status:document.getElementById('task-edit-status').value,
+        source:id?(_taskStore[id]?.source||'manual'):'manual'
+    };
     if(id)payload.id=id;
     const r=await api('save-task','POST',payload);
     this.disabled=false;this.textContent='Save';
-    if(r.success){closeModal('task-edit-modal');toast('Task saved','success');if(document.getElementById('page-tasks')?.classList.contains('active'))loadTasks();}
-    else toast(r.error||'Failed','error');
+    if(r.success){
+        closeModal('task-edit-modal');
+        toast(id?'Task updated':'Task added','success');
+        window.loadTasks();
+    } else {
+        toast(r.error||'Failed to save','error');
+    }
 });
+
 async function deleteTask(id){
     if(!confirm('Delete this task?'))return;
     const r=await api('delete-task','POST',{id});
-    if(r.success){toast('Task deleted','success');loadTasks();}
-    else toast(r.error||'Failed','error');
+    if(r.success){toast('Task deleted','success');window.loadTasks();}
+    else toast(r.error||'Failed to delete','error');
 }
-// Expose to onclick= attributes and showPage
+
+// Expose to onclick= attributes and showPage hook
 window.openAddTaskModal=openAddTaskModal;
 window.openEditTaskModal=openEditTaskModal;
 window.taskCycleStatus=taskCycleStatus;
