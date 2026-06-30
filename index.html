@@ -6372,8 +6372,8 @@ function taskShowReviewModal(tasks,meeting){
             <div style="flex:1;min-width:0;">
                 <input type="text" class="form-input" id="tex-title-${i}" value="${escHtml(t.title)}" style="font-weight:600;margin-bottom:6px;">
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-                    <input type="text" class="form-input" id="tex-assignee-${i}" value="${escHtml(t.assignee||'')}" placeholder="Assignee" style="font-size:12px;">
-                    <input type="date" class="form-input" id="tex-due-${i}" value="${t.due_date||''}" style="font-size:12px;">
+                    <div><div style="font-size:11px;color:var(--text-muted);margin-bottom:2px;">Assignee</div><input type="text" class="form-input" id="tex-assignee-${i}" value="${escHtml(t.assignee||'')}" placeholder="Assignee" style="font-size:12px;"></div>
+                    <div><div style="font-size:11px;color:var(--text-muted);margin-bottom:2px;">Due date</div><input type="date" class="form-input" id="tex-due-${i}" value="${t.due_date||''}" style="font-size:12px;"></div>
                 </div>
                 ${t.notes?`<div style="font-size:12px;color:var(--text-muted);margin-top:5px;">${escHtml(t.notes)}</div>`:''}
             </div>
