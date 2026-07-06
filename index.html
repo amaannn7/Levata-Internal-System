@@ -2293,6 +2293,16 @@ Phone: +1 234 567 890"></textarea></div>
                 <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1>Users</h1><p>Manage accounts</p></div><button class="btn btn-primary btn-sm" onclick="document.getElementById('create-user-form').reset();var b=document.getElementById('new-user-password');b.innerHTML='';b.style.display='none';openModal('create-user-modal')">+ User</button></div></div>
                 <div class="page-content">
                     <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last Login</th><th>Session Duration</th><th>Last Active</th><th>Actions</th></tr></thead><tbody id="users-table-body"></tbody></table></div></div>
+                    <div class="card" style="margin-top:20px;">
+                        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+                            <h3 class="card-title">Session Activity</h3>
+                            <div class="btn-group">
+                                <select class="form-select" id="sessions-days" style="width:auto;" onchange="loadUserSessions()"><option value="1">Today</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>
+                                <button class="btn btn-sm btn-secondary" onclick="loadUserSessions()">Refresh</button>
+                            </div>
+                        </div>
+                        <div class="table-wrap"><table class="table"><thead><tr><th>User</th><th>Role</th><th>Last Seen</th><th>Last Page</th><th>Active Today</th><th>Sessions</th><th></th></tr></thead><tbody id="sessions-table-body"><tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px;">Loading…</td></tr></tbody></table></div>
+                    </div>
                 </div>
             </section>
         </main>
@@ -5232,6 +5242,48 @@ async function impersonateUser(id,name){const ok=await customConfirm(`Log in as 
 async function resetUserData(id,name){const ok=await customConfirm(`Delete ALL leads for ${name}? This cannot be undone.`,'Reset User Data',{danger:true,confirmText:'Reset'});if(!ok)return;const r=await api('reset-user-data','POST',{user_id:id});if(r.success)toast(`${name}'s data reset`,'success');else toast(r.error||'Failed','error')}
 async function testAPI(){const p=document.getElementById('admin-provider').value;const r=await api('test-api','POST',{provider:p});toast(r.success?'Connected!':r.error||'Failed',r.success?'success':'error')}
 
+// ==================== USER SESSIONS (admin analytics) ====================
+function _fmtDT(iso){if(!iso)return '—';const d=new Date(iso);if(isNaN(d))return '—';return d.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}
+function _fmtMins(m){if(!m)return '0m';const h=Math.floor(m/60),mm=m%60;return h?`${h}h ${mm}m`:`${mm}m`;}
+async function loadUserSessions(){
+    const body=document.getElementById('sessions-table-body');
+    if(!body)return;
+    const days=document.getElementById('sessions-days')?.value||7;
+    body.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px;">Loading…</td></tr>';
+    const r=await api(`user-sessions&days=${days}`);
+    if(!r.success){body.innerHTML=`<tr><td colspan="7" style="text-align:center;color:var(--danger);padding:24px;">${r.error||'Failed to load'}</td></tr>`;return;}
+    if(!r.sessions.length){body.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px;">No activity recorded.</td></tr>';return;}
+    const localToday=new Date().toLocaleDateString('en-CA');
+    body.innerHTML=r.sessions.map(s=>{
+        const roleBadge=s.user_role==='super_admin'?'Super Admin':(s.user_role==='admin'?'Admin':'Rep');
+        const detailId=`sess-detail-${s.user_id.replace(/[^a-z0-9]/gi,'_')}`;
+        const todayMins=(s.sessions||[]).filter(x=>x.start&&x.start.slice(0,10)===localToday).reduce((sum,x)=>sum+(x.duration_mins||0),0);
+        const rows=(s.sessions||[]).map(x=>`<div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;"><span>${_fmtDT(x.start)} → ${_fmtDT(x.end)}</span><span style="color:var(--text-muted);">${_fmtMins(x.duration_mins)} · ${(x.pages||[]).join(', ')||'—'}</span></div>`).join('')||'<div style="font-size:12px;color:var(--text-muted);padding:4px 0;">No sessions in range.</div>';
+        return `<tr>
+            <td>${s.user_name||'—'}</td>
+            <td><span class="badge">${roleBadge}</span></td>
+            <td>${_fmtDT(s.last_seen)}</td>
+            <td>${s.last_page||'—'}</td>
+            <td>${s.active_mins_today>0?_fmtMins(s.active_mins_today):'—'}</td>
+            <td>${s.sessions_this_period}</td>
+            <td><button class="btn btn-xs btn-secondary" onclick="const r=document.getElementById('${detailId}');r.style.display=r.style.display==='none'?'':'none'">View</button></td>
+        </tr>
+        <tr id="${detailId}" style="display:none;"><td colspan="7" style="background:var(--bg-main);padding:8px 16px;">${rows}</td></tr>`;
+    }).join('');
+}
+
+// ==================== ACTIVITY HEARTBEAT ====================
+// Records a lightweight ping (current page) every minute so admins can see session activity.
+let _activityPage='dashboard';
+let _lastInteraction=Date.now();
+['mousemove','keydown','click','scroll'].forEach(ev=>document.addEventListener(ev,()=>{_lastInteraction=Date.now();},{passive:true}));
+function _sendActivityPing(){
+    if(!user||!localStorage.token)return;
+    if(Date.now()-_lastInteraction>60000)return; // skip if idle > 60s
+    api('activity-ping','POST',{page:_activityPage}).catch(()=>{});
+}
+setInterval(_sendActivityPing,60000);
+
 // Email Creator functions
 function populateLeadSelects(){
     const ecSelect=document.getElementById('ec-lead-select');
@@ -6859,6 +6911,8 @@ function showPage(p){
     if(p==='job-registry'&&typeof window.loadJobRegistry==='function')window.loadJobRegistry();
     if(p==='tasks'&&typeof window.loadTasks==='function')window.loadTasks();
     if(p==='support'&&typeof window.loadSupport==='function')window.loadSupport();
+    if(p==='users'){loadUsers();loadUserSessions();}
+    _activityPage=p;
 }
 function openSidebar(){document.getElementById('sidebar').classList.add('open');document.getElementById('sidebar-overlay').classList.add('active')}
 function closeSidebar(){document.getElementById('sidebar').classList.remove('open');document.getElementById('sidebar-overlay').classList.remove('active')}

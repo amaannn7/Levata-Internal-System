@@ -182,6 +182,31 @@ function saveUsers($users) {
     fclose($fp);
 }
 
+// ── Activity pings (session analytics: heartbeat log used to reconstruct login sessions) ──
+define('ACTIVITY_PINGS_FILE', DATA_DIR . '/activity_pings.json');
+
+function recordActivityPing($userId, $userName, $userRole, $page) {
+    $all = file_exists(ACTIVITY_PINGS_FILE) ? (json_decode(file_get_contents(ACTIVITY_PINGS_FILE), true) ?: []) : [];
+    $all[] = [
+        'user_id' => $userId,
+        'user_name' => $userName,
+        'user_role' => $userRole,
+        'page' => $page,
+        'pinged_at' => date('c'),
+    ];
+    if (count($all) > 5000) $all = array_slice($all, -5000);
+    file_put_contents(ACTIVITY_PINGS_FILE, json_encode($all, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+}
+
+function loadActivityPings($days) {
+    $days = max(1, min(90, $days));
+    $cutoff = time() - ($days * 86400);
+    $all = file_exists(ACTIVITY_PINGS_FILE) ? (json_decode(file_get_contents(ACTIVITY_PINGS_FILE), true) ?: []) : [];
+    $out = array_values(array_filter($all, function($p) use ($cutoff) { return strtotime($p['pinged_at'] ?? '') >= $cutoff; }));
+    usort($out, function($a, $b) { return strcmp($a['user_id'] . $a['pinged_at'], $b['user_id'] . $b['pinged_at']); });
+    return $out;
+}
+
 function getMacktilesStages() {
     return [
         'new_lead' => ['label' => 'New Lead', 'legacy' => 'new'],
@@ -2501,6 +2526,86 @@ case 'users':
     }
     $users = array_map(function($u) { return ['id' => $u['id'], 'name' => $u['name'], 'email' => $u['email'], 'is_admin' => $u['is_admin'] ?? false, 'is_super_admin' => $u['is_super_admin'] ?? false, 'created_at' => $u['created_at'] ?? '', 'last_login_at' => $u['last_login_at'] ?? null, 'session_start' => $u['session_start'] ?? null, 'last_active_at' => $u['last_active_at'] ?? null]; }, $allUsers);
     respond(['success' => true, 'users' => $users]);
+    break;
+
+// Records a lightweight heartbeat (current page) so admins can see session activity.
+case 'activity-ping':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $page = trim($input['page'] ?? $_GET['page'] ?? '');
+    recordActivityPing(
+        $user['id'],
+        $user['name'] ?? $user['email'] ?? '',
+        !empty($user['is_super_admin']) ? 'super_admin' : (!empty($user['is_admin']) ? 'admin' : 'rep'),
+        $page
+    );
+    respond(['success' => true]);
+    break;
+
+// Admin analytics: groups heartbeat pings into sessions (gap > 30 min starts a new session).
+case 'user-sessions':
+    if ($method !== 'GET') break;
+    $requestingUser = requireAdmin();
+    $isSuperAdmin = $requestingUser['is_super_admin'] ?? false;
+
+    $days = intval($_GET['days'] ?? 7);
+    if ($days < 1 || $days > 90) $days = 7;
+
+    $allPings = loadActivityPings($days);
+
+    $userPings = [];
+    foreach ($allPings as $p) $userPings[$p['user_id']][] = $p;
+
+    $userSessions = [];
+    foreach ($userPings as $uid => $pings) {
+        $sessions = [];
+        $sessStart = null; $sessEnd = null; $sessPages = []; $prevT = null;
+        foreach ($pings as $p) {
+            $t = strtotime($p['pinged_at']);
+            if ($prevT === null || ($t - $prevT) > 1800) {
+                if ($sessStart !== null) {
+                    $dur = max(1, round(($prevT - strtotime($sessStart)) / 60) + 1);
+                    $sessions[] = ['start' => $sessStart, 'end' => $sessEnd, 'duration_mins' => $dur, 'pages' => array_values(array_unique($sessPages))];
+                }
+                $sessStart = $p['pinged_at']; $sessPages = [];
+            }
+            $sessEnd = $p['pinged_at'];
+            if (!empty($p['page'])) $sessPages[] = $p['page'];
+            $prevT = $t;
+        }
+        if ($sessStart !== null) {
+            $dur = max(1, round(($prevT - strtotime($sessStart)) / 60) + 1);
+            $sessions[] = ['start' => $sessStart, 'end' => $sessEnd, 'duration_mins' => $dur, 'pages' => array_values(array_unique($sessPages))];
+        }
+        $userSessions[$uid] = $sessions;
+    }
+
+    // Build per-user summary. Super admin sees everyone; regular admin excludes super admins.
+    $result = [];
+    $allUsersForSessions = getUsers();
+    foreach ($allUsersForSessions as $u) {
+        if (!$isSuperAdmin && !empty($u['is_super_admin'])) continue;
+        $uid = $u['id'];
+        $sessions = $userSessions[$uid] ?? [];
+        $lastPing = !empty($sessions) ? end($sessions) : null;
+        $today = date('Y-m-d');
+        $todayMins = 0;
+        foreach ($sessions as $s) {
+            if (substr($s['start'], 0, 10) === $today) $todayMins += $s['duration_mins'];
+        }
+        $result[] = [
+            'user_id' => $uid,
+            'user_name' => $u['name'] ?? $u['email'],
+            'user_role' => !empty($u['is_super_admin']) ? 'super_admin' : (!empty($u['is_admin']) ? 'admin' : 'rep'),
+            'last_seen' => $lastPing['end'] ?? ($u['last_active_at'] ?? null),
+            'last_page' => $lastPing['pages'][count($lastPing['pages']) - 1] ?? null,
+            'active_mins_today' => min($todayMins, 480),
+            'sessions_this_period' => count($sessions),
+            'sessions' => array_reverse($sessions),
+        ];
+    }
+    usort($result, function($a, $b) { return strcmp($b['last_seen'] ?? '', $a['last_seen'] ?? ''); });
+    respond(['success' => true, 'sessions' => $result, 'days' => $days]);
     break;
 
 case 'create-user':
