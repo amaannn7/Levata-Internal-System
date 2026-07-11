@@ -18,31 +18,26 @@
  * Ticket number format: TKT-0001 (sequential, per store).
  */
 
-define('TICKETS_FILE', DATA_DIR . '/tickets.json');
-
 /** Read the shared ticket store. Shape: ['tickets' => [...], 'seq' => ['ticket'=>n]]. */
 function getTicketsStore() {
-    if (!file_exists(TICKETS_FILE)) {
-        return ['tickets' => [], 'seq' => ['ticket' => 0]];
-    }
-    $store = json_decode(file_get_contents(TICKETS_FILE), true);
-    if (!is_array($store)) $store = [];
+    $store = dbGetBlob('tickets', null);
+    if ($store === null) return ['tickets' => [], 'seq' => ['ticket' => 0]];
     if (!isset($store['tickets']) || !is_array($store['tickets'])) $store['tickets'] = [];
     if (!isset($store['seq']) || !is_array($store['seq'])) $store['seq'] = ['ticket' => 0];
     $store['seq']['ticket'] = (int) ($store['seq']['ticket'] ?? 0);
     return $store;
 }
 
-/** Write the shared ticket store with an exclusive lock (mirrors saveJobsStore). */
+/** Write the shared ticket store (mirrors saveJobsStore), plus refresh the reporting projection. */
 function saveTicketsStore($store) {
-    $fp = fopen(TICKETS_FILE, 'c');
-    if (flock($fp, LOCK_EX)) {
-        ftruncate($fp, 0);
-        fwrite($fp, json_encode($store, JSON_PRETTY_PRINT));
-        fflush($fp);
-        flock($fp, LOCK_UN);
-    }
-    fclose($fp);
+    dbSaveBlob('tickets', $store);
+    dbSyncReportingTable('tickets', $store['tickets'] ?? [], [
+        'type' => fn($t) => $t['type'] ?? 'support',
+        'status' => fn($t) => $t['status'] ?? 'open',
+        'priority' => fn($t) => $t['priority'] ?? 'normal',
+        'created_at' => fn($t) => $t['created_at'] ?? null,
+        'updated_at' => fn($t) => $t['updated_at'] ?? null,
+    ]);
 }
 
 function nextTicketNo(&$store) {
@@ -239,4 +234,125 @@ function notifySupportEmail($ticket, $event = 'new', $reply = null) {
     curl_close($ch);
     // Resend returns 200 with {"id":"..."} on success; anything else is a soft failure.
     return $code >= 200 && $code < 300;
+}
+
+/* =====================================================================
+ * Ticket sync (Phase 1: one-way, spoke -> hub)
+ *
+ * The SAME codebase runs on every deployment. A deployment's role is set
+ * purely by its admin_config:
+ *
+ *  - SPOKE (e.g. a client like Macktiles): has 'ticket_hub_url' + 'ticket_hub_secret'
+ *    set. When a user files a ticket, the spoke forwards a copy to the hub.
+ *
+ *  - HUB (our central Levata system): has 'ticket_ingest_secret' set. It accepts
+ *    forwarded tickets on the 'ingest-ticket' endpoint (secret-checked) and stores
+ *    them tagged with the sending client's name, so we see every client's tickets
+ *    in one Help & Support list.
+ *
+ * A deployment can be neither (standalone, current behaviour), a spoke, or a hub.
+ * Forwarding is best-effort: it never blocks or fails the user's submission.
+ * ===================================================================== */
+
+/** This deployment's own name, used to tag forwarded tickets at the hub. */
+function ticketClientName() {
+    $admin = getAdmin();
+    $name = trim($admin['ticket_client_name'] ?? '');
+    if ($name !== '') return $name;
+    // Fall back to the sender company set for outreach, else a generic label.
+    return trim($admin['sender_company'] ?? '') ?: 'Client';
+}
+
+/**
+ * SPOKE side: forward a freshly-created ticket to the configured hub.
+ * Best-effort; returns false quietly if this deployment isn't a spoke or the
+ * hub is unreachable. Never throws.
+ */
+function forwardTicketToHub($ticket) {
+    $admin = getAdmin();
+    $hubUrl = trim($admin['ticket_hub_url'] ?? '');
+    $secret = trim($admin['ticket_hub_secret'] ?? '');
+    if ($hubUrl === '' || $secret === '') return false; // not a spoke
+
+    $payload = [
+        'secret' => $secret,
+        'client' => ticketClientName(),
+        'ticket' => [
+            // Carry the spoke's own id + number so the hub can link back later (Phase 2).
+            'remote_id' => $ticket['id'] ?? '',
+            'remote_ticket_no' => $ticket['ticket_no'] ?? '',
+            'type' => $ticket['type'] ?? 'support',
+            'category' => $ticket['category'] ?? 'other',
+            'priority' => $ticket['priority'] ?? 'normal',
+            'status' => $ticket['status'] ?? 'open',
+            'subject' => $ticket['subject'] ?? '',
+            'message' => $ticket['message'] ?? '',
+            'created_by_name' => $ticket['created_by_name'] ?? '',
+            'created_by_email' => $ticket['created_by_email'] ?? '',
+            'created_at' => $ticket['created_at'] ?? date('c'),
+        ],
+    ];
+
+    $ch = curl_init($hubUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 10,
+    ]);
+    $resp = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code >= 200 && $code < 300;
+}
+
+/**
+ * HUB side: store a ticket forwarded by a spoke.
+ * Assigns a local hub ticket number, tags it with the sending client, and keeps
+ * the spoke's origin (remote_id / remote_ticket_no + client) so a reply can be
+ * routed home in Phase 2. Returns the created local ticket, or null on bad input.
+ */
+function ingestForwardedTicket($client, $remote) {
+    if (!is_array($remote)) return null;
+    global $VALID_TICKET_TYPE, $VALID_TICKET_CATEGORY, $VALID_TICKET_PRIORITY, $VALID_TICKET_STATUS;
+
+    $subject = trim($remote['subject'] ?? '');
+    $message = trim($remote['message'] ?? '');
+    if ($subject === '' || $message === '') return null;
+
+    $store = getTicketsStore();
+    $now = date('c');
+    $type = in_array($remote['type'] ?? '', $VALID_TICKET_TYPE, true) ? $remote['type'] : 'support';
+    $cat = in_array($remote['category'] ?? '', $VALID_TICKET_CATEGORY, true) ? $remote['category'] : 'other';
+    $pri = in_array($remote['priority'] ?? '', $VALID_TICKET_PRIORITY, true) ? $remote['priority'] : 'normal';
+    $status = in_array($remote['status'] ?? '', $VALID_TICKET_STATUS, true) ? $remote['status'] : 'open';
+
+    $ticket = [
+        'id' => 'tkt_' . bin2hex(random_bytes(8)),
+        'ticket_no' => nextTicketNo($store),
+        'type' => $type,
+        'category' => $cat,
+        'priority' => $pri,
+        'status' => $status,
+        'subject' => $subject,
+        'message' => $message,
+        // The person is a user on the spoke, not a local account.
+        'created_by' => '',
+        'created_by_name' => trim($remote['created_by_name'] ?? '') ?: 'Client user',
+        'created_by_email' => trim($remote['created_by_email'] ?? ''),
+        'created_at' => trim($remote['created_at'] ?? '') ?: $now,
+        'updated_at' => $now,
+        'replies' => [],
+        // Origin tag: which client, and their ticket ids, so we can reply home later.
+        'source' => 'client',
+        'client' => trim($client) ?: 'Client',
+        'remote_id' => trim($remote['remote_id'] ?? ''),
+        'remote_ticket_no' => trim($remote['remote_ticket_no'] ?? ''),
+    ];
+    $store['tickets'][] = $ticket;
+    saveTicketsStore($store);
+    // Notify the hub's support inbox too, reusing the existing email path.
+    notifySupportEmail($ticket, 'new');
+    return $ticket;
 }

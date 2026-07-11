@@ -26,10 +26,18 @@ header('Access-Control-Allow-Headers: Content-Type, Authorization, X-User-Token'
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit(0);
 
 define('DATA_DIR', __DIR__ . '/data');
-define('USERS_FILE', DATA_DIR . '/users.json');
-define('ADMIN_FILE', DATA_DIR . '/admin.json');
 
 if (!is_dir(DATA_DIR)) mkdir(DATA_DIR, 0755, true);
+
+// PostgreSQL connection + schema bootstrap. All app data lives in Postgres;
+// data/ is now only used for uploaded document files (PDF/DOCX) and rate-limit state.
+require_once __DIR__ . '/db.php';
+
+// A "user" is a plain assoc array everywhere in this app. Known fields are real
+// columns on the `users` table; anything else (tokens[], reset_token, reset_expires,
+// onboarding_completed, …) rides along in the `data` JSONB column and is merged
+// back on read so existing array-mutation call sites keep working unchanged.
+define('USER_COLUMNS', ['id', 'name', 'email', 'password', 'is_admin', 'is_super_admin', 'created_at', 'last_login_at', 'session_start', 'last_active_at']);
 
 // Document Studio: SOW generation + shared infra.
 require_once __DIR__ . '/sow.php';
@@ -41,6 +49,8 @@ require_once __DIR__ . '/minutes.php';
 require_once __DIR__ . '/jobs.php';
 // Task system (shared company-wide tasks; extraction depends on minutes.php LLM plumbing).
 require_once __DIR__ . '/tasks.php';
+// Clients (shared company-wide client registry; aggregates jobs/documents/tasks).
+require_once __DIR__ . '/clients.php';
 // Help & Support (feedback + support tickets) — added module.
 require_once __DIR__ . '/support.php';
 
@@ -139,8 +149,8 @@ $defaultOutreachRules = [
     'call_outcomes' => ['no_answer_retry', 'left_voicemail', 'gatekeeper', 'wrong_number', 'not_interested', 'interested_followup', 'consultation_booked', 'callback_requested', 'not_right_time_park_90']
 ];
 
-if (!file_exists(ADMIN_FILE)) {
-    file_put_contents(ADMIN_FILE, json_encode([
+if (dbGetBlob('admin_config', null) === null) {
+    dbSaveBlob('admin_config', [
         'groq_key' => '',
         'gemini_key' => '',
         'anthropic_key' => '',
@@ -149,62 +159,105 @@ if (!file_exists(ADMIN_FILE)) {
         'icp_config' => $defaultIcpConfig,
         'stage_validation_rules' => $defaultStageRules,
         'outreach_rules' => $defaultOutreachRules
-    ], JSON_PRETTY_PRINT));
+    ]);
 }
 
-if (!file_exists(USERS_FILE)) {
+if (db()->query('SELECT COUNT(*) FROM users')->fetchColumn() == 0) {
     $adminId = 'user_' . bin2hex(random_bytes(8));
     $defaultAdmin = [
         'id' => $adminId,
         'name' => 'Admin',
         'email' => 'admin@levatahq.com',
         'password' => password_hash('password', PASSWORD_DEFAULT),
-        'token' => bin2hex(random_bytes(32)),
+        'tokens' => [bin2hex(random_bytes(32))],
         'created_at' => date('c'),
-        'is_admin' => true
+        'is_admin' => true,
+        'is_super_admin' => true,
     ];
-    file_put_contents(USERS_FILE, json_encode([$defaultAdmin], JSON_PRETTY_PRINT));
-    file_put_contents(DATA_DIR . "/user_{$adminId}.json", json_encode([
+    saveUsers([$defaultAdmin]);
+    saveUserData($adminId, [
         'leads' => [],
         'settings' => ['sender_name' => 'Admin', 'sender_company' => 'Levata', 'sender_title' => '', 'company_description' => '', 'value_proposition' => '', 'social_proof' => '', 'calendar_link' => '', 'email_tone' => 'professional', 'signature' => '']
-    ], JSON_PRETTY_PRINT));
+    ]);
 }
 
-function getUsers() { return json_decode(file_get_contents(USERS_FILE), true) ?: []; }
+function dbRowToUser($row) {
+    $extra = json_decode($row['data'] ?? '{}', true) ?: [];
+    $u = array_merge($extra, [
+        'id' => $row['id'],
+        'name' => $row['name'],
+        'email' => $row['email'],
+        'password' => $row['password'],
+        'is_admin' => (bool) $row['is_admin'],
+        'is_super_admin' => (bool) $row['is_super_admin'],
+        'created_at' => $row['created_at'],
+        'last_login_at' => $row['last_login_at'],
+        'session_start' => $row['session_start'],
+        'last_active_at' => $row['last_active_at'],
+    ]);
+    return $u;
+}
+
+function getUsers() {
+    $rows = db()->query('SELECT * FROM users ORDER BY created_at ASC')->fetchAll();
+    return array_map('dbRowToUser', $rows);
+}
+
 function saveUsers($users) {
-    $fp = fopen(USERS_FILE, 'c');
-    if (flock($fp, LOCK_EX)) {
-        ftruncate($fp, 0);
-        fwrite($fp, json_encode($users, JSON_PRETTY_PRINT));
-        fflush($fp);
-        flock($fp, LOCK_UN);
+    $pdo = db();
+    $pdo->beginTransaction();
+    try {
+        $ids = [];
+        foreach ($users as $u) {
+            $id = $u['id'] ?? null;
+            if ($id === null) continue;
+            $ids[] = $id;
+            $extra = array_diff_key($u, array_flip(USER_COLUMNS));
+            $pdo->prepare("
+                INSERT INTO users (id, name, email, password, is_admin, is_super_admin, created_at, last_login_at, session_start, last_active_at, data)
+                VALUES (:id, :name, :email, :password, :is_admin::boolean, :is_super_admin::boolean, :created_at, :last_login_at, :session_start, :last_active_at, :data::jsonb)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name, email = EXCLUDED.email, password = EXCLUDED.password,
+                    is_admin = EXCLUDED.is_admin, is_super_admin = EXCLUDED.is_super_admin,
+                    last_login_at = EXCLUDED.last_login_at, session_start = EXCLUDED.session_start,
+                    last_active_at = EXCLUDED.last_active_at, data = EXCLUDED.data
+            ")->execute([
+                ':id' => $id,
+                ':name' => $u['name'] ?? '',
+                ':email' => $u['email'] ?? '',
+                ':password' => $u['password'] ?? '',
+                ':is_admin' => !empty($u['is_admin']) ? 'true' : 'false',
+                ':is_super_admin' => !empty($u['is_super_admin']) ? 'true' : 'false',
+                ':created_at' => $u['created_at'] ?? date('c'),
+                ':last_login_at' => $u['last_login_at'] ?? null,
+                ':session_start' => $u['session_start'] ?? null,
+                ':last_active_at' => $u['last_active_at'] ?? null,
+                ':data' => json_encode($extra, JSON_UNESCAPED_UNICODE),
+            ]);
+        }
+        if (!empty($ids)) {
+            $ph = implode(',', array_map(fn($i) => ":del{$i}", array_keys($ids)));
+            $stmt = $pdo->prepare("DELETE FROM users WHERE id NOT IN ({$ph})");
+            foreach ($ids as $i => $id) $stmt->bindValue(":del{$i}", $id);
+            $stmt->execute();
+        } else {
+            $pdo->exec('DELETE FROM users');
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
     }
-    fclose($fp);
 }
 
 // ── Activity pings (session analytics: heartbeat log used to reconstruct login sessions) ──
-define('ACTIVITY_PINGS_FILE', DATA_DIR . '/activity_pings.json');
-
+// Backed by the real `activity_pings` table — see dbRecordPing()/dbLoadPings() in db.php.
 function recordActivityPing($userId, $userName, $userRole, $page) {
-    $all = file_exists(ACTIVITY_PINGS_FILE) ? (json_decode(file_get_contents(ACTIVITY_PINGS_FILE), true) ?: []) : [];
-    $all[] = [
-        'user_id' => $userId,
-        'user_name' => $userName,
-        'user_role' => $userRole,
-        'page' => $page,
-        'pinged_at' => date('c'),
-    ];
-    if (count($all) > 5000) $all = array_slice($all, -5000);
-    file_put_contents(ACTIVITY_PINGS_FILE, json_encode($all, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    dbRecordPing($userId, $userName, $userRole, $page);
 }
 
 function loadActivityPings($days) {
-    $days = max(1, min(90, $days));
-    $cutoff = time() - ($days * 86400);
-    $all = file_exists(ACTIVITY_PINGS_FILE) ? (json_decode(file_get_contents(ACTIVITY_PINGS_FILE), true) ?: []) : [];
-    $out = array_values(array_filter($all, function($p) use ($cutoff) { return strtotime($p['pinged_at'] ?? '') >= $cutoff; }));
-    usort($out, function($a, $b) { return strcmp($a['user_id'] . $a['pinged_at'], $b['user_id'] . $b['pinged_at']); });
-    return $out;
+    return dbLoadPings((int) $days);
 }
 
 function getMacktilesStages() {
@@ -265,7 +318,7 @@ function normalizeLeadSource($source) {
 function initialStageForSource($source, $warm = false) {
     $source = normalizeLeadSource($source);
     if ($source === 'inbound') return 'call_attempted';
-    if ($source === 'manual') return $warm ? 'engaged' : 'research';
+    if ($source === 'manual') return $warm ? 'engaged' : 'new_lead';
     return 'new_lead';
 }
 
@@ -325,7 +378,7 @@ function macktilesCallOutcomeConfig($outcome) {
 }
 function getAdmin() {
     global $defaultRequisitions, $defaultIcpConfig, $defaultStageRules, $defaultOutreachRules;
-    $admin = json_decode(file_get_contents(ADMIN_FILE), true) ?: [];
+    $admin = dbGetBlob('admin_config', []);
     if (!isset($admin['requisitions'])) $admin['requisitions'] = $defaultRequisitions;
     $reqIds = array_map(fn($r) => $r['id'] ?? '', $admin['requisitions'] ?? []);
     if (!in_array('project_context', $reqIds, true) || !in_array('next_step_agreed', $reqIds, true)) {
@@ -342,24 +395,18 @@ function getAdmin() {
     return $admin;
 }
 function saveAdmin($admin) {
-    $fp = fopen(ADMIN_FILE, 'c');
-    if (flock($fp, LOCK_EX)) {
-        ftruncate($fp, 0);
-        fwrite($fp, json_encode($admin, JSON_PRETTY_PRINT));
-        fflush($fp);
-        flock($fp, LOCK_UN);
-    }
-    fclose($fp);
+    dbSaveBlob('admin_config', $admin);
 }
 
 function getUserData($userId) {
-    $file = DATA_DIR . "/user_{$userId}.json";
-    if (!file_exists($file)) {
-        $default = ['leads' => [], 'settings' => ['sender_name' => '', 'sender_company' => 'Levata', 'sender_title' => '', 'company_description' => '', 'value_proposition' => '', 'social_proof' => '', 'calendar_link' => '', 'email_tone' => 'professional', 'signature' => '']];
-        file_put_contents($file, json_encode($default, JSON_PRETTY_PRINT));
+    $default = ['leads' => [], 'settings' => ['sender_name' => '', 'sender_company' => 'Levata', 'sender_title' => '', 'company_description' => '', 'value_proposition' => '', 'social_proof' => '', 'calendar_link' => '', 'email_tone' => 'professional', 'signature' => '']];
+    $blobName = "user_data:{$userId}";
+    $existing = dbGetBlob($blobName, null);
+    if ($existing === null) {
+        dbSaveBlob($blobName, $default);
         return $default;
     }
-    $data = json_decode(file_get_contents($file), true) ?: [];
+    $data = $existing;
 
     // Migrate existing leads with default values for new fields
     if (!empty($data['leads'])) {
@@ -396,15 +443,7 @@ function getUserData($userId) {
 }
 
 function saveUserData($userId, $data) {
-    $file = DATA_DIR . "/user_{$userId}.json";
-    $fp = fopen($file, 'c');
-    if (flock($fp, LOCK_EX)) {
-        ftruncate($fp, 0);
-        fwrite($fp, json_encode($data, JSON_PRETTY_PRINT));
-        fflush($fp);
-        flock($fp, LOCK_UN);
-    }
-    fclose($fp);
+    dbSaveBlob("user_data:{$userId}", $data);
 }
 function generateId($prefix = '') { return $prefix . bin2hex(random_bytes(8)); }
 function generateToken() { return bin2hex(random_bytes(32)); }
@@ -1788,6 +1827,48 @@ case 'tasks':
     respond(['success' => true, 'tasks' => $tasks]);
     break;
 
+// Unified calendar feed: task due dates + job invoice due dates, for the Calendar view.
+case 'calendar-events':
+    if ($method !== 'GET') break;
+    requireAuth();
+    $events = [];
+    foreach (getTasksStore()['tasks'] as $t) {
+        $due = trim($t['due_date'] ?? '');
+        if ($due === '') continue;
+        $events[] = [
+            'date' => $due,
+            'type' => 'task',
+            'title' => $t['title'] ?? '',
+            'status' => $t['status'] ?? 'open',
+            'assignee' => $t['assignee'] ?? '',
+            'client' => $t['client'] ?? '',
+            'notes' => $t['notes'] ?? '',
+            'ref_id' => $t['id'] ?? '',
+        ];
+    }
+    foreach (getJobsStore()['jobs'] as $j) {
+        foreach (($j['invoices'] ?? []) as $inv) {
+            $due = trim($inv['due_date'] ?? '');
+            if ($due === '') continue;
+            $events[] = [
+                'date' => $due,
+                'type' => 'invoice',
+                'title' => ($inv['label'] ?? 'Invoice') . ' — ' . ($j['client'] ?? ''),
+                'status' => $inv['status'] ?? 'unpaid',
+                'assignee' => '',
+                'client' => $j['client'] ?? '',
+                'ref_id' => $j['id'] ?? '',
+                'invoice_id' => $inv['id'] ?? '',
+                'amount' => $inv['amount'] ?? 0,
+                'invoice_no' => $inv['invoice_no'] ?? '',
+                'job_no' => $j['job_no'] ?? '',
+            ];
+        }
+    }
+    usort($events, fn($a, $b) => strcmp($a['date'], $b['date']));
+    respond(['success' => true, 'events' => $events]);
+    break;
+
 case 'save-task':
     if ($method !== 'POST') break;
     $user = requireAuth();
@@ -1796,6 +1877,12 @@ case 'save-task':
     $title = trim($input['title'] ?? '');
     if ($id === '' && $title === '') respond(['success' => false, 'error' => 'Task title is required'], 400);
 
+    // Optional link to a Job Registry job (dropdown in the task modal).
+    $taskJob = jobRefById(trim($input['job_id'] ?? ''));
+    // Prefer an explicit client_id from the client picker (authoritative); fall
+    // back to matching a typed name for any caller that doesn't send one yet.
+    $clientRef = resolveClientRef($input);
+
     if ($id === '') {
         // Create.
         [$store, $id] = nextTaskId($store);
@@ -1803,7 +1890,10 @@ case 'save-task':
             'id'            => $id,
             'title'         => $title,
             'assignee'      => trim($input['assignee'] ?? ''),
-            'client'        => trim($input['client'] ?? ''),
+            'client'        => $clientRef['name'],
+            'client_id'     => $clientRef['id'],
+            'job_id'        => $taskJob ? ($taskJob['id'] ?? '') : '',
+            'job_no'        => $taskJob ? ($taskJob['job_no'] ?? '') : '',
             'due_date'      => trim($input['due_date'] ?? ''),
             'notes'         => trim($input['notes'] ?? ''),
             'status'                  => 'open',
@@ -1821,7 +1911,8 @@ case 'save-task':
             if ($t['id'] === $id) {
                 if (isset($input['title']))         $t['title']    = $title;
                 if (isset($input['assignee']))      $t['assignee'] = trim($input['assignee']);
-                if (isset($input['client']))        $t['client']   = trim($input['client']);
+                if (isset($input['client']) || isset($input['client_id'])) { $cref = resolveClientRef($input, $t['client'] ?? ''); $t['client'] = $cref['name']; $t['client_id'] = $cref['id']; }
+                if (isset($input['job_id']))      { $t['job_id']   = $taskJob ? ($taskJob['id'] ?? '') : ''; $t['job_no'] = $taskJob ? ($taskJob['job_no'] ?? '') : ''; }
                 if (isset($input['due_date']))      $t['due_date'] = trim($input['due_date']);
                 if (isset($input['notes']))         $t['notes']    = trim($input['notes']);
                 if (isset($input['status']))        $t['status']   = trim($input['status']);
@@ -1884,6 +1975,9 @@ case 'all-documents':
             'type' => $d['type'] ?? 'sow',
             'title' => $d['title'] ?? 'Untitled',
             'client' => $d['client'] ?? '',
+            'client_id' => $d['client_id'] ?? '',
+            'status' => $d['status'] ?? 'draft',
+            'approved_at' => $d['approved_at'] ?? null,
             'linked_cost_proposal' => $d['linked_cost_proposal'] ?? '',
             'investment' => ($d['input']['investment'] ?? ''),
             'owner' => $d['owner'] ?? '',
@@ -1919,7 +2013,12 @@ case 'save-document':
     $docInput = is_array($input['input'] ?? null) ? $input['input'] : [];
     $type = $input['type'] ?? 'sow';
     $title = trim($input['title'] ?? '') ?: (trim($docInput['projectName'] ?? '') ?: (trim($docInput['clientName'] ?? '') ?: 'Untitled document'));
-    $client = trim($input['client'] ?? '') ?: trim($docInput['clientName'] ?? '');
+    // Prefer an explicit client_id from the client picker (authoritative); fall back
+    // to a typed client/clientName for any caller that doesn't send one yet.
+    $clientInputForRef = $input;
+    if (trim($clientInputForRef['client'] ?? '') === '') $clientInputForRef['client'] = trim($docInput['clientName'] ?? '');
+    $clientRef = resolveClientRef($clientInputForRef);
+    $client = $clientRef['name'];
     $id = trim($input['id'] ?? '');
 
     if ($id !== '') {
@@ -1931,6 +2030,7 @@ case 'save-document':
                 $d['input'] = $docInput;
                 $d['title'] = $title;
                 $d['client'] = $client;
+                $d['client_id'] = $clientRef['id'];
                 $d['type'] = $type;
                 // Allow updating the linked CP (e.g. set on the SOW form after first save).
                 if (array_key_exists('linked_cost_proposal', $input)) {
@@ -1957,6 +2057,7 @@ case 'save-document':
             'type' => $type,
             'title' => $title,
             'client' => $client,
+            'client_id' => $clientRef['id'],
             'linked_cost_proposal' => $linkedCp,
             'markdown' => $markdown,
             'input' => $docInput,
@@ -1968,6 +2069,36 @@ case 'save-document':
     }
     saveDocsStore($store);
     respond(['success' => true, 'id' => $id, 'doc_no' => $docNo ?? null]);
+    break;
+
+case 'set-document-status':
+    // Approve a document (or revert it to draft). Approving a Cost Proposal is
+    // the trigger for the CP → job workflow on the frontend.
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $id = trim($input['id'] ?? '');
+    $status = ($input['status'] ?? '') === 'approved' ? 'approved' : 'draft';
+    $store = getDocsStore();
+    $found = false;
+    foreach ($store['documents'] as &$d) {
+        if (($d['id'] ?? '') === $id) {
+            $d['status'] = $status;
+            if ($status === 'approved') {
+                $d['approved_at'] = date('c');
+                $d['approved_by'] = docOwnerName($u['id'] ?? '');
+            } else {
+                $d['approved_at'] = null;
+                $d['approved_by'] = '';
+            }
+            $d['updated_at'] = date('c');
+            $found = true;
+            break;
+        }
+    }
+    unset($d);
+    if (!$found) respond(['success' => false, 'error' => 'Document not found'], 404);
+    saveDocsStore($store);
+    respond(['success' => true, 'status' => $status]);
     break;
 
 case 'delete-document':
@@ -2103,7 +2234,37 @@ case 'save-job':
     $job['invoices'] = buildJobInvoices($store, $job, $input);
     $store['jobs'][] = $job;
     saveJobsStore($store);
-    respond(['success' => true, 'id' => $job['id'], 'job_no' => $job['job_no']]);
+    // Optionally spawn a starter task set linked to the job + client.
+    $starterCount = 0;
+    if (!empty($input['starter_tasks'])) {
+        $titles = ($job['type'] ?? 'one_off') === 'retainer'
+            ? ['Kickoff meeting with client', 'Send Month 1 invoice']
+            : ['Kickoff meeting with client', 'Send advance invoice', 'Deliver work for client review', 'Send final invoice'];
+        $tStore = getTasksStore();
+        foreach ($titles as $t) {
+            [$tStore, $tid] = nextTaskId($tStore);
+            $tStore['tasks'][] = [
+                'id' => $tid,
+                'title' => $t,
+                'assignee' => '',
+                'client' => $job['client'] ?? '',
+                'client_id' => $job['client_id'] ?? '',
+                'job_id' => $job['id'],
+                'job_no' => $job['job_no'],
+                'due_date' => '',
+                'notes' => 'Auto-created with ' . $job['job_no'] . ' — ' . ($job['name'] ?? ''),
+                'status' => 'open',
+                'source' => 'manual',
+                'fireflies_id' => '',
+                'fireflies_meeting_title' => '',
+                'created_at' => $now,
+                'created_by' => $u['id'] ?? '',
+            ];
+            $starterCount++;
+        }
+        saveTasksStore($tStore);
+    }
+    respond(['success' => true, 'id' => $job['id'], 'job_no' => $job['job_no'], 'starter_tasks' => $starterCount]);
     break;
 
 case 'delete-job':
@@ -2187,6 +2348,232 @@ case 'delete-invoice':
     respond(['success' => true]);
     break;
 
+// ===== Clients (shared company-wide registry — the hub jobs/docs/tasks hang off) =====
+case 'clients':
+    if ($method !== 'GET') break;
+    $u = requireAuth();
+    $store = getClientsStore();
+    // First visit on an existing install: promote the client names already on
+    // jobs/documents/tasks into real client records so the page isn't empty.
+    if (empty($store['clients'])) {
+        if (backfillClients($store, $u['id'] ?? '') > 0) saveClientsStore($store);
+    }
+    $allJobs = getJobsStore()['jobs'];
+    $allDocs = getAllDocuments();
+    $allTasks = getTasksStore()['tasks'];
+    $clients = $store['clients'];
+    usort($clients, fn($a, $b) => strcmp(clientNameKey($a['name'] ?? ''), clientNameKey($b['name'] ?? '')));
+    $clients = array_map(function ($c) use ($allJobs, $allDocs, $allTasks) {
+        $c['rollup'] = clientRollup(
+            array_values(array_filter($allJobs, fn($j) => clientOwnsRecord($c, $j))),
+            array_values(array_filter($allDocs, fn($d) => clientOwnsRecord($c, $d))),
+            array_values(array_filter($allTasks, fn($t) => clientOwnsRecord($c, $t)))
+        );
+        return $c;
+    }, $clients);
+    respond(['success' => true, 'clients' => $clients, 'summary' => clientsSummary($store['clients'], $allJobs)]);
+    break;
+
+case 'client-workspace':
+    // Everything about one client in a single payload (record + jobs + invoices + documents + tasks).
+    if ($method !== 'GET') break;
+    requireAuth();
+    $id = trim($_GET['id'] ?? '');
+    foreach (getClientsStore()['clients'] as $c) {
+        if (($c['id'] ?? '') === $id) respond(['success' => true] + clientWorkspace($c));
+    }
+    respond(['success' => false, 'error' => 'Client not found'], 404);
+    break;
+
+case 'save-client':
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $store = getClientsStore();
+    $now = date('c');
+    $id = trim($input['id'] ?? '');
+    $name = trim($input['name'] ?? '');
+
+    if ($id !== '') {
+        // Update. If the name changes, rewrite it on every linked job/task/document.
+        $found = false;
+        foreach ($store['clients'] as &$client) {
+            if (($client['id'] ?? '') === $id) {
+                $oldName = $client['name'] ?? '';
+                $client = applyClientFields($client, $input);
+                $client['updated_at'] = $now;
+                if ($client['name'] !== $oldName) {
+                    $dupe = findClientByName($store['clients'], $client['name']);
+                    if ($dupe && ($dupe['id'] ?? '') !== $id) respond(['success' => false, 'error' => 'Another client is already named "' . $client['name'] . '" (' . ($dupe['client_no'] ?? '') . ')'], 409);
+                }
+                $found = true;
+                $saved = $client;
+                break;
+            }
+        }
+        unset($client);
+        if (!$found) respond(['success' => false, 'error' => 'Client not found'], 404);
+        saveClientsStore($store);
+        if (($saved['name'] ?? '') !== ($oldName ?? '')) propagateClientRename($id, $saved['name']);
+        respond(['success' => true, 'client' => $saved]);
+    }
+
+    // Create.
+    if ($name === '') respond(['success' => false, 'error' => 'Client name is required'], 400);
+    $existing = findClientByName($store['clients'], $name);
+    if ($existing) {
+        // Lead conversion passes if_exists=use to link to the existing record instead of erroring.
+        if (($input['if_exists'] ?? '') === 'use') respond(['success' => true, 'client' => $existing, 'existing' => true]);
+        respond(['success' => false, 'error' => 'A client named "' . $existing['name'] . '" already exists (' . ($existing['client_no'] ?? '') . ')'], 409);
+    }
+    $client = applyClientFields([
+        'id' => 'client_' . bin2hex(random_bytes(8)),
+        'client_no' => nextClientNo($store),
+        'created_by' => $u['id'] ?? '',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ], $input);
+    $store['clients'][] = $client;
+    saveClientsStore($store);
+    // Adopt any pre-existing jobs/docs/tasks whose typed client name matches.
+    $adopt = getClientsStore();
+    backfillClients($adopt, $u['id'] ?? '');
+    saveClientsStore($adopt);
+    respond(['success' => true, 'client' => $client]);
+    break;
+
+case 'delete-client':
+    // Removes the registry record only — jobs/documents/tasks keep their client
+    // name string, so nothing else is lost.
+    if ($method !== 'POST') break;
+    requireAuth();
+    $id = trim($input['id'] ?? '');
+    if ($id === '') respond(['success' => false, 'error' => 'No client id'], 400);
+    $store = getClientsStore();
+    $before = count($store['clients']);
+    // Remove any uploaded client files from disk along with the record.
+    foreach ($store['clients'] as $c) {
+        if (($c['id'] ?? '') !== $id) continue;
+        foreach (($c['files'] ?? []) as $f) {
+            $fp = DATA_DIR . '/uploads/' . basename($f['file_path'] ?? '');
+            if ($fp !== DATA_DIR . '/uploads/' && file_exists($fp)) @unlink($fp);
+        }
+    }
+    $store['clients'] = array_values(array_filter($store['clients'], fn($c) => ($c['id'] ?? '') !== $id));
+    if (count($store['clients']) === $before) respond(['success' => false, 'error' => 'Client not found'], 404);
+    saveClientsStore($store);
+    respond(['success' => true]);
+    break;
+
+case 'backfill-clients':
+    // Manual "Sync from existing data" — create client records for any client
+    // names on jobs/documents/tasks that don't have one yet.
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $store = getClientsStore();
+    $created = backfillClients($store, $u['id'] ?? '');
+    saveClientsStore($store);
+    respond(['success' => true, 'created' => $created, 'total' => count($store['clients'])]);
+    break;
+
+case 'upload-client-file':
+    // Attach an arbitrary shared file (brief, contract, asset...) to a client.
+    // Multipart form-data: id = client id, file = the upload.
+    $u = requireAuth();
+    $id = $_POST['id'] ?? '';
+    if (!$id) respond(['success' => false, 'error' => 'Client ID required'], 400);
+    if (empty($_FILES['file'])) respond(['success' => false, 'error' => 'No file uploaded'], 400);
+    $file = $_FILES['file'];
+    if ($file['error'] !== UPLOAD_ERR_OK) respond(['success' => false, 'error' => 'Upload error'], 400);
+    if ($file['size'] > 20 * 1024 * 1024) respond(['success' => false, 'error' => 'File too large (max 20 MB)'], 400);
+    $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    $allowedExt = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'zip', 'txt', 'csv', 'md'];
+    if (!in_array($ext, $allowedExt, true)) respond(['success' => false, 'error' => 'File type .' . $ext . ' is not allowed'], 400);
+    $store = getClientsStore();
+    $target = null;
+    foreach ($store['clients'] as &$client) {
+        if (($client['id'] ?? '') === $id) { $target = &$client; break; }
+    }
+    if ($target === null) respond(['success' => false, 'error' => 'Client not found'], 404);
+    $uploadDir = DATA_DIR . '/uploads';
+    if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+    $fileId = 'cf_' . bin2hex(random_bytes(6));
+    $filename = $id . '_' . $fileId . '.' . $ext;
+    if (!move_uploaded_file($file['tmp_name'], $uploadDir . '/' . $filename)) respond(['success' => false, 'error' => 'Could not save file'], 500);
+    if (!isset($target['files']) || !is_array($target['files'])) $target['files'] = [];
+    $target['files'][] = [
+        'id' => $fileId,
+        'name' => $file['name'],
+        'file_path' => $filename,
+        'size' => (int) $file['size'],
+        'uploaded_by' => docOwnerName($u['id'] ?? ''),
+        'uploaded_at' => date('c'),
+    ];
+    $target['updated_at'] = date('c');
+    unset($target, $client);
+    saveClientsStore($store);
+    respond(['success' => true, 'file_id' => $fileId]);
+    break;
+
+case 'download-client-file':
+    // Streams a client file back to the browser (?client_id=..&file_id=..).
+    requireAuth();
+    $cid = trim($_GET['client_id'] ?? '');
+    $fid = trim($_GET['file_id'] ?? '');
+    $entry = null;
+    foreach (getClientsStore()['clients'] as $c) {
+        if (($c['id'] ?? '') !== $cid) continue;
+        foreach (($c['files'] ?? []) as $f) {
+            if (($f['id'] ?? '') === $fid) { $entry = $f; break 2; }
+        }
+    }
+    if (!$entry) respond(['success' => false, 'error' => 'File not found'], 404);
+    $fp = DATA_DIR . '/uploads/' . basename($entry['file_path']);
+    if (!file_exists($fp)) respond(['success' => false, 'error' => 'File missing on server'], 404);
+    $ext = strtolower(pathinfo($fp, PATHINFO_EXTENSION));
+    $mimes = [
+        'pdf' => 'application/pdf', 'doc' => 'application/msword',
+        'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'xls' => 'application/vnd.ms-excel',
+        'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'ppt' => 'application/vnd.ms-powerpoint',
+        'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg',
+        'gif' => 'image/gif', 'webp' => 'image/webp', 'zip' => 'application/zip',
+        'txt' => 'text/plain', 'csv' => 'text/csv', 'md' => 'text/markdown',
+    ];
+    header('Content-Type: ' . ($mimes[$ext] ?? 'application/octet-stream'));
+    header('Content-Disposition: attachment; filename="' . addslashes($entry['name'] ?? 'file.' . $ext) . '"');
+    header('Content-Length: ' . filesize($fp));
+    header('Cache-Control: private');
+    readfile($fp);
+    exit;
+
+case 'delete-client-file':
+    if ($method !== 'POST') break;
+    requireAuth();
+    $cid = trim($input['client_id'] ?? '');
+    $fid = trim($input['file_id'] ?? '');
+    $store = getClientsStore();
+    $found = false;
+    foreach ($store['clients'] as &$client) {
+        if (($client['id'] ?? '') !== $cid) continue;
+        foreach (($client['files'] ?? []) as $k => $f) {
+            if (($f['id'] ?? '') === $fid) {
+                $fp = DATA_DIR . '/uploads/' . basename($f['file_path'] ?? '');
+                if (file_exists($fp)) @unlink($fp);
+                array_splice($client['files'], $k, 1);
+                $client['updated_at'] = date('c');
+                $found = true;
+                break 2;
+            }
+        }
+    }
+    unset($client);
+    if (!$found) respond(['success' => false, 'error' => 'File not found'], 404);
+    saveClientsStore($store);
+    respond(['success' => true]);
+    break;
+
 // ===== Help & Support (feedback + support tickets) =====
 case 'tickets':
     if ($method !== 'GET') break;
@@ -2260,7 +2647,28 @@ case 'save-ticket':
     saveTicketsStore($store);
     // Best-effort email out to the vendor support address (never blocks submission).
     notifySupportEmail($ticket, 'new');
+    // Best-effort: if this deployment is a spoke, forward a copy to the central hub.
+    forwardTicketToHub($ticket);
     respond(['success' => true, 'id' => $ticket['id'], 'ticket_no' => $ticket['ticket_no']]);
+    break;
+
+case 'ingest-ticket':
+    // HUB side: receive a ticket forwarded from a client (spoke) deployment.
+    // Public endpoint (a server calls it, not a logged-in user) — authenticated
+    // solely by the shared secret configured on this hub. Disabled unless a
+    // 'ticket_ingest_secret' is set, so a standalone copy never accepts pushes.
+    if ($method !== 'POST') break;
+    $admin = getAdmin();
+    $ingestSecret = trim($admin['ticket_ingest_secret'] ?? '');
+    if ($ingestSecret === '') respond(['success' => false, 'error' => 'Ingest not enabled'], 404);
+    if (!hash_equals($ingestSecret, trim($input['secret'] ?? ''))) {
+        respond(['success' => false, 'error' => 'Invalid secret'], 403);
+    }
+    $client = trim($input['client'] ?? '');
+    $remote = $input['ticket'] ?? null;
+    $created = ingestForwardedTicket($client, $remote);
+    if ($created === null) respond(['success' => false, 'error' => 'Invalid ticket payload'], 400);
+    respond(['success' => true, 'id' => $created['id'], 'ticket_no' => $created['ticket_no']]);
     break;
 
 case 'ticket-reply':
@@ -2473,6 +2881,12 @@ case 'admin-settings':
         // Help & Support: where user-submitted tickets are emailed (and the From address).
         if (isset($input['support_email'])) $admin['support_email'] = trim($input['support_email']);
         if (isset($input['support_from'])) $admin['support_from'] = trim($input['support_from']);
+        // Ticket sync (Phase 1). SPOKE role: forward tickets to a central hub.
+        if (isset($input['ticket_hub_url'])) $admin['ticket_hub_url'] = trim($input['ticket_hub_url']);
+        if (isset($input['ticket_hub_secret']) && strpos($input['ticket_hub_secret'], '****') === false) $admin['ticket_hub_secret'] = trim($input['ticket_hub_secret']);
+        if (isset($input['ticket_client_name'])) $admin['ticket_client_name'] = trim($input['ticket_client_name']);
+        // HUB role: accept forwarded tickets when this secret is set (empty = disabled).
+        if (isset($input['ticket_ingest_secret']) && strpos($input['ticket_ingest_secret'], '****') === false) $admin['ticket_ingest_secret'] = trim($input['ticket_ingest_secret']);
         // Sales outreach: verified From address for emails sent to leads from the system.
         if (isset($input['outreach_from'])) $admin['outreach_from'] = trim($input['outreach_from']);
 
@@ -2526,6 +2940,15 @@ case 'users':
     }
     $users = array_map(function($u) { return ['id' => $u['id'], 'name' => $u['name'], 'email' => $u['email'], 'is_admin' => $u['is_admin'] ?? false, 'is_super_admin' => $u['is_super_admin'] ?? false, 'created_at' => $u['created_at'] ?? '', 'last_login_at' => $u['last_login_at'] ?? null, 'session_start' => $u['session_start'] ?? null, 'last_active_at' => $u['last_active_at'] ?? null]; }, $allUsers);
     respond(['success' => true, 'users' => $users]);
+    break;
+
+// Lightweight team member list (id/name only) for assignee dropdowns — any
+// authenticated user can call this, unlike 'users' which is admin-only.
+case 'team-members':
+    if ($method !== 'GET') break;
+    requireAuth();
+    $members = array_map(function($u) { return ['id' => $u['id'], 'name' => $u['name'] ?: $u['email']]; }, getUsers());
+    respond(['success' => true, 'members' => $members]);
     break;
 
 // Records a lightweight heartbeat (current page) so admins can see session activity.
@@ -2598,7 +3021,7 @@ case 'user-sessions':
             'user_name' => $u['name'] ?? $u['email'],
             'user_role' => !empty($u['is_super_admin']) ? 'super_admin' : (!empty($u['is_admin']) ? 'admin' : 'rep'),
             'last_seen' => $lastPing['end'] ?? ($u['last_active_at'] ?? null),
-            'last_page' => $lastPing['pages'][count($lastPing['pages']) - 1] ?? null,
+            'last_page' => !empty($lastPing['pages']) ? end($lastPing['pages']) : null,
             'active_mins_today' => min($todayMins, 480),
             'sessions_this_period' => count($sessions),
             'sessions' => array_reverse($sessions),
