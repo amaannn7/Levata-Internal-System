@@ -4159,6 +4159,9 @@ const NOTIF_ICONS = {
     deleted:          '🗑️',
     restored:         '♻️',
     win:              '🏆',
+    // Help & Support
+    ticket_new:       '🎫',
+    ticket_reply:     '↩️',
 };
 
 async function loadNotifications() {
@@ -4230,7 +4233,7 @@ function renderNotificationList() {
         const body  = n.body  || n.message || '';
         const time  = getExactTime(n.created_at);
         const timeAgo = getTimeAgo(n.created_at);
-        return `<div class="notification-item ${n.read ? '' : 'unread'}" onclick="handleNotificationClick('${n.id}','${n.lead_id||''}','${n.thread_id||''}')">
+        return `<div class="notification-item ${n.read ? '' : 'unread'}" onclick="handleNotificationClick('${n.id}','${n.lead_id||''}','${n.thread_id||''}','${n.type||''}')">
             <div class="notification-icon">${icon}</div>
             <div class="notification-content">
                 <div class="notification-message" style="font-weight:${n.read?'400':'600'};">${title}</div>
@@ -4242,13 +4245,18 @@ function renderNotificationList() {
     }).join('');
 }
 
-async function handleNotificationClick(notifId, leadId, threadId) {
+async function handleNotificationClick(notifId, leadId, threadId, notifType) {
     await api('notifications', 'POST', {action: 'mark_read', notification_id: notifId});
     const notif = notifications.find(n => n.id === notifId);
     if (notif) notif.read = true;
     renderNotificationBadge();
     document.getElementById('notification-dropdown').classList.remove('show');
 
+    // Ticket notifications open the Help & Support page.
+    if (notifType === 'ticket_new' || notifType === 'ticket_reply') {
+        showPage('support');
+        return;
+    }
     if (leadId) {
         openLead(leadId);
     }
@@ -6039,12 +6047,16 @@ const SUP_CATS={
 };
 const SUP_CAT=Object.fromEntries([...SUP_CATS.support,...SUP_CATS.feedback]);
 function supEsc(s){return esc(s);}
-window.loadSupport=async function(){
+let _supPollTimer=null,_supSig='';
+// quiet=true skips the "Loading..." flash and only re-renders the list if the data
+// actually changed — used by the live poll so it never jumps the scroll or wipes a
+// reply the user is mid-typing.
+window.loadSupport=async function(quiet){
     const list=document.getElementById('sup-ticket-list');
-    list.innerHTML='<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading...</div>';
+    if(!quiet)list.innerHTML='<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading...</div>';
     const scope=document.getElementById('sup-scope')?.value||'mine';
     const r=await api('tickets'+(scope==='all'?'&scope=all':''));
-    if(!r.success){list.innerHTML='<div style="color:var(--text-muted);font-size:13px;">Could not load tickets.</div>';return;}
+    if(!r.success){if(!quiet)list.innerHTML='<div style="color:var(--text-muted);font-size:13px;">Could not load tickets.</div>';return;}
     _supTickets=r.tickets||[];
     _supIsAdmin=!!r.is_admin;
     _supHubMode=!!r.hub_mode;
@@ -6058,8 +6070,26 @@ window.loadSupport=async function(){
     if(sub)sub.textContent=_supHubMode?'Client support tickets forwarded from connected systems. Reply to respond directly in their app.':'Raise a support request or send feedback. Track its status and replies here.';
     supRenderSummary(r.summary||{});
     supPopulateClientFilter();
-    supRenderList();
+    // Signature of the data, so a quiet poll only repaints on real change.
+    const sig=JSON.stringify(_supTickets.map(t=>[t.id,t.status,t.updated_at,(t.replies||[]).length]));
+    if(quiet){
+        // Don't repaint if nothing changed, or if the user is typing a reply.
+        const typing=document.activeElement&&document.activeElement.id&&document.activeElement.id.indexOf('sup-reply-')===0;
+        if(sig!==_supSig&&!typing)supRenderList();
+    }else{
+        supRenderList();
+    }
+    _supSig=sig;
 };
+// Live polling: refresh the ticket list every 8s while the page is open.
+window.supStartPolling=function(){
+    if(_supPollTimer)return;
+    _supPollTimer=setInterval(()=>{
+        if(document.getElementById('page-support')?.classList.contains('active'))loadSupport(true);
+        else supStopPolling();
+    },8000);
+};
+window.supStopPolling=function(){if(_supPollTimer){clearInterval(_supPollTimer);_supPollTimer=null;}};
 function supRenderSummary(s){
     document.getElementById('sup-open-count').textContent=s.open||0;
     document.getElementById('sup-progress-count').textContent=s.in_progress||0;
@@ -7934,7 +7964,8 @@ function showPage(p){
     if(p==='saved-documents')loadSavedDocuments();
     if(p==='clients'&&typeof window.loadClients==='function'){_clWs=null;document.getElementById('cl-detail-view').style.display='none';document.getElementById('cl-list-view').style.display='block';window.loadClients();}
     if(p==='job-registry'&&typeof window.loadJobRegistry==='function')window.loadJobRegistry();
-    if(p==='support'&&typeof window.loadSupport==='function')window.loadSupport();
+    if(p==='support'&&typeof window.loadSupport==='function'){window.loadSupport();window.supStartPolling&&window.supStartPolling();}
+    else if(typeof window.supStopPolling==='function')window.supStopPolling();
     if(p==='tasks'&&typeof window.loadTasks==='function')window.loadTasks();
     if(p==='calendar')loadCalendar();
     if(p==='users'){loadUsers();loadUserSessions();}

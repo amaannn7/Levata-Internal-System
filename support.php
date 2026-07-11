@@ -45,6 +45,53 @@ function nextTicketNo(&$store) {
     return sprintf('TKT-%04d', $store['seq']['ticket']);
 }
 
+/* ---- In-app notifications for ticket events (surface in the existing bell) ----
+ * Notifications are stored per-user in getUserData()['notifications']; the
+ * frontend polls them every few seconds, so adding one here makes the bell
+ * badge light up "live" without any websockets. */
+
+/** Append one notification to a user's notifications list (capped, newest kept). */
+function addUserNotification($userId, $notif) {
+    if ($userId === '') return;
+    $data = getUserData($userId);
+    if (!isset($data['notifications']) || !is_array($data['notifications'])) $data['notifications'] = [];
+    $notif += ['id' => 'ntf_' . bin2hex(random_bytes(6)), 'read' => false, 'created_at' => date('c')];
+    $data['notifications'][] = $notif;
+    // Keep newest 50.
+    usort($data['notifications'], fn($a, $b) => strtotime($b['created_at'] ?? '0') - strtotime($a['created_at'] ?? '0'));
+    $data['notifications'] = array_slice($data['notifications'], 0, 50);
+    saveUserData($userId, $data);
+}
+
+/** Notify every admin/super-admin (used when a new ticket arrives at the hub). */
+function notifyAdminsOfTicket($ticket) {
+    $from = trim($ticket['client'] ?? '') ?: (trim($ticket['created_by_name'] ?? '') ?: 'a user');
+    $isFeedback = ($ticket['type'] ?? 'support') === 'feedback';
+    foreach (getUsers() as $u) {
+        if (empty($u['is_admin']) && empty($u['is_super_admin'])) continue;
+        addUserNotification($u['id'] ?? '', [
+            'notif_key' => 'ticket_new_' . ($ticket['id'] ?? ''),
+            'type' => 'ticket_new',
+            'title' => ($isFeedback ? '💬 New feedback' : '🎫 New support ticket'),
+            'body' => $from . ': ' . (trim($ticket['subject'] ?? '') ?: '(no subject)'),
+            'ticket_id' => $ticket['id'] ?? '',
+        ]);
+    }
+}
+
+/** Notify the ticket owner that a reply was added (used on the spoke/local side). */
+function notifyOwnerOfReply($ticket, $reply) {
+    $ownerId = trim($ticket['created_by'] ?? '');
+    if ($ownerId === '') return; // forwarded tickets have no local owner
+    addUserNotification($ownerId, [
+        'notif_key' => 'ticket_reply_' . ($ticket['id'] ?? '') . '_' . ($reply['id'] ?? ''),
+        'type' => 'ticket_reply',
+        'title' => '↩️ New reply on your ticket',
+        'body' => (trim($reply['author_name'] ?? '') ?: 'Support') . ': ' . mb_substr(trim($reply['message'] ?? ''), 0, 80),
+        'ticket_id' => $ticket['id'] ?? '',
+    ]);
+}
+
 $VALID_TICKET_TYPE     = ['feedback', 'support'];
 // Categories are type-specific. The frontend shows the right set per type;
 // the backend accepts the union of both (plus the shared 'other').
@@ -380,6 +427,8 @@ function ingestForwardedTicket($client, $remote, $replyUrl = '') {
     saveTicketsStore($store);
     // Notify the hub's support inbox too, reusing the existing email path.
     notifySupportEmail($ticket, 'new');
+    // Light up the bell for every admin on the hub.
+    notifyAdminsOfTicket($ticket);
     return $ticket;
 }
 
@@ -440,10 +489,11 @@ function ingestReplyFromHub($localTicketId, $reply) {
 
     $store = getTicketsStore();
     $found = false;
+    $ownerTicket = null; $newReply = null;
     foreach ($store['tickets'] as &$ticket) {
         if (($ticket['id'] ?? '') === $localTicketId) {
             if (!isset($ticket['replies']) || !is_array($ticket['replies'])) $ticket['replies'] = [];
-            $ticket['replies'][] = [
+            $newReply = [
                 'id' => 'rep_' . bin2hex(random_bytes(6)),
                 'author_id' => '',
                 'author_name' => trim($reply['author_name'] ?? '') ?: 'Support',
@@ -451,7 +501,9 @@ function ingestReplyFromHub($localTicketId, $reply) {
                 'message' => $message,
                 'created_at' => trim($reply['created_at'] ?? '') ?: date('c'),
             ];
+            $ticket['replies'][] = $newReply;
             $ticket['updated_at'] = date('c');
+            $ownerTicket = $ticket;
             $found = true;
             break;
         }
@@ -459,5 +511,7 @@ function ingestReplyFromHub($localTicketId, $reply) {
     unset($ticket);
     if (!$found) return false;
     saveTicketsStore($store);
+    // Light up the bell for the user who raised this ticket.
+    notifyOwnerOfReply($ownerTicket, $newReply);
     return true;
 }

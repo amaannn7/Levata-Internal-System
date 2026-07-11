@@ -2659,6 +2659,8 @@ case 'save-ticket':
     saveTicketsStore($store);
     // Best-effort email out to the vendor support address (never blocks submission).
     notifySupportEmail($ticket, 'new');
+    // Light up the bell for admins on this deployment (locally-filed ticket).
+    notifyAdminsOfTicket($ticket);
     // Best-effort: if this deployment is a spoke, forward a copy to the central hub.
     forwardTicketToHub($ticket);
     respond(['success' => true, 'id' => $ticket['id'], 'ticket_no' => $ticket['ticket_no']]);
@@ -2735,6 +2737,14 @@ case 'ticket-reply':
     unset($target);
     saveTicketsStore($store);
     notifySupportEmail($ticketCopy, 'reply', $reply);
+    // Live bell: notify the OTHER party about this reply.
+    if ($isAdmin) {
+        // Staff replied -> notify the ticket owner (if a local user).
+        notifyOwnerOfReply($ticketCopy, $reply);
+    } else {
+        // Owner replied -> notify admins there's activity.
+        notifyAdminsOfTicket($ticketCopy);
+    }
     // Phase 2: if this is a client-originated (forwarded) ticket and the reply is
     // from staff, push it back to the spoke so the client's user sees it in-app.
     if (($ticketCopy['source'] ?? '') === 'client' && $isAdmin) {
