@@ -237,21 +237,26 @@ function notifySupportEmail($ticket, $event = 'new', $reply = null) {
 }
 
 /* =====================================================================
- * Ticket sync (Phase 1: one-way, spoke -> hub)
+ * Ticket sync (spoke <-> hub)
  *
  * The SAME codebase runs on every deployment. A deployment's role is set
  * purely by its admin_config:
  *
  *  - SPOKE (e.g. a client like Macktiles): has 'ticket_hub_url' + 'ticket_hub_secret'
- *    set. When a user files a ticket, the spoke forwards a copy to the hub.
+ *    set. When a user files a ticket, the spoke forwards a copy to the hub, and
+ *    includes a callback URL so the hub can push replies back. Replies from the
+ *    hub arrive on the spoke's 'ingest-reply' endpoint and appear in the user's
+ *    ticket thread.
  *
  *  - HUB (our central Levata system): has 'ticket_ingest_secret' set. It accepts
- *    forwarded tickets on the 'ingest-ticket' endpoint (secret-checked) and stores
- *    them tagged with the sending client's name, so we see every client's tickets
- *    in one Help & Support list.
+ *    forwarded tickets on 'ingest-ticket' (secret-checked), tags them by client,
+ *    and remembers each ticket's callback URL. When an admin replies to a
+ *    client-originated ticket, the hub pushes that reply back to the spoke.
  *
- * A deployment can be neither (standalone, current behaviour), a spoke, or a hub.
- * Forwarding is best-effort: it never blocks or fails the user's submission.
+ * A deployment can be neither (standalone), a spoke, or a hub. All cross-system
+ * calls are best-effort: they never block or fail the user's action.
+ *
+ * Phase 1 = ticket goes spoke -> hub. Phase 2 = staff reply goes hub -> spoke.
  * ===================================================================== */
 
 /** This deployment's own name, used to tag forwarded tickets at the hub. */
@@ -261,6 +266,23 @@ function ticketClientName() {
     if ($name !== '') return $name;
     // Fall back to the sender company set for outreach, else a generic label.
     return trim($admin['sender_company'] ?? '') ?: 'Client';
+}
+
+/**
+ * Best guess at this deployment's own public base URL to api.php, so a spoke can
+ * tell the hub where to send replies back. Prefer an explicitly configured value;
+ * otherwise derive from the current request.
+ */
+function selfApiUrl() {
+    $admin = getAdmin();
+    $configured = trim($admin['self_api_url'] ?? '');
+    if ($configured !== '') return $configured;
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['SERVER_PORT'] ?? '') == 443);
+    $scheme = $https ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? ($_SERVER['SERVER_NAME'] ?? 'localhost');
+    // Path to api.php (this script), e.g. /api.php.
+    $path = $_SERVER['SCRIPT_NAME'] ?? '/api.php';
+    return $scheme . '://' . $host . $path;
 }
 
 /**
@@ -277,6 +299,8 @@ function forwardTicketToHub($ticket) {
     $payload = [
         'secret' => $secret,
         'client' => ticketClientName(),
+        // Where the hub should POST replies back to (this spoke's ingest-reply).
+        'reply_url' => selfApiUrl() . '?action=ingest-reply',
         'ticket' => [
             // Carry the spoke's own id + number so the hub can link back later (Phase 2).
             'remote_id' => $ticket['id'] ?? '',
@@ -313,7 +337,7 @@ function forwardTicketToHub($ticket) {
  * the spoke's origin (remote_id / remote_ticket_no + client) so a reply can be
  * routed home in Phase 2. Returns the created local ticket, or null on bad input.
  */
-function ingestForwardedTicket($client, $remote) {
+function ingestForwardedTicket($client, $remote, $replyUrl = '') {
     if (!is_array($remote)) return null;
     global $VALID_TICKET_TYPE, $VALID_TICKET_CATEGORY, $VALID_TICKET_PRIORITY, $VALID_TICKET_STATUS;
 
@@ -344,15 +368,96 @@ function ingestForwardedTicket($client, $remote) {
         'created_at' => trim($remote['created_at'] ?? '') ?: $now,
         'updated_at' => $now,
         'replies' => [],
-        // Origin tag: which client, and their ticket ids, so we can reply home later.
+        // Origin tag: which client, their ticket ids, and where to reply back to,
+        // so a staff reply at the hub can be pushed home to the spoke (Phase 2).
         'source' => 'client',
         'client' => trim($client) ?: 'Client',
         'remote_id' => trim($remote['remote_id'] ?? ''),
         'remote_ticket_no' => trim($remote['remote_ticket_no'] ?? ''),
+        'reply_url' => trim($replyUrl),
     ];
     $store['tickets'][] = $ticket;
     saveTicketsStore($store);
     // Notify the hub's support inbox too, reusing the existing email path.
     notifySupportEmail($ticket, 'new');
     return $ticket;
+}
+
+/**
+ * HUB side (Phase 2): push a staff reply back to the spoke the ticket came from.
+ * Called after an admin replies to a client-originated ticket. Best-effort;
+ * returns false quietly if the ticket has no callback URL or the spoke is
+ * unreachable. Never throws.
+ *
+ * Authenticated with the hub's own ingest secret, which must match the shared
+ * secret the spoke uses (spoke 'ticket_hub_secret' == hub 'ticket_ingest_secret').
+ */
+function sendReplyToSpoke($ticket, $reply) {
+    if (($ticket['source'] ?? '') !== 'client') return false;   // not a forwarded ticket
+    $replyUrl = trim($ticket['reply_url'] ?? '');
+    $remoteId = trim($ticket['remote_id'] ?? '');
+    if ($replyUrl === '' || $remoteId === '') return false;
+
+    $admin = getAdmin();
+    $secret = trim($admin['ticket_ingest_secret'] ?? '');
+    if ($secret === '') return false;
+
+    $payload = [
+        'secret' => $secret,
+        'remote_id' => $remoteId,   // the spoke's own ticket id
+        'reply' => [
+            'author_name' => $reply['author_name'] ?? 'Support',
+            'is_staff' => true,       // it's a reply from the vendor/support side
+            'message' => $reply['message'] ?? '',
+            'created_at' => $reply['created_at'] ?? date('c'),
+        ],
+    ];
+
+    $ch = curl_init($replyUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 10,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code >= 200 && $code < 300;
+}
+
+/**
+ * SPOKE side (Phase 2): store a reply pushed back from the hub.
+ * Finds the local ticket by its own id (the hub sends it back as remote_id) and
+ * appends the reply to the thread, so the user sees the vendor's answer in-app.
+ * Returns true on success, false if the ticket isn't found or the reply is empty.
+ */
+function ingestReplyFromHub($localTicketId, $reply) {
+    if (!is_array($reply)) return false;
+    $message = trim($reply['message'] ?? '');
+    if ($localTicketId === '' || $message === '') return false;
+
+    $store = getTicketsStore();
+    $found = false;
+    foreach ($store['tickets'] as &$ticket) {
+        if (($ticket['id'] ?? '') === $localTicketId) {
+            if (!isset($ticket['replies']) || !is_array($ticket['replies'])) $ticket['replies'] = [];
+            $ticket['replies'][] = [
+                'id' => 'rep_' . bin2hex(random_bytes(6)),
+                'author_id' => '',
+                'author_name' => trim($reply['author_name'] ?? '') ?: 'Support',
+                'is_staff' => true,
+                'message' => $message,
+                'created_at' => trim($reply['created_at'] ?? '') ?: date('c'),
+            ];
+            $ticket['updated_at'] = date('c');
+            $found = true;
+            break;
+        }
+    }
+    unset($ticket);
+    if (!$found) return false;
+    saveTicketsStore($store);
+    return true;
 }

@@ -2666,9 +2666,29 @@ case 'ingest-ticket':
     }
     $client = trim($input['client'] ?? '');
     $remote = $input['ticket'] ?? null;
-    $created = ingestForwardedTicket($client, $remote);
+    $replyUrl = trim($input['reply_url'] ?? '');
+    $created = ingestForwardedTicket($client, $remote, $replyUrl);
     if ($created === null) respond(['success' => false, 'error' => 'Invalid ticket payload'], 400);
     respond(['success' => true, 'id' => $created['id'], 'ticket_no' => $created['ticket_no']]);
+    break;
+
+case 'ingest-reply':
+    // SPOKE side: receive a staff reply pushed back from the hub and append it to
+    // the local ticket's thread, so the user sees the vendor's answer in-app.
+    // Public endpoint, authenticated by the shared secret (same value the spoke
+    // uses to talk to the hub: ticket_hub_secret).
+    if ($method !== 'POST') break;
+    $admin = getAdmin();
+    $replySecret = trim($admin['ticket_hub_secret'] ?? '');
+    if ($replySecret === '') respond(['success' => false, 'error' => 'Reply ingest not enabled'], 404);
+    if (!hash_equals($replySecret, trim($input['secret'] ?? ''))) {
+        respond(['success' => false, 'error' => 'Invalid secret'], 403);
+    }
+    $localId = trim($input['remote_id'] ?? '');  // the spoke's own ticket id
+    $reply = $input['reply'] ?? null;
+    $ok = ingestReplyFromHub($localId, $reply);
+    if (!$ok) respond(['success' => false, 'error' => 'Ticket not found or empty reply'], 404);
+    respond(['success' => true]);
     break;
 
 case 'ticket-reply':
@@ -2703,6 +2723,11 @@ case 'ticket-reply':
     unset($target);
     saveTicketsStore($store);
     notifySupportEmail($ticketCopy, 'reply', $reply);
+    // Phase 2: if this is a client-originated (forwarded) ticket and the reply is
+    // from staff, push it back to the spoke so the client's user sees it in-app.
+    if (($ticketCopy['source'] ?? '') === 'client' && $isAdmin) {
+        sendReplyToSpoke($ticketCopy, $reply);
+    }
     respond(['success' => true]);
     break;
 
