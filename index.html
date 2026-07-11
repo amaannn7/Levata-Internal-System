@@ -2197,7 +2197,7 @@
             </section>
 
             <section class="page-section" id="page-support">
-                <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1>Help &amp; Support</h1><p>Raise a support request or send feedback. Track its status and replies here.</p></div></div></div>
+                <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1>Help &amp; Support</h1><p id="sup-subtitle">Raise a support request or send feedback. Track its status and replies here.</p></div></div></div>
                 <div class="page-content">
                     <!-- Summary stat cards -->
                     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px;">
@@ -2221,7 +2221,7 @@
                                     <option value="">All clients</option>
                                 </select>
                             </div>
-                            <button type="button" class="btn btn-primary btn-sm" onclick="supOpenTicketModal()">+ New Ticket</button>
+                            <button type="button" class="btn btn-primary btn-sm" id="sup-new-ticket-btn" onclick="supOpenTicketModal()">+ New Ticket</button>
                         </div>
                         <div id="sup-ticket-list"><div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading...</div></div>
                     </div></div>
@@ -5993,7 +5993,7 @@ window.jrDeleteInvoice=async function(jobId,invId){
 };
 
 // ===================== Help & Support (feedback + support tickets) =====================
-let _supTickets=[],_supIsAdmin=false;
+let _supTickets=[],_supIsAdmin=false,_supHubMode=false;
 const SUP_STATUS={open:{label:'Open',color:'#6d28d9'},in_progress:{label:'In Progress',color:'#2563eb'},resolved:{label:'Resolved',color:'#10b981'},closed:{label:'Closed',color:'#9ca3af'}};
 const SUP_TYPE={feedback:'Feedback',support:'Support'};
 // Category options per type (value -> label). 'other' is shared.
@@ -6011,8 +6011,15 @@ window.loadSupport=async function(){
     if(!r.success){list.innerHTML='<div style="color:var(--text-muted);font-size:13px;">Could not load tickets.</div>';return;}
     _supTickets=r.tickets||[];
     _supIsAdmin=!!r.is_admin;
-    // Reveal admin-only controls (scope + client filter).
-    document.getElementById('sup-scope').style.display=_supIsAdmin?'':'none';
+    _supHubMode=!!r.hub_mode;
+    // Hub mode: this system is a central client-ticket inbox. We don't file our own
+    // tickets here — hide "+ New Ticket" and the my/all scope switch; the list is
+    // already just the client-forwarded tickets.
+    document.getElementById('sup-new-ticket-btn').style.display=_supHubMode?'none':'';
+    document.getElementById('sup-scope').style.display=(_supIsAdmin&&!_supHubMode)?'':'none';
+    // Update the page subtitle to reflect the mode.
+    const sub=document.getElementById('sup-subtitle');
+    if(sub)sub.textContent=_supHubMode?'Client support tickets forwarded from connected systems. Reply to respond directly in their app.':'Raise a support request or send feedback. Track its status and replies here.';
     supRenderSummary(r.summary||{});
     supPopulateClientFilter();
     supRenderList();
@@ -6039,7 +6046,7 @@ window.supRenderList=function(){
     let tickets=_supTickets;
     const clientFilter=document.getElementById('sup-client-filter')?.value||'';
     if(clientFilter)tickets=tickets.filter(t=>t.client===clientFilter);
-    if(!tickets.length){list.innerHTML='<div style="text-align:center;padding:40px 16px;color:var(--text-muted);"><div style="font-size:36px;margin-bottom:10px;">💬</div><div style="font-size:15px;font-weight:600;color:#333;margin-bottom:6px;">No tickets yet</div><p style="max-width:520px;margin:0 auto;line-height:1.6;font-size:13px;">Click <strong>+ New Ticket</strong> to raise a support request or send feedback.</p></div>';return;}
+    if(!tickets.length){const hint=_supHubMode?'Client tickets forwarded from connected systems will appear here.':'Click <strong>+ New Ticket</strong> to raise a support request or send feedback.';list.innerHTML='<div style="text-align:center;padding:40px 16px;color:var(--text-muted);"><div style="font-size:36px;margin-bottom:10px;">💬</div><div style="font-size:15px;font-weight:600;color:#333;margin-bottom:6px;">No tickets yet</div><p style="max-width:520px;margin:0 auto;line-height:1.6;font-size:13px;">'+hint+'</p></div>';return;}
     list.innerHTML=tickets.map(supTicketCard).join('');
 };
 function supTicketCard(t){

@@ -2579,11 +2579,22 @@ case 'tickets':
     if ($method !== 'GET') break;
     $u = requireAuth();
     $isAdmin = !empty($u['is_admin']) || !empty($u['is_super_admin']);
+    // Hub mode: this deployment is a central hub (ingest secret set). In hub mode
+    // it's a client-ticket inbox — we don't file our own tickets, we only manage
+    // tickets forwarded in from client (spoke) deployments.
+    $adminCfg = getAdmin();
+    $hubMode = trim($adminCfg['ticket_ingest_secret'] ?? '') !== '';
     // Admins may request the full company-wide queue; everyone else sees only their own.
     $scopeAll = $isAdmin && (($_GET['scope'] ?? '') === 'all');
     $store = getTicketsStore();
     $tickets = $store['tickets'];
-    if (!$scopeAll) {
+    if ($hubMode && $isAdmin) {
+        // On a hub, admins see the client-forwarded tickets (the whole point).
+        $tickets = array_values(array_filter($tickets, function ($t) {
+            return ($t['source'] ?? '') === 'client';
+        }));
+    } elseif (!$scopeAll) {
+        // Otherwise, non-admins (and admins not requesting 'all') see only their own.
         $tickets = array_values(array_filter($tickets, function ($t) use ($u) {
             return ($t['created_by'] ?? '') === ($u['id'] ?? '');
         }));
@@ -2595,6 +2606,7 @@ case 'tickets':
         'tickets' => $tickets,
         'summary' => ticketsSummary($tickets),
         'is_admin' => $isAdmin,
+        'hub_mode' => $hubMode,
         'scope' => $scopeAll ? 'all' : 'mine',
     ]);
     break;
