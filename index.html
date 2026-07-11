@@ -179,6 +179,42 @@
         .jr-stat-body { display: flex; flex-direction: column; gap: 8px; min-height: 84px; }
         .jr-stat-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; line-height: 1.3; min-height: 2.6em; }
         .jr-stat-value { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; margin-top: auto; letter-spacing: -0.03em; }
+        /* ---- Support / ticket cards ---- */
+        .sup-card { background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 0; margin-bottom: 12px; overflow: hidden; transition: box-shadow .18s, border-color .18s; }
+        .sup-card:hover { box-shadow: var(--shadow-md); border-color: #d8dee7; }
+        .sup-card-head { display: flex; align-items: flex-start; gap: 14px; padding: 14px 16px; }
+        .sup-card-main { flex: 1 1 auto; min-width: 0; }
+        .sup-badges { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+        .sup-subject { font-size: 15px; font-weight: 700; color: var(--text-primary); line-height: 1.35; word-break: break-word; }
+        .sup-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted); margin-top: 5px; }
+        .sup-meta .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--text-muted); opacity: .5; }
+        .sup-badge { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 3px 8px; border-radius: 5px; white-space: nowrap; }
+        .sup-badge.type-support { background: #eef2ff; color: #3730a3; }
+        .sup-badge.type-feedback { background: #f3eefe; color: #6d28d9; }
+        .sup-badge.client { background: #ecfdf5; color: #047857; }
+        .sup-pri { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+        .sup-pri::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+        .sup-pri.low { background: #f1f5f9; color: #64748b; }
+        .sup-pri.normal { background: #eff6ff; color: #2563eb; }
+        .sup-pri.high { background: #fef2f2; color: #dc2626; }
+        .sup-status-pill { font-size: 11px; font-weight: 700; color: #fff; padding: 4px 11px; border-radius: 999px; white-space: nowrap; }
+        .sup-card-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+        .sup-status-select { font-size: 12px; font-weight: 600; padding: 5px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-white); cursor: pointer; }
+        .sup-msg { margin: 0 16px 14px; padding: 12px 14px; background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; font-size: 13.5px; line-height: 1.6; color: var(--text-primary); white-space: pre-wrap; word-break: break-word; }
+        .sup-convo { border-top: 1px solid var(--border); background: #fcfcfd; padding: 12px 16px; }
+        .sup-convo-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin-bottom: 10px; }
+        .sup-reply { display: flex; gap: 10px; padding: 8px 0; }
+        .sup-reply-av { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; }
+        .sup-reply-av.staff { background: linear-gradient(135deg,#7c3aed,#4f46e5); }
+        .sup-reply-av.user { background: #94a3b8; }
+        .sup-reply-body { flex: 1 1 auto; min-width: 0; }
+        .sup-reply-who { font-size: 12px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 6px; }
+        .sup-reply-tag { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; background: #ede9fe; color: #6d28d9; padding: 1px 6px; border-radius: 4px; }
+        .sup-reply-msg { font-size: 13px; line-height: 1.55; color: var(--text-secondary); white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+        .sup-reply-time { font-size: 11px; color: var(--text-muted); }
+        .sup-reply-box { display: flex; gap: 8px; margin-top: 10px; }
+        .sup-reply-box input { flex: 1; }
+        .sup-empty-convo { font-size: 12.5px; color: var(--text-muted); padding: 2px 0 6px; }
         /* ---- Task cards ---- */
         .task-card { background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 15px 17px; display: flex; align-items: flex-start; gap: 12px; transition: box-shadow .18s, border-color .18s, transform .18s; }
         .task-card:hover { box-shadow: var(--shadow-md); border-color: #d8dee7; transform: translateY(-1px); }
@@ -6049,46 +6085,72 @@ window.supRenderList=function(){
     if(!tickets.length){const hint=_supHubMode?'Client tickets forwarded from connected systems will appear here.':'Click <strong>+ New Ticket</strong> to raise a support request or send feedback.';list.innerHTML='<div style="text-align:center;padding:40px 16px;color:var(--text-muted);"><div style="font-size:36px;margin-bottom:10px;">💬</div><div style="font-size:15px;font-weight:600;color:#333;margin-bottom:6px;">No tickets yet</div><p style="max-width:520px;margin:0 auto;line-height:1.6;font-size:13px;">'+hint+'</p></div>';return;}
     list.innerHTML=tickets.map(supTicketCard).join('');
 };
+function supInitials(name){
+    const parts=(name||'').trim().split(/\s+/).filter(Boolean);
+    if(!parts.length)return '?';
+    return (parts[0][0]+(parts.length>1?parts[parts.length-1][0]:'')).toUpperCase();
+}
+function supTimeAgo(iso){
+    if(!iso)return '';
+    const d=new Date(iso);if(isNaN(d))return '';
+    const s=Math.floor((Date.now()-d)/1000);
+    if(s<60)return 'just now';
+    if(s<3600)return Math.floor(s/60)+'m ago';
+    if(s<86400)return Math.floor(s/3600)+'h ago';
+    if(s<604800)return Math.floor(s/86400)+'d ago';
+    return d.toLocaleDateString([], {month:'short',day:'numeric'});
+}
 function supTicketCard(t){
     const st=SUP_STATUS[t.status]||SUP_STATUS.open;
-    const typeBadge=t.type==='feedback'
-        ?'<span style="font-size:10px;background:var(--brand-slate-soft,#f1eefe);color:#7c3aed;padding:2px 6px;border-radius:4px;margin-left:6px;">Feedback</span>'
-        :'<span style="font-size:10px;background:#eef2ff;color:#3730a3;padding:2px 6px;border-radius:4px;margin-left:6px;">Support</span>';
+    const isFeedback=t.type==='feedback';
+    const typeBadge=`<span class="sup-badge type-${isFeedback?'feedback':'support'}">${isFeedback?'Feedback':'Support'}</span>`;
     // Client tag shown to admins when the ticket was forwarded from a client (spoke).
-    const clientBadge=t.client?`<span style="font-size:10px;background:#ecfdf5;color:#047857;padding:2px 6px;border-radius:4px;margin-left:6px;">${supEsc(t.client)}</span>`:'';
-    const meta=[t.ticket_no||'',SUP_CAT[t.category]||t.category,t.priority?('Priority: '+t.priority):''].filter(Boolean).join(' · ');
-    const replies=(t.replies||[]).map(supReplyRow).join('')||'<div style="font-size:12px;color:var(--text-muted);padding:6px 0;">No replies yet.</div>';
-    // Admin status control.
+    const clientBadge=t.client?`<span class="sup-badge client">${supEsc(t.client)}</span>`:'';
+    const pri=(t.priority||'normal').toLowerCase();
+    const priLabel=pri.charAt(0).toUpperCase()+pri.slice(1);
+    const priPill=`<span class="sup-pri ${pri}">${priLabel}</span>`;
+    const replyCount=(t.replies||[]).length;
+    const replies=(t.replies||[]).map(supReplyRow).join('')||'<div class="sup-empty-convo">No replies yet. Be the first to respond.</div>';
+    // Admin: status dropdown; others: read-only pill.
     const statusControl=_supIsAdmin
-        ?`<select class="form-select" style="width:auto;font-size:11px;padding:2px 6px;" onchange="supSetStatus('${t.id}',this.value)">${Object.keys(SUP_STATUS).map(k=>`<option value="${k}" ${t.status===k?'selected':''}>${SUP_STATUS[k].label}</option>`).join('')}</select>`
-        :`<span style="font-size:11px;font-weight:600;color:#fff;background:${st.color};padding:3px 9px;border-radius:20px;white-space:nowrap;">${st.label}</span>`;
-    return `<div class="card" style="margin-bottom:8px;"><div class="card-body" style="padding:12px 14px;">
-        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-            <div style="flex:1 1 220px;min-width:200px;">
-                <div style="font-weight:600;">${supEsc(t.subject||'(no subject)')}${typeBadge}${clientBadge}</div>
-                <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${supEsc(meta)}${t.created_by_name?' · '+supEsc(t.created_by_name):''}</div>
+        ?`<select class="sup-status-select" onchange="supSetStatus('${t.id}',this.value)">${Object.keys(SUP_STATUS).map(k=>`<option value="${k}" ${t.status===k?'selected':''}>${SUP_STATUS[k].label}</option>`).join('')}</select>`
+        :`<span class="sup-status-pill" style="background:${st.color};">${st.label}</span>`;
+    return `<div class="sup-card">
+        <div class="sup-card-head">
+            <div class="sup-card-main">
+                <div class="sup-badges">${typeBadge}${clientBadge}${priPill}</div>
+                <div class="sup-subject">${supEsc(t.subject||'(no subject)')}</div>
+                <div class="sup-meta">
+                    <span>${supEsc(t.ticket_no||'')}</span><span class="dot"></span>
+                    <span>${supEsc(SUP_CAT[t.category]||t.category||'')}</span>
+                    ${t.created_by_name?'<span class="dot"></span><span>'+supEsc(t.created_by_name)+'</span>':''}
+                    ${t.created_at?'<span class="dot"></span><span>'+supTimeAgo(t.created_at)+'</span>':''}
+                </div>
             </div>
-            <div style="flex:0 0 auto;display:flex;align-items:center;gap:8px;">
+            <div class="sup-card-side">
                 ${statusControl}
                 <button type="button" class="btn btn-danger btn-sm" onclick="supDeleteTicket('${t.id}')">Delete</button>
             </div>
         </div>
-        <div style="margin-top:8px;font-size:13px;white-space:pre-wrap;color:var(--text-primary);">${supEsc(t.message||'')}</div>
-        <details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--gold-dark,#7c3aed);">Conversation (${(t.replies||[]).length})</summary>
-            <div style="margin-top:8px;">${replies}
-                <div style="display:flex;gap:6px;margin-top:8px;">
-                    <input type="text" class="form-input" id="sup-reply-${t.id}" placeholder="Write a reply..." style="flex:1;font-size:13px;" onkeydown="if(event.key==='Enter'){event.preventDefault();supSendReply('${t.id}');}">
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="supSendReply('${t.id}')">Send</button>
-                </div>
+        <div class="sup-msg">${supEsc(t.message||'')}</div>
+        <div class="sup-convo">
+            <div class="sup-convo-title">Conversation${replyCount?' · '+replyCount:''}</div>
+            ${replies}
+            <div class="sup-reply-box">
+                <input type="text" class="form-input" id="sup-reply-${t.id}" placeholder="Write a reply…" onkeydown="if(event.key==='Enter'){event.preventDefault();supSendReply('${t.id}');}">
+                <button type="button" class="btn btn-primary btn-sm" onclick="supSendReply('${t.id}')">Send</button>
             </div>
-        </details>
-    </div></div>`;
+        </div>
+    </div>`;
 }
 function supReplyRow(rep){
     const staff=rep.is_staff;
-    return `<div style="padding:6px 0;border-bottom:1px solid var(--border-light);font-size:13px;">
-        <div style="font-weight:600;font-size:12px;color:${staff?'var(--gold-dark,#7c3aed)':'var(--text-primary)'};">${supEsc(rep.author_name||'')}${staff?' <span style="font-weight:500;color:var(--text-muted);">· staff</span>':''}</div>
-        <div style="white-space:pre-wrap;margin-top:2px;">${supEsc(rep.message||'')}</div>
+    return `<div class="sup-reply">
+        <div class="sup-reply-av ${staff?'staff':'user'}">${supInitials(rep.author_name)}</div>
+        <div class="sup-reply-body">
+            <div class="sup-reply-who">${supEsc(rep.author_name||'Unknown')}${staff?'<span class="sup-reply-tag">Staff</span>':''}${rep.created_at?'<span class="sup-reply-time">· '+supTimeAgo(rep.created_at)+'</span>':''}</div>
+            <div class="sup-reply-msg">${supEsc(rep.message||'')}</div>
+        </div>
     </div>`;
 }
 window.supOpenTicketModal=function(){
