@@ -110,7 +110,10 @@
         .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(15,12,23,0.45); z-index: 99; }
 
         .top-bar { background: rgba(238,241,246,0.82); border-bottom: 1px solid var(--border); padding: 18px 32px; position: sticky; top: 0; z-index: 50; backdrop-filter: saturate(180%) blur(16px); -webkit-backdrop-filter: saturate(180%) blur(16px); }
-        .top-bar-content { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        /* Reserve space on the right so page-title actions never sit under the fixed
+           notification bell (top:16px; right:20px; ~44px wide, see .bell-floating). */
+        .top-bar-content { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-right: 56px; }
+        @media (max-width: 900px) { .top-bar-content { padding-right: 0; } }
         .page-title h1 { font-size: 24px; font-weight: 700; letter-spacing: -0.03em; margin-bottom: 3px; line-height: 1.15; }
         .page-title p { font-size: 13.5px; color: var(--text-secondary); }
         .page-content { padding: 26px 32px 36px; max-width: 1400px; }
@@ -472,7 +475,14 @@
         /* Global floating bell: visible on every page, fixed top-right of the viewport. */
         .notification-bell.bell-floating { position: fixed; top: 16px; right: 20px; z-index: 1200; background: var(--bg-white); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
         .notification-bell.bell-floating:hover { background: var(--bg-subtle); }
-        @media (max-width: 900px) { .notification-bell.bell-floating { top: 10px; right: 12px; } }
+        /* On mobile the sidebar top-bar is replaced by .mobile-header (~58px tall:
+           12px+12px padding + 34px logo, sticky, z-index:90). The mobile header's own
+           layout reserves a blank 32px spacer at its right edge (to balance the
+           hamburger and keep the logo centered) — size and align the bell to sit
+           exactly in that same slot, above the header (z-index:1200 > 90), so it
+           never touches the hamburger, the logo, or any page content beneath. */
+        @media (max-width: 900px) { .notification-bell.bell-floating { top: 9px; right: 6px; padding: 5px; box-shadow: none; border: none; background: transparent; } }
+        @media (max-width: 900px) { .notification-bell.bell-floating svg { width: 20px; height: 20px; } }
         .notification-badge { position: absolute; top: 2px; right: 2px; background: var(--danger); color: white; font-size: 10px; font-weight: 700; min-width: 16px; height: 16px; border-radius: 8px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
         .notification-dropdown { position: absolute; top: calc(100% + 8px); right: 0; width: 360px; max-height: 480px; background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); overflow: hidden; z-index: 1000; display: none; }
         .notification-dropdown.show { display: block; }
