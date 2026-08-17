@@ -1,12 +1,12 @@
 <?php
 /**
  * Meeting Minutes generator — turns a client-meeting transcript (pulled from
- * Fireflies, or pasted) into clean, client-ready minutes.
+ * ClickUp, or pasted) into clean, client-ready minutes.
  *
  * Included by api.php AFTER sow.php, so it reuses sow.php's plumbing:
  *   - callLLMForSow()  — large-token LLM call with system+user separation
  *   - chosenModelFor() — provider/model resolution
- *   - firefliesListMeetings() / firefliesFetchTranscript() — meeting pull
+ *   - clickupListMeetingDocs() / clickupFetchDocText() — meeting pull
  *
  * Provides:
  *   - meetingMinutesSystemPrompt()

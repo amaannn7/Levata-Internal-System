@@ -43,16 +43,25 @@ define('USER_COLUMNS', ['id', 'name', 'email', 'password', 'is_admin', 'is_super
 require_once __DIR__ . '/sow.php';
 // Document Studio: Cost Proposal generation (depends on sow.php).
 require_once __DIR__ . '/cp.php';
-// Meeting Minutes generation (depends on sow.php for LLM + Fireflies plumbing).
+// Meeting Minutes generation (depends on sow.php for LLM + ClickUp plumbing).
 require_once __DIR__ . '/minutes.php';
 // Job Registry (shared company-wide jobs/invoices) — added module.
 require_once __DIR__ . '/jobs.php';
+// Leads/pipeline (shared company-wide store; every lead carries owner_id).
+require_once __DIR__ . '/leads.php';
+require_once __DIR__ . '/fx.php';
 // Task system (shared company-wide tasks; extraction depends on minutes.php LLM plumbing).
 require_once __DIR__ . '/tasks.php';
 // Clients (shared company-wide client registry; aggregates jobs/documents/tasks).
 require_once __DIR__ . '/clients.php';
+// Channel partners (shared company-wide referral-partner directory).
+require_once __DIR__ . '/partners.php';
 // Help & Support (feedback + support tickets) — added module.
 require_once __DIR__ . '/support.php';
+// Team Chat (channels + DMs) — added module.
+require_once __DIR__ . '/chat.php';
+// AI Assistant (Gemini function-calling agent over app data) — added module.
+require_once __DIR__ . '/chatbot.php';
 
 // Rate limiting
 function checkRateLimit($identifier, $maxRequests = 120, $windowSeconds = 60) {
@@ -106,6 +115,13 @@ $defaultRequisitions = [
     ['id' => 'next_step_agreed', 'title' => 'Next Step Agreed', 'subtitle' => 'What did they agree to after the conversation?', 'type' => 'single', 'options' => ['Send Proposal', 'Book Consultation', 'Call Back', 'Nurture', 'Not Interested'], 'enabled' => true],
     ['id' => 'notes_objections', 'title' => 'Notes / Objections', 'subtitle' => 'Capture objections, buying signals, or specific project details.', 'type' => 'text', 'options' => [], 'enabled' => true]
 ];
+
+// The services a lead can be tagged with on the New Lead stage. Feeds both
+// the Services checkboxes and the prompt for generate-qualification-questions
+// (the selected service name goes straight into the AI prompt as the thing
+// to ask about). "Other" is handled separately in the UI as a free-text
+// field (services_other on the lead), not a list entry here.
+$defaultServiceOptions = ['Website Development', 'Sales Intelligence System'];
 
 // Default ICP configuration
 $defaultIcpConfig = [
@@ -162,7 +178,13 @@ if (dbGetBlob('admin_config', null) === null) {
     ]);
 }
 
-if (db()->query('SELECT COUNT(*) FROM users')->fetchColumn() == 0) {
+// Gated on an explicit 'install_seeded' flag (not just "users table is empty")
+// so that a users table emptied after the real install — a bad migration, a
+// failed restore, any future bulk-delete path — can never silently recreate
+// admin@levatahq.com / password (a public default credential, granted
+// super-admin) on the next request with no log or warning.
+$installSeeded = dbGetBlob('admin_config', []);
+if (($installSeeded['install_seeded'] ?? false) !== true && db()->query('SELECT COUNT(*) FROM users')->fetchColumn() == 0) {
     $adminId = 'user_' . bin2hex(random_bytes(8));
     $defaultAdmin = [
         'id' => $adminId,
@@ -179,6 +201,30 @@ if (db()->query('SELECT COUNT(*) FROM users')->fetchColumn() == 0) {
         'leads' => [],
         'settings' => ['sender_name' => 'Admin', 'sender_company' => 'Levata', 'sender_title' => '', 'company_description' => '', 'value_proposition' => '', 'social_proof' => '', 'calendar_link' => '', 'email_tone' => 'professional', 'signature' => '']
     ]);
+    $installSeeded['install_seeded'] = true;
+    dbSaveBlob('admin_config', $installSeeded);
+}
+
+// One-time migration: leads used to live in each user's own 'user_data:<id>'
+// blob; they now live in the shared 'leads' store (leads.php) so Owner can
+// be a real, team-visible field. Runs once (gated on the 'leads' blob not
+// existing yet, the same "row missing, not list empty" idiom used elsewhere
+// in this file), reads every user's OLD per-user blob directly (bypassing
+// getUserData(), which now sources leads from the NEW store — reading
+// through it here would just see nothing yet), stamps owner_id from each
+// blob's own user id, and writes the merged result once. The old per-user
+// blobs are left untouched afterward as a safety net; nothing reads their
+// 'leads' key anymore once this has run.
+if (dbGetBlob('leads', null) === null) {
+    $migratedLeads = [];
+    foreach (db()->query('SELECT id FROM users')->fetchAll(PDO::FETCH_COLUMN) as $existingUserId) {
+        $oldBlob = dbGetBlob("user_data:{$existingUserId}", null);
+        foreach (($oldBlob['leads'] ?? []) as $oldLead) {
+            if (empty($oldLead['owner_id'])) $oldLead['owner_id'] = $existingUserId;
+            $migratedLeads[] = $oldLead;
+        }
+    }
+    dbSaveBlob('leads', ['leads' => $migratedLeads]);
 }
 
 function dbRowToUser($row) {
@@ -260,37 +306,66 @@ function loadActivityPings($days) {
     return dbLoadPings((int) $days);
 }
 
+/**
+ * THE deal pipeline. One linear path from first contact to a registered job:
+ *   lead -> qualified -> demo -> cost_proposal -> sow -> won  (or lost, from anywhere)
+ *
+ * Every stage carries a deal amount, which is expected to change as the deal
+ * firms up (a guess at `lead`, a real number by `cost_proposal`). `order` drives
+ * the funnel and the "furthest stage reached" logic; `lost` sits outside the
+ * ladder (order 99) because it is an exit, not a step forward.
+ *
+ * `legacy` maps back onto the old status strings that older records, the Zoho
+ * export and a few UI filters still speak.
+ */
 function getMacktilesStages() {
     return [
-        'new_lead' => ['label' => 'New Lead', 'legacy' => 'new'],
-        'research' => ['label' => 'Research', 'legacy' => 'researched'],
-        'email_sent' => ['label' => 'Email Sent', 'legacy' => 'email_sent'],
-        'call_attempted' => ['label' => 'Call Attempted', 'legacy' => 'call_due'],
-        'engaged' => ['label' => 'Engaged', 'legacy' => 'outcome_logged'],
-        'consultation_booked' => ['label' => 'Consultation Booked', 'legacy' => 'qualified'],
-        'nurture_parked' => ['label' => 'Nurture / Parked', 'legacy' => 'disqualified'],
-        'won' => ['label' => 'Won', 'legacy' => 'qualified'],
-        'lost' => ['label' => 'Lost', 'legacy' => 'disqualified']
+        'lead'          => ['label' => 'Lead',            'legacy' => 'new',        'order' => 1],
+        'qualified'     => ['label' => 'Qualified',       'legacy' => 'qualified',  'order' => 2],
+        'demo'          => ['label' => 'Demo/Discussion', 'legacy' => 'qualified',  'order' => 3],
+        'cost_proposal' => ['label' => 'Cost Proposal',   'legacy' => 'qualified',  'order' => 4],
+        'sow'           => ['label' => 'SOW',             'legacy' => 'qualified',  'order' => 5],
+        'won'           => ['label' => 'Won',             'legacy' => 'qualified',  'order' => 6],
+        'lost'          => ['label' => 'Lost',            'legacy' => 'disqualified','order' => 99]
     ];
 }
 
+/** Numeric position of a stage on the ladder (lost = 99). */
+function stageOrder($stage) {
+    return getMacktilesStages()[$stage]['order'] ?? 1;
+}
+
+/**
+ * Coerce anything that was ever written into `stage`/`status` onto the pipeline.
+ * The old nine-stage model and the original legacy statuses both collapse in
+ * here: everything pre-qualification is simply "Lead", since the outreach steps
+ * (research/email/call) are activity on a lead, not pipeline positions.
+ */
 function legacyStatusToStage($status) {
     $map = [
-        'new' => 'new_lead',
-        'researched' => 'research',
-        'email_sent' => 'email_sent',
-        'call_due' => 'call_attempted',
-        'outcome_logged' => 'call_attempted',
-        'qualified' => 'consultation_booked',
-        'meeting_booked' => 'consultation_booked',
-        'replied' => 'engaged',
-        'contacted' => 'engaged',
-        'not_interested' => 'nurture_parked',
-        'disqualified' => 'nurture_parked',
+        // Current statuses
+        'new' => 'lead',
+        'qualified' => 'qualified',
+        'disqualified' => 'lost',
         'won' => 'won',
-        'lost' => 'lost'
+        'lost' => 'lost',
+        // Retired nine-stage model
+        'new_lead' => 'lead',
+        'research' => 'lead',
+        'researched' => 'lead',
+        'email_sent' => 'lead',
+        'call_due' => 'lead',
+        'call_attempted' => 'lead',
+        'outcome_logged' => 'lead',
+        'contacted' => 'lead',
+        'replied' => 'qualified',
+        'engaged' => 'qualified',
+        'consultation_booked' => 'demo',
+        'meeting_booked' => 'demo',
+        'nurture_parked' => 'lost',
+        'not_interested' => 'lost'
     ];
-    return $map[$status ?: 'new'] ?? (isset(getMacktilesStages()[$status]) ? $status : 'new_lead');
+    return $map[$status ?: 'new'] ?? (isset(getMacktilesStages()[$status]) ? $status : 'lead');
 }
 
 function stageToLegacyStatus($stage) {
@@ -317,9 +392,102 @@ function normalizeLeadSource($source) {
 
 function initialStageForSource($source, $warm = false) {
     $source = normalizeLeadSource($source);
-    if ($source === 'inbound') return 'call_attempted';
-    if ($source === 'manual') return $warm ? 'engaged' : 'new_lead';
-    return 'new_lead';
+    // A warm manual add is someone we've already spoken to, so it starts qualified.
+    if ($source === 'manual' && $warm) return 'qualified';
+    return 'lead';
+}
+
+/** Coerce a deal amount to a float (strip currency symbols, commas, spaces). */
+function dealMoney($v) {
+    if (is_numeric($v)) return (float) $v;
+    $clean = preg_replace('/[^0-9.\-]/', '', (string) $v);
+    return $clean === '' ? 0.0 : (float) $clean;
+}
+
+/**
+ * Pull a deal amount out of a CP/SOW document's free-text investment field
+ * (e.g. "LKR 450,000") — used to keep a linked deal's value in sync with
+ * whatever figure is actually on the document, since a rep negotiating in
+ * the CP/SOW is the real source of truth for "what this deal is worth" once
+ * a document exists. Only the number is taken; the deal's own currency is
+ * left as-is (the investment field is freeform text, not a reliable place
+ * to parse a currency code from). Retainer-engagement documents have no
+ * single investment figure (setupFee + recurring retainerAmount instead),
+ * so those return null rather than a misleading partial number.
+ */
+function extractDocumentInvestmentAmount($docInput) {
+    if (!is_array($docInput)) return null;
+    if (($docInput['engagementType'] ?? '') === 'retainer') return null;
+    $raw = trim($docInput['investment'] ?? '');
+    if ($raw === '') return null;
+    return dealMoney($raw);
+}
+
+/**
+ * Currencies the studio can quote in. Deals, jobs and invoices each store their
+ * own code, so an overseas client can be quoted in USD while local work stays
+ * in LKR. Money is NEVER converted between them — totals are grouped by code
+ * (see `sumByCurrency()`), because a stale exchange rate would silently make
+ * finance figures wrong.
+ */
+function supportedCurrencies() {
+    return ['LKR', 'USD', 'EUR', 'GBP', 'AUD', 'AED', 'INR', 'SGD', 'CAD'];
+}
+
+/** The studio's default currency (Admin → Settings), used for new records. */
+function defaultCurrency() {
+    $c = strtoupper(trim(getAdmin()['default_currency'] ?? ''));
+    return in_array($c, supportedCurrencies(), true) ? $c : 'LKR';
+}
+
+/** Validate a currency code, falling back to the studio default. */
+function normalizeCurrency($c) {
+    $c = strtoupper(trim((string) $c));
+    return in_array($c, supportedCurrencies(), true) ? $c : defaultCurrency();
+}
+
+/**
+ * Sum amounts grouped by currency code. Returns e.g. ['LKR' => 2400000.0,
+ * 'USD' => 12000.0]. Callers render each code separately rather than adding
+ * unlike currencies together.
+ */
+function sumByCurrency($rows, $amountKey = 'amount', $currencyKey = 'currency') {
+    $out = [];
+    foreach ($rows as $r) {
+        $cur = normalizeCurrency($r[$currencyKey] ?? '');
+        $out[$cur] = ($out[$cur] ?? 0.0) + (float) ($r[$amountKey] ?? 0);
+    }
+    return $out;
+}
+
+/** Add one amount into a by-currency bucket map. */
+function addToCurrencyBucket(&$bucket, $currency, $amount) {
+    $cur = normalizeCurrency($currency);
+    $bucket[$cur] = ($bucket[$cur] ?? 0.0) + (float) $amount;
+}
+
+/**
+ * Set a lead's deal amount, recording every change so the value history is
+ * auditable (a deal legitimately changes value as it moves down the pipeline).
+ * Returns true if the amount actually changed.
+ */
+function setDealAmount(&$lead, $amount, $stage = '', $actor = null) {
+    $new = dealMoney($amount);
+    $old = dealMoney($lead['deal_amount'] ?? 0);
+    if (abs($new - $old) < 0.005) return false;
+    if (!isset($lead['deal_amount_history']) || !is_array($lead['deal_amount_history'])) {
+        $lead['deal_amount_history'] = [];
+    }
+    $lead['deal_amount_history'][] = [
+        'from' => $old,
+        'to' => $new,
+        'stage' => $stage ?: getLeadStage($lead),
+        'actor' => $actor,
+        'timestamp' => date('c')
+    ];
+    $lead['deal_amount'] = $new;
+    $lead['updated_at'] = date('c');
+    return true;
 }
 
 function getLeadStage($lead) {
@@ -342,7 +510,83 @@ function setLeadStage(&$lead, $stage, $reason = '', $actor = null) {
     }
     $lead['stage'] = $stage;
     $lead['status'] = stageToLegacyStatus($stage);
+    // Track the furthest point reached so a deal that goes back a step (or is
+    // lost) still reports how far it actually got.
+    $peak = $lead['peak_stage'] ?? $stage;
+    if (stageOrder($stage) !== 99 && stageOrder($stage) >= stageOrder($peak)) $peak = $stage;
+    $lead['peak_stage'] = $peak;
+    if ($stage === 'won' && empty($lead['won_at'])) $lead['won_at'] = date('c');
+    if ($stage === 'lost' && empty($lead['lost_at'])) $lead['lost_at'] = date('c');
     $lead['updated_at'] = date('c');
+}
+
+/**
+ * Validates/normalizes email, LinkedIn URL and website for a lead — shared
+ * by both lead creation and the Profile-tab edit path (update-lead) so an
+ * edited email can't bypass the same checks a newly created one gets.
+ * Responds with a 400 directly on a hard validation failure (mirrors the
+ * original inline behavior in the create path); returns the normalized
+ * website value (https:// prepended if missing) for the caller to store.
+ */
+function validateLeadContactFields($email, $linkedin, $website) {
+    if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        respond(['success' => false, 'error' => 'Invalid email format. Please enter a valid email address.'], 400);
+    }
+    if ($linkedin !== '' && stripos($linkedin, 'linkedin.com') === false) {
+        respond(['success' => false, 'error' => 'Invalid LinkedIn URL. Please enter a valid LinkedIn profile URL.'], 400);
+    }
+    if ($website !== '' && !preg_match('/^https?:\/\/|^www\./i', $website)) {
+        $website = 'https://' . $website;
+    }
+    return $website;
+}
+
+/**
+ * True once a Lead-stage deal has services, at least one qualification
+ * question answered (not necessarily all — answering every single
+ * question was too heavy a bar), and an engagement method — the gate for
+ * leaving the Lead stage forward. Questions are the fixed per-service sets
+ * (SERVICE_QUALIFICATION_FORMS in index.html), not AI-generated, so this
+ * only checks that `requisitions` has at least one non-empty answer rather
+ * than cross-referencing a question list. Mirrors leadQualifyChecklistDone()
+ * in index.html; keep both in sync if the checklist rules change.
+ */
+function leadQualifyChecklistDone($lead) {
+    $services = $lead['services'] ?? [];
+    if (empty($services) && empty($lead['services_other'])) return false;
+    $answers = $lead['requisitions'] ?? [];
+    if (!is_array($answers) || empty($answers)) return false;
+    $hasAnswer = false;
+    foreach ($answers as $v) {
+        if (is_array($v) ? !empty($v) : (!empty($v) || $v === '0')) { $hasAnswer = true; break; }
+    }
+    if (!$hasAnswer) return false;
+    if (empty($lead['engagement_method'])) return false;
+    return true;
+}
+
+/**
+ * True once a Demo-stage deal has at least one requirement-gathering
+ * checklist item answered (not necessarily all), a transcript on file, and
+ * all 3 feasibility checks (legal, functional, financial) ticked —
+ * feasibility stays a hard yes/no per item since each one is a real
+ * go/no-go signal, not busywork. Does NOT check for a linked cost proposal —
+ * that's enforced separately (linking a CP is itself what advances the
+ * stage, via link-deal-document), so this only gates whether the "Create
+ * Cost Proposal" handoff is allowed to start. Mirrors
+ * leadDemoChecklistDone() in index.html; keep both in sync.
+ */
+function leadDemoChecklistDone($lead) {
+    $checklist = $lead['demo_checklist'] ?? [];
+    if (empty($checklist)) return false;
+    $answers = $lead['demo_checklist_answers'] ?? [];
+    if (!is_array($answers) || empty($answers)) return false;
+    if (empty(trim($lead['demo_transcript'] ?? ''))) return false;
+    $feasibility = $lead['demo_feasibility'] ?? [];
+    foreach (['legal', 'functional', 'financial'] as $f) {
+        if (empty($feasibility[$f])) return false;
+    }
+    return true;
 }
 
 function normalizeLeadForMapping($lead) {
@@ -359,29 +603,54 @@ function normalizeLeadForMapping($lead) {
     $lead['call_history'] = $lead['call_history'] ?? [];
     $lead['rejection_reason'] = $lead['rejection_reason'] ?? ($lead['disqualified_reason'] ?? '');
     $lead['consultation_type'] = $lead['consultation_type'] ?? '';
+    // Deal fields — every stage carries an amount, and the pipeline links out to
+    // the documents/job it produced.
+    $lead['deal_amount'] = dealMoney($lead['deal_amount'] ?? 0);
+    $lead['deal_currency'] = normalizeCurrency($lead['deal_currency'] ?? '');
+    $lead['deal_amount_history'] = $lead['deal_amount_history'] ?? [];
+    $lead['peak_stage'] = $lead['peak_stage'] ?? $stage;
+    $lead['client_id'] = $lead['client_id'] ?? '';
+    $lead['cost_proposal_id'] = $lead['cost_proposal_id'] ?? '';
+    $lead['sow_id'] = $lead['sow_id'] ?? '';
+    $lead['job_id'] = $lead['job_id'] ?? '';
+    $lead['job_no'] = $lead['job_no'] ?? '';
+    // Channel partner — a deal either came to us directly (partner_id empty)
+    // or through a referral partner. Rate is a snapshot taken when the partner
+    // was attached, so changing the partner's default rate later doesn't
+    // retroactively change what's owed on deals already in flight.
+    $lead['partner_id'] = $lead['partner_id'] ?? '';
+    $lead['partner_rate_type'] = ($lead['partner_rate_type'] ?? 'percentage') === 'fixed' ? 'fixed' : 'percentage';
+    $lead['partner_rate_value'] = dealMoney($lead['partner_rate_value'] ?? 0);
     return $lead;
 }
 
 function macktilesCallOutcomeConfig($outcome) {
     $config = [
-        'no_answer_retry' => ['label' => 'No answer, will retry', 'stage' => 'call_attempted', 'next_action' => 'followup_date'],
-        'left_voicemail' => ['label' => 'No answer, left voicemail', 'stage' => 'call_attempted', 'next_action' => 'followup_date'],
-        'gatekeeper' => ['label' => 'Gatekeeper, could not reach decision-maker', 'stage' => 'call_attempted', 'next_action' => 'followup_date'],
-        'wrong_number' => ['label' => 'Wrong number / person no longer at company', 'stage' => 'nurture_parked', 'next_action' => 'disqualify'],
-        'not_interested' => ['label' => 'Not interested, asked not to be contacted', 'stage' => 'nurture_parked', 'next_action' => 'disqualify'],
-        'interested_followup' => ['label' => 'Interested, follow-up scheduled', 'stage' => 'engaged', 'next_action' => 'followup_date'],
-        'consultation_booked' => ['label' => 'Consultation booked', 'stage' => 'consultation_booked', 'next_action' => 'qualify_zoho'],
-        'callback_requested' => ['label' => 'Call back requested, date/time noted', 'stage' => 'call_attempted', 'next_action' => 'followup_date'],
-        'not_right_time_park_90' => ['label' => 'Spoke, not the right time; park for 90 days', 'stage' => 'nurture_parked', 'next_action' => 'park']
+        // Outcomes that leave the deal where it is stay on 'lead'; the call is
+        // logged as activity either way.
+        'no_answer_retry' => ['label' => 'No answer, will retry', 'stage' => 'lead', 'next_action' => 'followup_date'],
+        'left_voicemail' => ['label' => 'No answer, left voicemail', 'stage' => 'lead', 'next_action' => 'followup_date'],
+        'gatekeeper' => ['label' => 'Gatekeeper, could not reach decision-maker', 'stage' => 'lead', 'next_action' => 'followup_date'],
+        'wrong_number' => ['label' => 'Wrong number / person no longer at company', 'stage' => 'lost', 'next_action' => 'disqualify'],
+        'not_interested' => ['label' => 'Not interested, asked not to be contacted', 'stage' => 'lost', 'next_action' => 'disqualify'],
+        'interested_followup' => ['label' => 'Interested, follow-up scheduled', 'stage' => 'qualified', 'next_action' => 'followup_date'],
+        'consultation_booked' => ['label' => 'Demo / discussion booked', 'stage' => 'demo', 'next_action' => 'qualify_zoho'],
+        'callback_requested' => ['label' => 'Call back requested, date/time noted', 'stage' => 'lead', 'next_action' => 'followup_date'],
+        'not_right_time_park_90' => ['label' => 'Spoke, not the right time; park for 90 days', 'stage' => 'lost', 'next_action' => 'park']
     ];
     return $config[$outcome] ?? null;
 }
 function getAdmin() {
-    global $defaultRequisitions, $defaultIcpConfig, $defaultStageRules, $defaultOutreachRules;
+    global $defaultRequisitions, $defaultServiceOptions, $defaultIcpConfig, $defaultStageRules, $defaultOutreachRules;
     $admin = dbGetBlob('admin_config', []);
+    if (!isset($admin['service_options'])) $admin['service_options'] = $defaultServiceOptions;
     if (!isset($admin['requisitions'])) $admin['requisitions'] = $defaultRequisitions;
-    $reqIds = array_map(fn($r) => $r['id'] ?? '', $admin['requisitions'] ?? []);
-    if (!in_array('project_context', $reqIds, true) || !in_array('next_step_agreed', $reqIds, true)) {
+    // One-time migration to the v1 discovery question set, gated on the
+    // version stamp rather than list contents — an admin who deliberately
+    // clears or edits requisitions down to an empty/different list (which
+    // save-admin also stamps with this version) must NOT get overwritten
+    // back to defaults on the next request.
+    if (($admin['requisitions_version'] ?? '') !== 'sales_discovery_v1') {
         if (!isset($admin['legacy_requisitions_backup'])) {
             $admin['legacy_requisitions_backup'] = $admin['requisitions'] ?? [];
         }
@@ -398,20 +667,33 @@ function saveAdmin($admin) {
     dbSaveBlob('admin_config', $admin);
 }
 
+/**
+ * Leads live in the shared 'leads' store (leads.php), not in this per-user
+ * blob — this function still returns them under $data['leads'] so every
+ * existing caller (getUserData($id)['leads']) keeps working unchanged, just
+ * scoped to this user's own leads via owner_id. Settings remain genuinely
+ * per-user, stored in this blob as before.
+ */
 function getUserData($userId) {
-    $default = ['leads' => [], 'settings' => ['sender_name' => '', 'sender_company' => 'Levata', 'sender_title' => '', 'company_description' => '', 'value_proposition' => '', 'social_proof' => '', 'calendar_link' => '', 'email_tone' => 'professional', 'signature' => '']];
+    $defaultSettings = ['sender_name' => '', 'sender_company' => 'Levata', 'sender_title' => '', 'company_description' => '', 'value_proposition' => '', 'social_proof' => '', 'calendar_link' => '', 'email_tone' => 'professional', 'signature' => ''];
     $blobName = "user_data:{$userId}";
     $existing = dbGetBlob($blobName, null);
     if ($existing === null) {
-        dbSaveBlob($blobName, $default);
-        return $default;
+        dbSaveBlob($blobName, ['settings' => $defaultSettings]);
+        $data = ['settings' => $defaultSettings];
+    } else {
+        $data = $existing;
+        if (!isset($data['settings'])) $data['settings'] = $defaultSettings;
     }
-    $data = $existing;
 
-    // Migrate existing leads with default values for new fields
-    if (!empty($data['leads'])) {
+    $ownLeads = array_values(array_filter(getLeadsStore()['leads'], fn($l) => ($l['owner_id'] ?? '') === $userId));
+
+    // Migrate existing leads with default values for new fields — unchanged
+    // logic, just now running over the shared store's leads for this owner
+    // instead of a per-user blob array.
+    if (!empty($ownLeads)) {
         $changed = false;
-        foreach ($data['leads'] as &$lead) {
+        foreach ($ownLeads as &$lead) {
             // Original fields
             $lead['fit_grade'] = $lead['fit_grade'] ?? '';
             $lead['fit_score'] = $lead['fit_score'] ?? 0;
@@ -435,15 +717,39 @@ function getUserData($userId) {
             $lead = normalizeLeadForMapping($lead);
             $changed = $changed || ($before !== json_encode($lead));
         }
+        unset($lead);
         if ($changed) {
+            $data['leads'] = $ownLeads;
             saveUserData($userId, $data);
+            return $data;
         }
     }
+    $data['leads'] = $ownLeads;
     return $data;
 }
 
+/**
+ * Splits the write: 'settings' (genuinely per-user) goes to this user's own
+ * blob as before; 'leads' goes into the shared leads store (leads.php),
+ * replacing this user's own leads within that store's full array and
+ * leaving every other owner's leads untouched. Every existing call site
+ * (saveUserData($id, $data) after mutating $data['leads']) keeps working
+ * unchanged.
+ */
 function saveUserData($userId, $data) {
-    dbSaveBlob("user_data:{$userId}", $data);
+    if (array_key_exists('leads', $data)) {
+        $leadsStore = getLeadsStore();
+        $others = array_values(array_filter($leadsStore['leads'], fn($l) => ($l['owner_id'] ?? '') !== $userId));
+        $mine = array_map(function ($l) use ($userId) {
+            if (empty($l['owner_id'])) $l['owner_id'] = $userId;
+            return $l;
+        }, $data['leads']);
+        $leadsStore['leads'] = array_merge($others, $mine);
+        saveLeadsStore($leadsStore);
+    }
+    $settingsOnly = $data;
+    unset($settingsOnly['leads']);
+    dbSaveBlob("user_data:{$userId}", $settingsOnly);
 }
 function generateId($prefix = '') { return $prefix . bin2hex(random_bytes(8)); }
 function generateToken() { return bin2hex(random_bytes(32)); }
@@ -634,7 +940,7 @@ function calculateEngagementScore($lead) {
     }
 
     // Points for qualified status
-        if (in_array(getLeadStage($lead), ['consultation_booked', 'won'])) {
+        if (in_array(getLeadStage($lead), ['demo', 'cost_proposal', 'sow', 'won'])) {
             $score += 30;
             $breakdown['qualified'] = 30;
         }
@@ -702,19 +1008,17 @@ function calculateDaysSinceLastActivity($lead) {
 // Calculate SLA status for a lead based on current stage
 function calculateSLAStatus($lead) {
     $slaRules = [
-        'new_lead' => ['max_days' => 1, 'next_action' => 'Verify contact details and begin research', 'action_type' => 'research'],
-        'research' => ['max_days' => 1, 'next_action' => 'Complete AI research and send initial email', 'action_type' => 'email'],
-        'email_sent' => ['max_days' => 5, 'next_action' => 'Make follow-up call', 'action_type' => 'call'],
-        'call_attempted' => ['max_days' => 3, 'next_action' => 'Log outcome or complete scheduled follow-up', 'action_type' => 'outcome'],
-        'engaged' => ['max_days' => 7, 'next_action' => 'Book consultation or schedule next conversation', 'action_type' => 'consultation'],
-        'consultation_booked' => ['max_days' => 14, 'next_action' => 'Complete consultation and mark won/lost/nurture', 'action_type' => 'consultation'],
-        'nurture_parked' => ['max_days' => 90, 'next_action' => 'Light-touch re-engagement when cooling-off period ends', 'action_type' => 'nurture']
+        'lead' => ['max_days' => 3, 'next_action' => 'Research, contact and qualify this lead', 'action_type' => 'research'],
+        'qualified' => ['max_days' => 7, 'next_action' => 'Book the demo or discussion call', 'action_type' => 'consultation'],
+        'demo' => ['max_days' => 7, 'next_action' => 'Run the demo, then build the cost proposal', 'action_type' => 'cost_proposal'],
+        'cost_proposal' => ['max_days' => 10, 'next_action' => 'Chase the cost proposal decision, then raise the SOW', 'action_type' => 'sow'],
+        'sow' => ['max_days' => 10, 'next_action' => 'Get the SOW signed and mark the deal won', 'action_type' => 'close']
     ];
 
     $status = getLeadStage($lead);
     $daysSinceAction = calculateDaysSinceLastActivity($lead);
 
-    if (($lead['source'] ?? '') === 'inbound' && !empty($lead['created_at']) && $status === 'call_attempted') {
+    if (($lead['source'] ?? '') === 'inbound' && !empty($lead['created_at']) && $status === 'lead') {
         $hoursSinceCreated = floor((time() - strtotime($lead['created_at'])) / 3600);
         return [
             'stage' => $status,
@@ -740,7 +1044,7 @@ function calculateSLAStatus($lead) {
         ];
     }
 
-    $rule = $slaRules[$status] ?? $slaRules['new_lead'];
+    $rule = $slaRules[$status] ?? $slaRules['lead'];
     $maxDays = $rule['max_days'];
     $isOverdue = $daysSinceAction > $maxDays;
 
@@ -924,7 +1228,7 @@ function generateFocusQueue($leads, $admin, $limit = 10) {
         $stage = getLeadStage($lead);
         if (in_array($stage, ['won', 'lost'])) continue;
         $fitGrade = strtolower($lead['fit_grade'] ?? '');
-        if ($fitGrade === 'disqualified' && !in_array($stage, ['nurture_parked', 'lost'])) continue;
+        if ($fitGrade === 'disqualified' && $stage !== 'lost') continue;
 
         // Skip leads that are snoozed (skipped_until)
         if (!empty($lead['skipped_until']) && strtotime($lead['skipped_until']) > $now) continue;
@@ -936,27 +1240,28 @@ function generateFocusQueue($leads, $admin, $limit = 10) {
         $urgency = 'normal';
 
         // Source/SLA priority from the Levata mapping.
-        if (($lead['source'] ?? '') === 'inbound' && $stage === 'call_attempted') {
+        if (($lead['source'] ?? '') === 'inbound' && $stage === 'lead') {
             $priorityScore += 250;
             $reason = 'Inbound booking lead - call within 2 hours';
             $suggestedAction = 'call';
             $urgency = 'critical';
         }
 
-        // Stage/source now drive priority; temperature remains a light secondary signal only.
+        // Deals closer to signature are worth more attention than cold leads.
         $stageScores = [
-            'call_attempted' => 60,
-            'email_sent' => 45,
-            'engaged' => 40,
-            'consultation_booked' => 35,
-            'research' => 25,
-            'new_lead' => 20,
-            'nurture_parked' => -20
+            'sow' => 70,
+            'cost_proposal' => 60,
+            'demo' => 45,
+            'qualified' => 35,
+            'lead' => 20
         ];
         $priorityScore += $stageScores[$stage] ?? 0;
         $tempScores = ['on_fire' => 20, 'hot' => 12, 'warm' => 6, 'cold' => 0];
         $temp = $lead['temperature'] ?? 'cold';
         $priorityScore += $tempScores[$temp] ?? 0;
+        // A bigger deal outranks a smaller one at the same stage (capped so value
+        // never fully drowns out urgency).
+        $priorityScore += min(40, dealMoney($lead['deal_amount'] ?? 0) / 25000);
 
         // Overdue bonus (+50) - followup date has passed
         $isOverdue = false;
@@ -997,51 +1302,55 @@ function generateFocusQueue($leads, $admin, $limit = 10) {
         $status = $stage;
         if (empty($reason)) {
             switch ($status) {
-                case 'new_lead':
-                    $reason = "New lead - needs research";
-                    $suggestedAction = 'research';
-                    break;
-                case 'research':
-                    $reason = "Research complete - ready for outreach";
-                    $suggestedAction = 'email';
-                    $priorityScore += 15; // Boost researched leads
-                    break;
-                case 'email_sent':
-                    if ($daysSinceActivity >= 3) {
+                case 'lead':
+                    // Within Lead, the next step depends on how far outreach got.
+                    if (empty($lead['enrichment'])) {
+                        $reason = "New lead - needs research";
+                        $suggestedAction = 'research';
+                    } elseif ((int) ($lead['emails_sent'] ?? 0) === 0) {
+                        $reason = "Research complete - ready for outreach";
+                        $suggestedAction = 'email';
+                        $priorityScore += 15;
+                    } elseif ($daysSinceActivity >= 3) {
                         $reason = "Email sent {$daysSinceActivity} days ago - follow up";
                         $suggestedAction = 'followup';
                     } else {
                         $reason = "Waiting for response";
                         $suggestedAction = 'wait';
-                        $priorityScore -= 20; // Lower priority for waiting
+                        $priorityScore -= 20;
                     }
                     break;
-                case 'call_attempted':
-                    $reason = "Call scheduled";
-                    $suggestedAction = 'call';
-                    $priorityScore += 25;
-                    $urgency = 'high';
-                    break;
-                case 'engaged':
+                case 'qualified':
                     $outcome = $lead['call_outcome'] ?? '';
                     if (in_array($outcome, ['no_answer_retry', 'callback_requested', 'left_voicemail'])) {
                         $reason = "Last call: {$outcome} - retry";
                         $suggestedAction = 'call';
                     } else {
-                        $reason = "Engaged - book consultation or next step";
+                        $reason = "Qualified - book the demo or discussion";
                         $suggestedAction = 'consultation';
                     }
                     break;
-                case 'consultation_booked':
-                    $reason = "Consultation booked - prepare and confirm";
+                case 'demo':
+                    $reason = "Demo booked - run it, then build the cost proposal";
                     $suggestedAction = 'consultation';
                     $priorityScore += 40;
-                    $urgency = 'critical';
+                    $urgency = 'high';
                     break;
-                case 'nurture_parked':
-                    $reason = "Parked lead - review cooling-off timing";
-                    $suggestedAction = 'nurture';
-                    $priorityScore -= 40;
+                case 'cost_proposal':
+                    $reason = empty($lead['cost_proposal_id'])
+                        ? "Cost proposal stage - generate the CP"
+                        : "Cost proposal sent - chase the decision";
+                    $suggestedAction = 'cost_proposal';
+                    $priorityScore += 45;
+                    $urgency = 'high';
+                    break;
+                case 'sow':
+                    $reason = empty($lead['sow_id'])
+                        ? "CP accepted - raise the SOW"
+                        : "SOW issued - chase signature to close";
+                    $suggestedAction = 'sow';
+                    $priorityScore += 50;
+                    $urgency = 'critical';
                     break;
                 default:
                     $reason = "Review needed";
@@ -1098,7 +1407,7 @@ function findAttentionNeeded($leads) {
     $attention = [];
 
     foreach ($leads as $lead) {
-        if (in_array(getLeadStage($lead), ['nurture_parked', 'won', 'lost'])) continue;
+        if (in_array(getLeadStage($lead), ['won', 'lost'])) continue;
 
         $issues = [];
         $temp = $lead['temperature'] ?? 'cold';
@@ -1149,7 +1458,7 @@ function findAttentionNeeded($leads) {
 
         // Research complete but no outreach (stale research)
         $status = getLeadStage($lead);
-        if ($status === 'research' && $daysSinceActivity >= 5) {
+        if ($status === 'lead' && !empty($lead['enrichment']) && intval($lead['emails_sent'] ?? 0) === 0 && $daysSinceActivity >= 5) {
             $issues[] = [
                 'type' => 'stale_research',
                 'message' => "Research done {$daysSinceActivity} days ago - no outreach",
@@ -1322,7 +1631,8 @@ function generateRuleBasedNBA($lead, $daysSinceActivity) {
 
     // Decision tree
     $status = legacyStatusToStage($status);
-    if ($status === 'new_lead') {
+    $emailsSent = intval($lead['emails_sent'] ?? 0);
+    if ($status === 'lead' && empty($lead['enrichment'])) {
         return [
             'action' => 'research',
             'urgency' => 'medium',
@@ -1333,7 +1643,7 @@ function generateRuleBasedNBA($lead, $daysSinceActivity) {
         ];
     }
 
-    if ($status === 'research') {
+    if ($status === 'lead' && $emailsSent === 0) {
         return [
             'action' => 'email',
             'urgency' => $temp === 'hot' ? 'high' : 'medium',
@@ -1344,7 +1654,7 @@ function generateRuleBasedNBA($lead, $daysSinceActivity) {
         ];
     }
 
-    if ($status === 'email_sent' && $daysSinceActivity >= 3) {
+    if ($status === 'lead' && $daysSinceActivity >= 3) {
         return [
             'action' => 'followup',
             'urgency' => $daysSinceActivity >= 7 ? 'high' : 'medium',
@@ -1355,7 +1665,29 @@ function generateRuleBasedNBA($lead, $daysSinceActivity) {
         ];
     }
 
-    if ($status === 'call_attempted' || ($outcome === 'callback_requested')) {
+    if ($status === 'cost_proposal') {
+        return [
+            'action' => 'cost_proposal',
+            'urgency' => 'high',
+            'reason' => empty($lead['cost_proposal_id']) ? 'Deal is ready for a cost proposal' : 'Cost proposal is out - chase the decision',
+            'talking_point' => 'Confirm scope and budget, then walk them through the numbers',
+            'risk_if_delayed' => 'Momentum from the demo is lost',
+            'source' => 'rules'
+        ];
+    }
+
+    if ($status === 'sow') {
+        return [
+            'action' => 'sow',
+            'urgency' => 'critical',
+            'reason' => empty($lead['sow_id']) ? 'Cost proposal accepted - raise the SOW' : 'SOW issued - chase signature',
+            'talking_point' => 'Confirm deliverables and timeline, then get it signed',
+            'risk_if_delayed' => 'A signed-ready deal stalls at the last step',
+            'source' => 'rules'
+        ];
+    }
+
+    if ($outcome === 'callback_requested') {
         return [
             'action' => 'call',
             'urgency' => 'high',
@@ -1418,7 +1750,7 @@ function generateNotifications($leads, $existingNotifications) {
     }
 
     foreach ($leads as $lead) {
-        if (in_array(getLeadStage($lead), ['nurture_parked', 'won', 'lost'])) continue;
+        if (in_array(getLeadStage($lead), ['won', 'lost'])) continue;
 
         $leadId = $lead['id'];
         $name = trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? ''));
@@ -1442,27 +1774,37 @@ function generateNotifications($leads, $existingNotifications) {
             ['cond' => !empty($lead['followup_date']) && strtotime($lead['followup_date']) < strtotime('today'),
              'key'  => "callback_overdue_{$leadId}", 'type' => 'callback_overdue',
              'title'=> "⚠️ Callback overdue",
-             'body' => "{$name} from {$company} — " . floor(($now - strtotime($lead['followup_date'])) / 86400) . " day(s) overdue"],
+             'body' => "{$name} from {$company}, " . floor(($now - strtotime($lead['followup_date'])) / 86400) . " day(s) overdue"],
 
             ['cond' => in_array($temp, ['hot','warm']) && $daysSinceActivity >= 7 && $daysSinceActivity < 14,
              'key'  => "going_cold_{$leadId}", 'type' => 'going_cold',
              'title'=> "❄️ Lead going cold",
-             'body' => "{$name} from {$company} — {$daysSinceActivity} days inactive"],
+             'body' => "{$name} from {$company}, {$daysSinceActivity} days inactive"],
 
-            ['cond' => $status === 'research' && $daysSinceActivity >= 3,
+            ['cond' => $status === 'lead' && !empty($lead['enrichment']) && intval($lead['emails_sent'] ?? 0) === 0 && $daysSinceActivity >= 3,
              'key'  => "stale_research_{$leadId}", 'type' => 'stale_research',
              'title'=> "🔍 Send outreach to {$name}",
-             'body' => "Research done {$daysSinceActivity} days ago — {$company}"],
+             'body' => "Research done {$daysSinceActivity} days ago for {$company}"],
 
-            ['cond' => $status === 'email_sent' && $daysSinceActivity >= 3,
+            ['cond' => $status === 'lead' && intval($lead['emails_sent'] ?? 0) > 0 && $daysSinceActivity >= 3,
              'key'  => "followup_call_{$leadId}", 'type' => 'callback_due',
              'title'=> "📞 Follow-up call needed",
-             'body' => "{$name} from {$company} — email sent {$daysSinceActivity} days ago"],
+             'body' => "{$name} from {$company}, email sent {$daysSinceActivity} days ago"],
 
-            ['cond' => $status === 'new_lead' && $daysSinceActivity >= 2,
+            ['cond' => $status === 'lead' && empty($lead['enrichment']) && $daysSinceActivity >= 2,
              'key'  => "new_lead_idle_{$leadId}", 'type' => 'stale_research',
              'title'=> "⏰ New lead needs attention",
-             'body' => "{$name} from {$company} — added {$daysSinceActivity} days ago"],
+             'body' => "{$name} from {$company}, added {$daysSinceActivity} days ago"],
+
+            ['cond' => $status === 'cost_proposal' && $daysSinceActivity >= 5,
+             'key'  => "cp_stalled_{$leadId}", 'type' => 'callback_due',
+             'title'=> "💰 Cost proposal going quiet",
+             'body' => "{$name} from {$company}, no movement for {$daysSinceActivity} days"],
+
+            ['cond' => $status === 'sow' && $daysSinceActivity >= 5,
+             'key'  => "sow_stalled_{$leadId}", 'type' => 'callback_due',
+             'title'=> "📝 SOW awaiting signature",
+             'body' => "{$name} from {$company}, no movement for {$daysSinceActivity} days"],
         ];
 
         foreach ($checks as $check) {
@@ -1633,26 +1975,28 @@ case 'refine-cost-proposal':
     respond(['success' => true, 'markdown' => $res['content']]);
     break;
 
-case 'fireflies-meetings':
+case 'clickup-meetings':
     if ($method !== 'POST') break;
     requireAuth();
     $admin = getAdmin();
-    $ffKey = $admin['fireflies_key'] ?? '';
-    if (!$ffKey) respond(['success' => false, 'error' => 'Add a Fireflies API key in Settings first'], 400);
-    $res = firefliesListMeetings($ffKey, 15);
+    $cuToken = $admin['clickup_token'] ?? '';
+    $cuWorkspace = $admin['clickup_workspace_id'] ?? '';
+    if (!$cuToken || !$cuWorkspace) respond(['success' => false, 'error' => 'Add a ClickUp API token and Workspace ID in Settings first'], 400);
+    $res = clickupListMeetingDocs($cuToken, $cuWorkspace, 15);
     if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 502);
     respond(['success' => true, 'meetings' => $res['meetings']]);
     break;
 
-case 'fireflies-transcript':
+case 'clickup-transcript':
     if ($method !== 'POST') break;
     requireAuth();
     $admin = getAdmin();
-    $ffKey = $admin['fireflies_key'] ?? '';
-    if (!$ffKey) respond(['success' => false, 'error' => 'Add a Fireflies API key in Settings first'], 400);
+    $cuToken = $admin['clickup_token'] ?? '';
+    $cuWorkspace = $admin['clickup_workspace_id'] ?? '';
+    if (!$cuToken || !$cuWorkspace) respond(['success' => false, 'error' => 'Add a ClickUp API token and Workspace ID in Settings first'], 400);
     $id = $input['id'] ?? '';
-    if (!trim($id)) respond(['success' => false, 'error' => 'No meeting selected'], 400);
-    $res = firefliesFetchTranscript($ffKey, $id);
+    if (!trim($id)) respond(['success' => false, 'error' => 'No doc selected'], 400);
+    $res = clickupFetchDocText($cuToken, $cuWorkspace, $id);
     if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 502);
     respond(['success' => true, 'title' => $res['title'], 'text' => $res['text']]);
     break;
@@ -1853,7 +2197,7 @@ case 'calendar-events':
             $events[] = [
                 'date' => $due,
                 'type' => 'invoice',
-                'title' => ($inv['label'] ?? 'Invoice') . ' — ' . ($j['client'] ?? ''),
+                'title' => ($inv['label'] ?? 'Invoice') . ' for ' . ($j['client'] ?? ''),
                 'status' => $inv['status'] ?? 'unpaid',
                 'assignee' => '',
                 'client' => $j['client'] ?? '',
@@ -1896,13 +2240,34 @@ case 'save-task':
             'job_no'        => $taskJob ? ($taskJob['job_no'] ?? '') : '',
             'due_date'      => trim($input['due_date'] ?? ''),
             'notes'         => trim($input['notes'] ?? ''),
-            'status'                  => 'open',
-            'source'                  => trim($input['source'] ?? 'manual'),
-            'fireflies_id'            => trim($input['fireflies_id'] ?? ''),
-            'fireflies_meeting_title' => trim($input['fireflies_meeting_title'] ?? ''),
-            'created_at'              => date('c'),
-            'created_by'              => $user['id'],
+            'status'                => 'open',
+            'source'                => trim($input['source'] ?? 'manual'),
+            'clickup_doc_id'        => trim($input['clickup_doc_id'] ?? ''),
+            'clickup_doc_title'     => trim($input['clickup_doc_title'] ?? ''),
+            'clickup_task_id'       => '',
+            'clickup_task_url'      => '',
+            'created_at'            => date('c'),
+            'created_by'            => $user['id'],
         ];
+
+        // Best-effort push to ClickUp: don't fail the local save if this fails.
+        $cuWarning = null;
+        $admin = getAdmin();
+        $cuToken = $admin['clickup_token'] ?? '';
+        $cuList = $admin['clickup_list_id'] ?? '';
+        if ($cuToken && $cuList) {
+            $cuRes = clickupCreateTask($cuToken, $cuList, $task['title'], [
+                'notes' => $task['notes'],
+                'due_date' => $task['due_date'],
+            ]);
+            if ($cuRes['success']) {
+                $task['clickup_task_id'] = $cuRes['id'];
+                $task['clickup_task_url'] = $cuRes['url'];
+            } else {
+                $cuWarning = 'Saved locally, but could not create the ClickUp task: ' . $cuRes['error'];
+            }
+        }
+
         $store['tasks'][] = $task;
     } else {
         // Update.
@@ -1926,7 +2291,7 @@ case 'save-task':
         if (!$found) respond(['success' => false, 'error' => 'Task not found'], 404);
     }
     saveTasksStore($store);
-    respond(['success' => true, 'task' => $task]);
+    respond(['success' => true, 'task' => $task, 'warning' => $cuWarning ?? null]);
     break;
 
 case 'delete-task':
@@ -1943,7 +2308,7 @@ case 'delete-task':
     break;
 
 case 'extract-tasks':
-    // LLM call: Fireflies transcript → candidate task list.
+    // LLM call: ClickUp Doc transcript → candidate task list.
     // Returns JSON for the rep to review; does NOT save anything.
     if ($method !== 'POST') break;
     requireAuth();
@@ -1992,6 +2357,32 @@ case 'all-documents':
     respond(['success' => true, 'documents' => $meta]);
     break;
 
+case 'deal-documents':
+    // Every CP/SOW ever generated for one deal (multiple rounds of
+    // negotiation produce multiple CPs) — the Cost Proposal / SOW stage
+    // panels list these, separate from cost_proposal_id/sow_id on the lead
+    // which only track the currently-active one.
+    if ($method !== 'GET') break;
+    requireAuth();
+    $leadId = $_GET['lead_id'] ?? '';
+    if ($leadId === '') respond(['success' => false, 'error' => 'lead_id required'], 400);
+    $docs = array_values(array_filter(getAllDocuments(), function ($d) use ($leadId) {
+        return ($d['lead_id'] ?? '') === $leadId;
+    }));
+    usort($docs, function ($a, $b) { return strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''); });
+    $meta = array_map(function ($d) {
+        return [
+            'id' => $d['id'] ?? '',
+            'doc_no' => $d['doc_no'] ?? '',
+            'type' => $d['type'] ?? 'sow',
+            'title' => $d['title'] ?? 'Untitled',
+            'investment' => ($d['input']['investment'] ?? ''),
+            'created_at' => $d['created_at'] ?? '',
+        ];
+    }, $docs);
+    respond(['success' => true, 'documents' => $meta]);
+    break;
+
 case 'get-document':
     if ($method !== 'GET') break;
     requireAuth();
@@ -2024,6 +2415,7 @@ case 'save-document':
     if ($id !== '') {
         // Update existing.
         $found = false;
+        $leadIdForSync = '';
         foreach ($store['documents'] as &$d) {
             if (($d['id'] ?? '') === $id) {
                 $d['markdown'] = $markdown;
@@ -2036,13 +2428,43 @@ case 'save-document':
                 if (array_key_exists('linked_cost_proposal', $input)) {
                     $d['linked_cost_proposal'] = trim($input['linked_cost_proposal']);
                 }
+                // Only set lead_id from a non-empty value — the CP/SOW
+                // builders only send a real lead_id during the Demo/Cost
+                // Proposal handoff (pendingDealDocLeadId), and send '' on
+                // every later edit once that's cleared. Blindly overwriting
+                // with '' here would silently sever the document's link
+                // back to its deal the first time anyone edited it again.
+                if (trim($input['lead_id'] ?? '') !== '') {
+                    $d['lead_id'] = trim($input['lead_id']);
+                }
                 $d['updated_at'] = $now;
                 $found = true;
+                $leadIdForSync = trim($d['lead_id'] ?? '');
                 break;
             }
         }
         unset($d);
         if (!$found) $id = '';
+        // If this document is the deal's CURRENTLY ACTIVE cost proposal or
+        // SOW (not just any CP/SOW ever generated for it), re-sync the
+        // deal's amount to whatever figure is now on the document —
+        // negotiating the price on the CP/SOW is what "changing the deal
+        // value" actually looks like at these stages.
+        if ($found) {
+            if ($leadIdForSync !== '' && in_array($type, ['cp', 'cost-proposal', 'cost_proposal', 'sow'], true)) {
+                $leadsStoreForSync = getLeadsStore();
+                foreach ($leadsStoreForSync['leads'] as &$leadForSync) {
+                    if ($leadForSync['id'] !== $leadIdForSync) continue;
+                    $isActiveDoc = ($leadForSync['cost_proposal_id'] ?? '') === $id || ($leadForSync['sow_id'] ?? '') === $id;
+                    if (!$isActiveDoc) break;
+                    $amt = extractDocumentInvestmentAmount($docInput);
+                    if ($amt !== null) setDealAmount($leadForSync, $amt, '', $u['id'] ?? null);
+                    break;
+                }
+                unset($leadForSync);
+                saveLeadsStore($leadsStoreForSync);
+            }
+        }
     }
     if ($id === '') {
         $id = 'doc_' . bin2hex(random_bytes(8));
@@ -2051,6 +2473,11 @@ case 'save-document':
         $docNo = nextDocumentNumber($store['documents'], $type);
         // Optional link to an approved cost proposal (set when a SOW is created from a CP).
         $linkedCp = trim($input['linked_cost_proposal'] ?? '');
+        // Optional back-reference to the deal this document was created from —
+        // lets a deal show every CP/SOW ever generated for it (multiple CPs
+        // across negotiation rounds), separate from cost_proposal_id/sow_id
+        // on the lead, which track only the currently-active one.
+        $leadId = trim($input['lead_id'] ?? '');
         $store['documents'][] = [
             'id' => $id,
             'doc_no' => $docNo,
@@ -2059,6 +2486,7 @@ case 'save-document':
             'client' => $client,
             'client_id' => $clientRef['id'],
             'linked_cost_proposal' => $linkedCp,
+            'lead_id' => $leadId,
             'markdown' => $markdown,
             'input' => $docInput,
             'owner_id' => $u['id'] ?? '',
@@ -2185,6 +2613,149 @@ case 'download-document-file':
     readfile($fp);
     exit;
 
+/**
+ * Studio Overview — the delivery dashboard. Answers the questions this team
+ * actually has: what is owed us, what is running, what is overdue, what needs
+ * a decision. Aggregates the shared jobs / invoices / tasks / documents stores
+ * plus the current user's open deals. Replaced the outbound-sales dashboard.
+ */
+case 'studio-overview':
+    if ($method !== 'GET') break;
+    $u = requireAuth();
+    $today = date('Y-m-d');
+    $jobsStore = getJobsStore();
+    $allJobs = $jobsStore['jobs'];
+
+    // --- Money: invoices flattened across every job -----------------------
+    // Totals are kept per currency code and never converted — see sumByCurrency().
+    $outstanding = []; $overdueAmount = []; $paidThisMonth = [];
+    $dueSoon = []; $overdueInvoices = [];
+    $monthStart = date('Y-m-01');
+    foreach ($allJobs as $j) {
+        if (($j['status'] ?? '') === 'cancelled') continue;
+        $jobCur = normalizeCurrency($j['currency'] ?? '');
+        foreach (($j['invoices'] ?? []) as $inv) {
+            $amt = (float) ($inv['amount'] ?? 0);
+            $due = $inv['due_date'] ?? '';
+            if (($inv['status'] ?? '') === 'paid') {
+                if (!empty($inv['paid_at']) && substr($inv['paid_at'], 0, 10) >= $monthStart) addToCurrencyBucket($paidThisMonth, $jobCur, $amt);
+                continue;
+            }
+            addToCurrencyBucket($outstanding, $jobCur, $amt);
+            $row = [
+                'invoice_no' => $inv['invoice_no'] ?? '', 'label' => $inv['label'] ?? '',
+                'amount' => $amt, 'due_date' => $due, 'currency' => normalizeCurrency($j['currency'] ?? ''),
+                'job_no' => $j['job_no'] ?? '', 'job_name' => $j['name'] ?? '', 'client' => $j['client'] ?? '',
+                'job_id' => $j['id'] ?? '',
+            ];
+            if ($due !== '' && $due < $today) { addToCurrencyBucket($overdueAmount, $jobCur, $amt); $row['days_overdue'] = (int) floor((strtotime($today) - strtotime($due)) / 86400); $overdueInvoices[] = $row; }
+            elseif ($due !== '' && $due <= date('Y-m-d', strtotime('+14 days'))) $dueSoon[] = $row;
+        }
+    }
+    usort($overdueInvoices, fn($a, $b) => ($b['days_overdue'] ?? 0) <=> ($a['days_overdue'] ?? 0));
+    usort($dueSoon, fn($a, $b) => strcmp($a['due_date'], $b['due_date']));
+
+    // --- Active jobs, most recently touched first ------------------------
+    $activeJobs = array_values(array_filter($allJobs, fn($j) => in_array($j['status'] ?? 'open', ['open', 'in_progress', 'awaiting_payment'], true)));
+    usort($activeJobs, fn($a, $b) => strcmp($b['updated_at'] ?? '', $a['updated_at'] ?? ''));
+    $activeJobsList = array_map(function ($j) {
+        $f = jobFinance($j);
+        return [
+            'id' => $j['id'] ?? '', 'job_no' => $j['job_no'] ?? '', 'name' => $j['name'] ?? '',
+            'client' => $j['client'] ?? '', 'status' => $j['status'] ?? 'open',
+            'currency' => normalizeCurrency($j['currency'] ?? ''), 'value' => $f['value'],
+            'paid' => $f['paid'], 'outstanding' => $f['outstanding'],
+            'progress' => $f['invoiced'] > 0 ? round($f['paid'] / $f['invoiced'] * 100) : 0,
+        ];
+    }, array_slice($activeJobs, 0, 8));
+
+    // --- Tasks: overdue and due this week --------------------------------
+    $tasks = getTasksStore()['tasks'];
+    $openTasks = array_values(array_filter($tasks, fn($t) => ($t['status'] ?? 'open') !== 'done'));
+    $weekEnd = date('Y-m-d', strtotime('+7 days'));
+    $taskRows = [];
+    foreach ($openTasks as $t) {
+        $due = $t['due_date'] ?? '';
+        if ($due === '') continue;
+        if ($due > $weekEnd) continue;
+        $taskRows[] = [
+            'id' => $t['id'] ?? '', 'title' => $t['title'] ?? '', 'client' => $t['client'] ?? '',
+            'job_no' => $t['job_no'] ?? '', 'assignee' => $t['assignee'] ?? '', 'due_date' => $due,
+            'overdue' => $due < $today,
+        ];
+    }
+    usort($taskRows, fn($a, $b) => strcmp($a['due_date'], $b['due_date']));
+    $overdueTaskCount = count(array_filter($taskRows, fn($t) => $t['overdue']));
+
+    // --- Documents awaiting approval -------------------------------------
+    // Only CPs and SOWs go through approval — NDAs and other doc types are
+    // filed, not decided on, so they would just flood this panel.
+    $pendingDocs = [];
+    foreach (getAllDocuments() as $d) {
+        if (($d['status'] ?? 'draft') !== 'draft') continue;
+        if (!in_array($d['type'] ?? '', ['cp', 'cost-proposal', 'cost_proposal', 'sow'], true)) continue;
+        $pendingDocs[] = [
+            'id' => $d['id'] ?? '', 'doc_no' => $d['doc_no'] ?? '', 'title' => $d['title'] ?? 'Untitled',
+            'type' => $d['type'] ?? 'sow', 'client' => $d['client'] ?? '',
+            'updated_at' => $d['updated_at'] ?? ($d['created_at'] ?? ''),
+        ];
+    }
+    usort($pendingDocs, fn($a, $b) => strcmp($b['updated_at'], $a['updated_at']));
+
+    // --- Deals still in play (the user's own pipeline) --------------------
+    $userData = getUserData($u['id']);
+    $openDeals = []; $openDealValue = [];
+    foreach ($userData['leads'] ?? [] as $l) {
+        if (!empty($l['deleted_at'])) continue;
+        $stage = getLeadStage($l);
+        if (in_array($stage, ['won', 'lost'], true)) continue;
+        $amt = dealMoney($l['deal_amount'] ?? 0);
+        addToCurrencyBucket($openDealValue, $l['deal_currency'] ?? '', $amt);
+        $openDeals[] = [
+            'id' => $l['id'] ?? '', 'name' => trim(($l['first_name'] ?? '') . ' ' . ($l['last_name'] ?? '')),
+            'company' => $l['company'] ?? '', 'stage' => $stage, 'amount' => $amt,
+            'currency' => normalizeCurrency($l['deal_currency'] ?? ''),
+        ];
+    }
+    // Closest to signature first.
+    usort($openDeals, fn($a, $b) => stageOrder($b['stage']) <=> stageOrder($a['stage']) ?: $b['amount'] <=> $a['amount']);
+
+    $clients = getClientsStore()['clients'];
+    // LKR-converted headline totals — additional, clearly-labelled
+    // approximations for display only; the per-currency maps above are
+    // untouched and remain the source of truth.
+    $fx = getFxRates();
+    respond(['success' => true, 'overview' => [
+        'headline' => [
+            'outstanding' => $outstanding,
+            'overdue_amount' => $overdueAmount,
+            'paid_this_month' => $paidThisMonth,
+            'active_jobs' => count($activeJobs),
+            'open_deal_value' => $openDealValue,
+            'open_deals' => count($openDeals),
+            'active_clients' => count(array_filter($clients, fn($c) => ($c['status'] ?? 'active') === 'active')),
+            'open_tasks' => count($openTasks),
+            'overdue_tasks' => $overdueTaskCount,
+            'pending_docs' => count($pendingDocs),
+        ],
+        'headline_lkr' => [
+            'outstanding' => fxConvertMapToLkr($outstanding, $fx['rates']),
+            'overdue_amount' => fxConvertMapToLkr($overdueAmount, $fx['rates']),
+            'paid_this_month' => fxConvertMapToLkr($paidThisMonth, $fx['rates']),
+            'open_deal_value' => fxConvertMapToLkr($openDealValue, $fx['rates']),
+        ],
+        'fx_stale' => $fx['stale'],
+        'fx_fetched_at' => $fx['fetched_at'] ? date('c', $fx['fetched_at']) : null,
+        'overdue_invoices' => array_slice($overdueInvoices, 0, 6),
+        'due_soon' => array_slice($dueSoon, 0, 6),
+        'active_jobs_list' => $activeJobsList,
+        'tasks' => array_slice($taskRows, 0, 8),
+        'pending_docs' => array_slice($pendingDocs, 0, 6),
+        'deals' => array_slice($openDeals, 0, 6),
+        'default_currency' => defaultCurrency(),
+    ]]);
+    break;
+
 // ===== Job Registry (shared company-wide) =====
 case 'jobs':
     if ($method !== 'GET') break;
@@ -2252,11 +2823,13 @@ case 'save-job':
                 'job_id' => $job['id'],
                 'job_no' => $job['job_no'],
                 'due_date' => '',
-                'notes' => 'Auto-created with ' . $job['job_no'] . ' — ' . ($job['name'] ?? ''),
+                'notes' => 'Auto-created with ' . $job['job_no'] . ', ' . ($job['name'] ?? ''),
                 'status' => 'open',
                 'source' => 'manual',
-                'fireflies_id' => '',
-                'fireflies_meeting_title' => '',
+                'clickup_doc_id' => '',
+                'clickup_doc_title' => '',
+                'clickup_task_id' => '',
+                'clickup_task_url' => '',
                 'created_at' => $now,
                 'created_by' => $u['id'] ?? '',
             ];
@@ -2265,6 +2838,210 @@ case 'save-job':
         saveTasksStore($tStore);
     }
     respond(['success' => true, 'id' => $job['id'], 'job_no' => $job['job_no'], 'starter_tasks' => $starterCount]);
+    break;
+
+/**
+ * Preview what winning a deal will create, without writing anything.
+ * Feeds the confirm dialog shown when a deal is dragged/set to Won.
+ */
+case 'deal-win-preview':
+    if ($method !== 'GET') break;
+    $u = requireAuth();
+    $leadId = $_GET['lead_id'] ?? '';
+    $lead = null;
+    foreach (getLeadsStore()['leads'] as $l) {
+        if (($l['id'] ?? '') === $leadId) { $lead = $l; break; }
+    }
+    if (!$lead) respond(['success' => false, 'error' => 'Lead not found'], 404);
+
+    $clientName = trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? ''));
+    $existingClient = findClientByName(getClientsStore()['clients'], $clientName);
+    $amount = dealMoney($lead['deal_amount'] ?? 0);
+
+    // Documents already linked to this deal, so the job can inherit them.
+    $cpNo = ''; $sowNo = '';
+    foreach (getAllDocuments() as $d) {
+        if (($d['id'] ?? '') === ($lead['cost_proposal_id'] ?? '')) $cpNo = $d['doc_no'] ?? '';
+        if (($d['id'] ?? '') === ($lead['sow_id'] ?? '')) $sowNo = $d['doc_no'] ?? '';
+    }
+
+    respond(['success' => true, 'preview' => [
+        'lead_id' => $lead['id'],
+        'client_name' => $clientName,
+        'client_exists' => (bool) $existingClient,
+        'client_id' => $existingClient['id'] ?? '',
+        'job_name' => trim($lead['project_context'] ?? '') ?: ($clientName . ' project'),
+        'amount' => $amount,
+        'currency' => normalizeCurrency($lead['deal_currency'] ?? ''),
+        'linked_cost_proposal' => $cpNo,
+        'linked_sow' => $sowNo,
+        'already_registered' => !empty($lead['job_id']),
+        'existing_job_no' => $lead['job_no'] ?? '',
+    ]]);
+    break;
+
+/**
+ * Win a deal: stamp the stage, ensure a client record exists, and register a
+ * JOB-xxxx (with its invoice schedule) in the shared registry. This is the seam
+ * where the sales pipeline hands over to delivery/finance.
+ */
+case 'win-deal':
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $leadsStore = getLeadsStore();
+    $leadId = trim($input['lead_id'] ?? '');
+    $targetIdx = null;
+    foreach ($leadsStore['leads'] ?? [] as $i => $l) {
+        if (($l['id'] ?? '') === $leadId) { $targetIdx = $i; break; }
+    }
+    if ($targetIdx === null) respond(['success' => false, 'error' => 'Lead not found'], 404);
+    $lead = $leadsStore['leads'][$targetIdx];
+
+    if (!empty($lead['job_id']) && jobRefById($lead['job_id'])) {
+        respond(['success' => false, 'error' => 'This deal is already registered as ' . ($lead['job_no'] ?? 'a job')], 409);
+    }
+
+    // 1. Client — reuse the matching record, or create one from the lead.
+    $clientName = trim($input['client_name'] ?? '') ?: (trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')));
+    if ($clientName === '') respond(['success' => false, 'error' => 'A client name is required to register the job'], 400);
+    $cStore = getClientsStore();
+    $client = findClientByName($cStore['clients'], $clientName);
+    $clientCreated = !$client;
+    if (!$client) {
+        $client = applyClientFields([
+            'id' => 'client_' . bin2hex(random_bytes(8)),
+            'client_no' => nextClientNo($cStore),
+            'created_by' => $u['id'] ?? '',
+            'created_at' => date('c'),
+            'updated_at' => date('c'),
+        ], [
+            'name' => $clientName,
+            'contact_name' => trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')),
+            'contact_email' => $lead['email'] ?? '',
+            'contact_phone' => $lead['phone'] ?? '',
+            'website' => $lead['website'] ?? '',
+            'lead_id' => $lead['id'] ?? '',
+        ]);
+        $cStore['clients'][] = $client;
+        saveClientsStore($cStore);
+    }
+
+    // 2. Deal amount + currency — the confirm dialog may adjust both before winning.
+    if (isset($input['amount'])) setDealAmount($lead, $input['amount'], 'won', $u['id'] ?? null);
+    if (isset($input['currency']) && trim($input['currency']) !== '') {
+        $lead['deal_currency'] = normalizeCurrency($input['currency']);
+    }
+
+    // 3. Job + invoice schedule, inheriting the deal's linked CP/SOW.
+    $jStore = getJobsStore();
+    $now = date('c');
+    $job = [
+        'id' => 'job_' . bin2hex(random_bytes(8)),
+        'job_no' => nextJobNo($jStore),
+        'created_by' => $u['id'] ?? '',
+        'created_at' => $now,
+        'updated_at' => $now,
+        'invoices' => [],
+        'lead_id' => $lead['id'] ?? '',
+    ];
+    $job = applyJobFields($job, [
+        'client_id' => $client['id'],
+        'client' => $client['name'],
+        'name' => trim($input['job_name'] ?? '') ?: ($clientName . ' project'),
+        'category' => trim($input['category'] ?? ''),
+        'type' => $input['type'] ?? 'one_off',
+        'value' => dealMoney($lead['deal_amount'] ?? 0),
+        // Inherits the deal's currency unless the confirm dialog overrode it.
+        'currency' => normalizeCurrency($input['currency'] ?? ($lead['deal_currency'] ?? '')),
+        'status' => 'open',
+        'linked_cost_proposal' => trim($input['linked_cost_proposal'] ?? ''),
+        'linked_sow' => trim($input['linked_sow'] ?? ''),
+        'notes' => 'Registered from won deal: ' . trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')),
+    ]);
+    $job['invoices'] = buildJobInvoices($jStore, $job, $input);
+    $jStore['jobs'][] = $job;
+    saveJobsStore($jStore);
+
+    // 4. Stamp the lead: won, linked to its client and job.
+    setLeadStage($lead, 'won', 'deal_won', $u['id'] ?? null);
+    $lead['client_id'] = $client['id'];
+    $lead['job_id'] = $job['id'];
+    $lead['job_no'] = $job['job_no'];
+    logActivity($lead, 'won', 'Deal won and registered as ' . $job['job_no']);
+    $leadsStore['leads'][$targetIdx] = $lead;
+    saveLeadsStore($leadsStore);
+
+    respond(['success' => true, 'lead' => $lead, 'job_no' => $job['job_no'], 'job_id' => $job['id'], 'client_id' => $client['id'], 'client_created' => $clientCreated]);
+    break;
+
+/** Update a deal's amount at any stage (the value legitimately changes as it firms up). */
+case 'set-deal-amount':
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $leadsStore = getLeadsStore();
+    $leadId = trim($input['lead_id'] ?? '');
+    $targetIdx = null;
+    foreach ($leadsStore['leads'] ?? [] as $i => $l) {
+        if (($l['id'] ?? '') === $leadId) { $targetIdx = $i; break; }
+    }
+    if ($targetIdx === null) respond(['success' => false, 'error' => 'Lead not found'], 404);
+    $lead = $leadsStore['leads'][$targetIdx];
+    $changed = setDealAmount($lead, $input['amount'] ?? 0, '', $u['id'] ?? null);
+    if (isset($input['currency']) && trim($input['currency']) !== '') $lead['deal_currency'] = normalizeCurrency($input['currency']);
+    $leadsStore['leads'][$targetIdx] = $lead;
+    saveLeadsStore($leadsStore);
+    respond(['success' => true, 'lead' => $lead, 'changed' => $changed]);
+    break;
+
+/** Link a generated CP/SOW document back to the deal it came from. */
+case 'link-deal-document':
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $leadsStore = getLeadsStore();
+    $leadId = trim($input['lead_id'] ?? '');
+    $docId = trim($input['document_id'] ?? '');
+    $targetIdx = null;
+    foreach ($leadsStore['leads'] ?? [] as $i => $l) {
+        if (($l['id'] ?? '') === $leadId) { $targetIdx = $i; break; }
+    }
+    if ($targetIdx === null) respond(['success' => false, 'error' => 'Lead not found'], 404);
+
+    $doc = null;
+    foreach (getAllDocuments() as $d) {
+        if (($d['id'] ?? '') === $docId) { $doc = $d; break; }
+    }
+    if (!$doc) respond(['success' => false, 'error' => 'Document not found'], 404);
+
+    $lead = $leadsStore['leads'][$targetIdx];
+    $type = $doc['type'] ?? 'sow';
+    // Linking a document also advances the deal to the matching stage, which is
+    // the whole point of connecting the pipeline to the document studio.
+    if (in_array($type, ['cp', 'cost-proposal', 'cost_proposal'], true)) {
+        // Advancing OUT of Demo specifically (not just linking a CP at some
+        // later stage) requires the Demo checklist to be complete — mirrors
+        // the rail lock in index.html.
+        if (getLeadStage($lead) === 'demo' && !leadDemoChecklistDone($lead)) {
+            respond(['success' => false, 'error' => 'Complete the requirement checklist, transcript and feasibility check before creating a cost proposal'], 400);
+        }
+        $lead['cost_proposal_id'] = $doc['id'];
+        if (stageOrder(getLeadStage($lead)) < stageOrder('cost_proposal')) {
+            setLeadStage($lead, 'cost_proposal', 'cost_proposal_linked:' . ($doc['doc_no'] ?? ''), $u['id'] ?? null);
+        }
+    } else {
+        $lead['sow_id'] = $doc['id'];
+        if (stageOrder(getLeadStage($lead)) < stageOrder('sow')) {
+            setLeadStage($lead, 'sow', 'sow_linked:' . ($doc['doc_no'] ?? ''), $u['id'] ?? null);
+        }
+    }
+    // Sync the deal's amount to whatever figure is on the document being
+    // linked — the CP/SOW is the real quote, so linking one should make the
+    // deal's value match it rather than leaving a stale/zero amount sitting
+    // on the deal independently of what was actually proposed.
+    $linkAmt = extractDocumentInvestmentAmount($doc['input'] ?? []);
+    if ($linkAmt !== null) setDealAmount($lead, $linkAmt, '', $u['id'] ?? null);
+    $leadsStore['leads'][$targetIdx] = $lead;
+    saveLeadsStore($leadsStore);
+    respond(['success' => true, 'lead' => $lead, 'doc_no' => $doc['doc_no'] ?? '']);
     break;
 
 case 'delete-job':
@@ -2349,14 +3126,190 @@ case 'delete-invoice':
     break;
 
 // ===== Clients (shared company-wide registry — the hub jobs/docs/tasks hang off) =====
+/** ===== Channel Partners ===== */
+case 'partners':
+    if ($method !== 'GET') break;
+    requireAuth();
+    $store = getPartnersStore();
+    $partners = $store['partners'];
+    usort($partners, fn($a, $b) => strcasecmp($a['name'] ?? '', $b['name'] ?? ''));
+    // Never expose the portal password hash or live session tokens to the
+    // internal team's own view of the partner directory.
+    $partners = array_map(function ($p) {
+        unset($p['portal_password'], $p['portal_tokens']);
+        return $p;
+    }, $partners);
+    respond(['success' => true, 'partners' => $partners]);
+    break;
+
+case 'save-partner':
+    if ($method !== 'POST') break;
+    $u = requireAuth();
+    $store = getPartnersStore();
+    $now = date('c');
+    $id = trim($input['id'] ?? '');
+
+    if ($id !== '') {
+        $found = false;
+        foreach ($store['partners'] as &$partner) {
+            if (($partner['id'] ?? '') === $id) {
+                $partner = applyPartnerFields($partner, $input);
+                // Portal credentials: email always updates if sent; password
+                // only changes if a new one was actually typed (an empty
+                // field must never blank out an existing password).
+                if (isset($input['portal_email']) || isset($input['portal_password'])) {
+                    setPartnerPortalPassword($partner, $input['portal_email'] ?? ($partner['portal_email'] ?? ''), trim($input['portal_password'] ?? ''));
+                }
+                $partner['updated_at'] = $now;
+                $found = true;
+                $saved = $partner;
+                break;
+            }
+        }
+        unset($partner);
+        if (!$found) respond(['success' => false, 'error' => 'Partner not found'], 404);
+        savePartnersStore($store);
+        // Never echo the password hash back to the browser.
+        unset($saved['portal_password']);
+        respond(['success' => true, 'partner' => $saved]);
+    }
+
+    // Create.
+    $name = trim($input['name'] ?? '');
+    if ($name === '') respond(['success' => false, 'error' => 'Partner name is required'], 400);
+    $partner = applyPartnerFields([
+        'id' => 'partner_' . bin2hex(random_bytes(8)),
+        'partner_no' => nextPartnerNo($store),
+        'created_by' => $u['id'] ?? '',
+        'created_at' => $now,
+        'updated_at' => $now,
+    ], $input);
+    if (isset($input['portal_email']) || isset($input['portal_password'])) {
+        setPartnerPortalPassword($partner, $input['portal_email'] ?? '', trim($input['portal_password'] ?? ''));
+    }
+    $store['partners'][] = $partner;
+    savePartnersStore($store);
+    $returned = $partner;
+    unset($returned['portal_password']);
+    respond(['success' => true, 'partner' => $returned]);
+    break;
+
+case 'delete-partner':
+    // Deals that reference this partner keep their own name/rate snapshot
+    // (partnerRefFor falls back to "(deleted partner)"), so nothing else breaks.
+    if ($method !== 'POST') break;
+    requireAuth();
+    $id = trim($input['id'] ?? '');
+    if ($id === '') respond(['success' => false, 'error' => 'No partner id'], 400);
+    $store = getPartnersStore();
+    $before = count($store['partners']);
+    $store['partners'] = array_values(array_filter($store['partners'], fn($p) => ($p['id'] ?? '') !== $id));
+    if (count($store['partners']) === $before) respond(['success' => false, 'error' => 'Partner not found'], 404);
+    savePartnersStore($store);
+    respond(['success' => true]);
+    break;
+
+/**
+ * Portal login for an external channel partner — a SEPARATE auth path from
+ * the internal team's 'login' action above. A partner is never a `users`
+ * row and never gets is_admin/is_super_admin; it only ever sees its own
+ * record + its own referred deals (see dealsForPartner() in partners.php).
+ */
+case 'partner-login':
+    if ($method !== 'POST') break;
+    $email = trim(strtolower($input['email'] ?? ''));
+    $password = $input['password'] ?? '';
+    if ($email === '' || $password === '') respond(['success' => false, 'error' => 'Email and password are required'], 400);
+    $store = getPartnersStore();
+    foreach ($store['partners'] as &$partner) {
+        if (($partner['portal_email'] ?? '') === $email && ($partner['status'] ?? 'active') === 'active'
+            && !empty($partner['portal_password']) && password_verify($password, $partner['portal_password'])) {
+            $token = bin2hex(random_bytes(32));
+            addPartnerPortalToken($partner, $token);
+            $partner['last_login_at'] = date('c');
+            savePartnersStore($store);
+            respond(['success' => true, 'partner' => ['id' => $partner['id'], 'name' => $partner['name']], 'token' => $token]);
+        }
+    }
+    unset($partner);
+    respond(['success' => false, 'error' => 'Invalid email or password'], 401);
+    break;
+
+case 'partner-me':
+    if ($method !== 'GET') break;
+    $partner = getCurrentPartner();
+    if (!$partner) respond(['success' => false, 'error' => 'Not authenticated'], 401);
+    respond(['success' => true, 'partner' => ['id' => $partner['id'], 'name' => $partner['name'], 'partner_no' => $partner['partner_no'] ?? '']]);
+    break;
+
+// The partner's own read-only view: their referred deals + live commission
+// payout on each. Never their contact record, never other partners, never
+// anything from the internal Clients/Jobs/Documents stores.
+case 'partner-portal':
+    if ($method !== 'GET') break;
+    $partner = getCurrentPartner();
+    if (!$partner) respond(['success' => false, 'error' => 'Not authenticated'], 401);
+    $deals = dealsForPartner($partner['id']);
+    $totalsByCurrency = [];
+    foreach ($deals as $d) {
+        if (($d['stage'] ?? '') === 'lost') continue;
+        addToCurrencyBucket($totalsByCurrency, $d['currency'], $d['payout']);
+    }
+    respond(['success' => true, 'deals' => $deals, 'total_payout' => $totalsByCurrency]);
+    break;
+
+/**
+ * Attach/change/clear the channel partner on a deal. Snapshots the partner's
+ * current default rate onto the lead at the moment of attaching — see the
+ * module docblock in partners.php for why the snapshot approach was chosen.
+ */
+case 'set-deal-partner':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $leadsStore = getLeadsStore();
+    $leadId = trim($input['id'] ?? '');
+    $partnerId = trim($input['partner_id'] ?? '');
+
+    foreach ($leadsStore['leads'] as &$lead) {
+        if ($lead['id'] === $leadId) {
+            if ($partnerId === '') {
+                // Cleared back to a direct deal.
+                $lead['partner_id'] = '';
+                $lead['partner_rate_type'] = 'percentage';
+                $lead['partner_rate_value'] = 0;
+            } else {
+                $partner = findPartnerById(getPartnersStore()['partners'], $partnerId);
+                if (!$partner) respond(['success' => false, 'error' => 'Partner not found'], 404);
+                $lead['partner_id'] = $partnerId;
+                // Rate can be overridden per-deal (e.g. a one-off negotiated
+                // rate); falls back to the partner's default.
+                $rateType = $input['partner_rate_type'] ?? $partner['default_rate_type'] ?? 'percentage';
+                $lead['partner_rate_type'] = $rateType === 'fixed' ? 'fixed' : 'percentage';
+                $lead['partner_rate_value'] = isset($input['partner_rate_value'])
+                    ? dealMoney($input['partner_rate_value'])
+                    : dealMoney($partner['default_rate_value'] ?? 0);
+            }
+            $lead['updated_at'] = date('c');
+            saveLeadsStore($leadsStore);
+            respond(['success' => true, 'lead' => $lead]);
+        }
+    }
+    respond(['success' => false, 'error' => 'Lead not found'], 404);
+    break;
+
 case 'clients':
     if ($method !== 'GET') break;
     $u = requireAuth();
     $store = getClientsStore();
     // First visit on an existing install: promote the client names already on
     // jobs/documents/tasks into real client records so the page isn't empty.
-    if (empty($store['clients'])) {
-        if (backfillClients($store, $u['id'] ?? '') > 0) saveClientsStore($store);
+    // Gated by 'backfilled_once' (not just an empty list) so deliberately
+    // deleting every client doesn't resurrect them from old job/doc/task names
+    // on the next page load.
+    if (empty($store['clients']) && !$store['backfilled_once']) {
+        $store['backfilled_once'] = true;
+        backfillClients($store, $u['id'] ?? '');
+        saveClientsStore($store);
     }
     $allJobs = getJobsStore()['jobs'];
     $allDocs = getAllDocuments();
@@ -2460,6 +3413,10 @@ case 'delete-client':
     }
     $store['clients'] = array_values(array_filter($store['clients'], fn($c) => ($c['id'] ?? '') !== $id));
     if (count($store['clients']) === $before) respond(['success' => false, 'error' => 'Client not found'], 404);
+    // A deliberate delete down to zero clients is not "never set up" — mark
+    // backfill as already done so the next page load doesn't resurrect
+    // whatever was just removed from old job/doc/task client names.
+    $store['backfilled_once'] = true;
     saveClientsStore($store);
     respond(['success' => true]);
     break;
@@ -2599,15 +3556,25 @@ case 'tickets':
             return ($t['created_by'] ?? '') === ($u['id'] ?? '');
         }));
     }
+    // Summary reflects the full scoped set (so the "Closed" count on the stat
+    // cards / "Closed Tickets" button is accurate) — filtering below only
+    // affects which tickets are returned in the main list.
+    $summary = ticketsSummary($tickets);
+    // Closed tickets are done-and-dusted noise on the main queue: hidden by
+    // default. The "Closed Tickets" button flips this to show ONLY closed
+    // ones (view_closed=1), rather than mixing them back into the live queue.
+    $viewClosed = ($_GET['view_closed'] ?? '') === '1';
+    $tickets = array_values(array_filter($tickets, fn($t) => (($t['status'] ?? 'open') === 'closed') === $viewClosed));
     // Newest first.
     usort($tickets, function ($a, $b) { return strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''); });
     respond([
         'success' => true,
         'tickets' => $tickets,
-        'summary' => ticketsSummary($tickets),
+        'summary' => $summary,
         'is_admin' => $isAdmin,
         'hub_mode' => $hubMode,
         'scope' => $scopeAll ? 'all' : 'mine',
+        'view_closed' => $viewClosed,
     ]);
     break;
 
@@ -2705,6 +3672,44 @@ case 'ingest-reply':
     respond(['success' => true]);
     break;
 
+case 'ingest-status':
+    // SPOKE side: receive a status change pushed down from the hub (e.g. an
+    // admin marked the hub's copy Resolved/Closed) and apply it to the local
+    // ticket, so the client sees the same status without needing to reply
+    // first. Same auth as 'ingest-reply': the shared ticket_hub_secret.
+    if ($method !== 'POST') break;
+    $admin = getAdmin();
+    $statusSecret = trim($admin['ticket_hub_secret'] ?? '');
+    if ($statusSecret === '') respond(['success' => false, 'error' => 'Status ingest not enabled'], 404);
+    if (!hash_equals($statusSecret, trim($input['secret'] ?? ''))) {
+        respond(['success' => false, 'error' => 'Invalid secret'], 403);
+    }
+    $localId = trim($input['remote_id'] ?? '');  // the spoke's own ticket id
+    $status = trim($input['status'] ?? '');
+    $ok = ingestStatusFromHub($localId, $status);
+    if (!$ok) respond(['success' => false, 'error' => 'Ticket not found or invalid status'], 404);
+    respond(['success' => true]);
+    break;
+
+case 'ingest-client-reply':
+    // HUB side (Phase 3): receive a CLIENT user's reply pushed up from a spoke and
+    // append it to the hub's copy of the ticket, so the vendor sees the follow-up
+    // in the same thread. The mirror of 'ingest-reply'. Public endpoint, gated by
+    // the same shared secret used to accept forwarded tickets.
+    if ($method !== 'POST') break;
+    $admin = getAdmin();
+    $ingestSecret = trim($admin['ticket_ingest_secret'] ?? '');
+    if ($ingestSecret === '') respond(['success' => false, 'error' => 'Ingest not enabled'], 404);
+    if (!hash_equals($ingestSecret, trim($input['secret'] ?? ''))) {
+        respond(['success' => false, 'error' => 'Invalid secret'], 403);
+    }
+    $remoteId = trim($input['remote_id'] ?? '');  // the spoke's own ticket id
+    $reply = $input['reply'] ?? null;
+    $ok = ingestClientReply($remoteId, $reply);
+    if (!$ok) respond(['success' => false, 'error' => 'Ticket not found or empty reply'], 404);
+    respond(['success' => true]);
+    break;
+
 case 'ticket-reply':
     if ($method !== 'POST') break;
     $u = requireAuth();
@@ -2733,10 +3738,22 @@ case 'ticket-reply':
     ];
     $target['replies'][] = $reply;
     $target['updated_at'] = date('c');
+    // Auto status, so triage reflects reality without a manual dropdown click:
+    // - staff picks up an Open ticket by replying -> In Progress.
+    // - the requester follows up on a Resolved/Closed ticket -> it's clearly not
+    //   done, so it reopens and comes back into view (mirrors ingestClientReply(),
+    //   the same behaviour already used for the hub/spoke reply path).
+    if ($isAdmin && ($target['status'] ?? 'open') === 'open') {
+        $target['status'] = 'in_progress';
+    } elseif (!$isAdmin && in_array($target['status'] ?? '', ['resolved', 'closed'], true)) {
+        $target['status'] = 'open';
+    }
     $ticketCopy = $target;
     unset($target);
     saveTicketsStore($store);
     notifySupportEmail($ticketCopy, 'reply', $reply);
+    // Live ticket thread: instantly append for anyone with this ticket open.
+    if (function_exists('pusherTriggerTicket')) pusherTriggerTicket($ticketId, 'new-reply', $reply);
     // Live bell: notify the OTHER party about this reply.
     if ($isAdmin) {
         // Staff replied -> notify the ticket owner (if a local user).
@@ -2750,6 +3767,13 @@ case 'ticket-reply':
     if (($ticketCopy['source'] ?? '') === 'client' && $isAdmin) {
         sendReplyToSpoke($ticketCopy, $reply);
     }
+    // Phase 3 (the return leg): on a SPOKE, a reply from the ticket's own user
+    // goes UP to the hub so the vendor sees the client's follow-up. Guarded to
+    // locally-raised tickets ('source' is only 'client' on the hub's copies), so
+    // a hub reply is never bounced back to itself.
+    if (($ticketCopy['source'] ?? '') !== 'client' && !$isAdmin) {
+        sendReplyToHub($ticketCopy, $reply);
+    }
     respond(['success' => true]);
     break;
 
@@ -2761,15 +3785,19 @@ case 'update-ticket-status':
     $ticketId = trim($input['id'] ?? '');
     $store = getTicketsStore();
     $found = false;
+    $statusChanged = false;
+    $ticketCopy = null;
     foreach ($store['tickets'] as &$ticket) {
         if (($ticket['id'] ?? '') === $ticketId) {
             if (isset($input['status']) && in_array($input['status'], $VALID_TICKET_STATUS, true)) {
+                $statusChanged = $ticket['status'] !== $input['status'];
                 $ticket['status'] = $input['status'];
             }
             if (isset($input['priority']) && in_array($input['priority'], $VALID_TICKET_PRIORITY, true)) {
                 $ticket['priority'] = $input['priority'];
             }
             $ticket['updated_at'] = date('c');
+            $ticketCopy = $ticket;
             $found = true;
             break;
         }
@@ -2777,6 +3805,12 @@ case 'update-ticket-status':
     unset($ticket);
     if (!$found) respond(['success' => false, 'error' => 'Ticket not found'], 404);
     saveTicketsStore($store);
+    // If this is a client-forwarded ticket, push the status change down to the
+    // spoke so clicking Resolved/Closed/etc. on our copy updates their local
+    // ticket too — the mirror of the reply push in 'ticket-reply'.
+    if ($statusChanged && ($ticketCopy['source'] ?? '') === 'client') {
+        sendStatusToSpoke($ticketCopy);
+    }
     respond(['success' => true]);
     break;
 
@@ -2795,10 +3829,33 @@ case 'delete-ticket':
     if (($target['created_by'] ?? '') !== ($u['id'] ?? '') && !$isAdmin) {
         respond(['success' => false, 'error' => 'Not allowed'], 403);
     }
+    // Push the deletion to the spoke BEFORE removing our own copy — sendDeleteToSpoke()
+    // needs the ticket's reply_url/remote_id, which only exist on this (hub) copy.
+    if (($target['source'] ?? '') === 'client') {
+        sendDeleteToSpoke($target);
+    }
     $store['tickets'] = array_values(array_filter($store['tickets'], function ($t) use ($id) {
         return ($t['id'] ?? '') !== $id;
     }));
     saveTicketsStore($store);
+    respond(['success' => true]);
+    break;
+
+case 'ingest-delete':
+    // SPOKE side: receive a delete pushed down from the hub (an admin deleted
+    // the hub's copy of a client-forwarded ticket) and remove the local copy
+    // too. Same auth as 'ingest-reply'/'ingest-status': the shared
+    // ticket_hub_secret.
+    if ($method !== 'POST') break;
+    $admin = getAdmin();
+    $deleteSecret = trim($admin['ticket_hub_secret'] ?? '');
+    if ($deleteSecret === '') respond(['success' => false, 'error' => 'Delete ingest not enabled'], 404);
+    if (!hash_equals($deleteSecret, trim($input['secret'] ?? ''))) {
+        respond(['success' => false, 'error' => 'Invalid secret'], 403);
+    }
+    $localId = trim($input['remote_id'] ?? '');  // the spoke's own ticket id
+    $ok = ingestDeleteFromHub($localId);
+    if (!$ok) respond(['success' => false, 'error' => 'Invalid ticket id'], 400);
     respond(['success' => true]);
     break;
 
@@ -2881,7 +3938,7 @@ case 'me':
             'is_admin' => ($user['is_admin'] ?? false) || ($user['is_super_admin'] ?? false),
             'is_super_admin' => $user['is_super_admin'] ?? false,
             'onboarding_completed' => $userData['onboarding_completed'] ?? true
-        ]]);
+        ], 'default_currency' => defaultCurrency(), 'currencies' => supportedCurrencies()]);
     }
     respond(['success' => false, 'error' => 'Not authenticated'], 401);
     break;
@@ -2908,22 +3965,40 @@ case 'admin-settings':
                 $masked[$k] = $v;
             }
         }
-        respond(['success' => true, 'settings' => $masked]);
+        $masked['default_currency'] = defaultCurrency();
+        respond(['success' => true, 'settings' => $masked, 'currencies' => supportedCurrencies()]);
     }
     if ($method === 'POST') {
         requireAdmin();
         $admin = getAdmin();
 
-        // LLM API keys (+ Fireflies for Document Studio)
-        foreach (['groq_key', 'gemini_key', 'anthropic_key', 'fireflies_key', 'resend_key'] as $k) {
+        // LLM API keys (+ ClickUp for Document Studio)
+        foreach (['groq_key', 'cerebras_key', 'gemini_key', 'anthropic_key', 'clickup_token', 'resend_key'] as $k) {
             if (isset($input[$k]) && strpos($input[$k], '****') === false) $admin[$k] = trim($input[$k]);
         }
-        if (isset($input['default_provider'])) $admin['default_provider'] = $input['default_provider'];
-        // Per-provider model choice (empty = use the current default for that provider).
-        foreach (['groq_model', 'gemini_model', 'anthropic_model'] as $k) {
+        // ClickUp workspace/list ids (not secrets, no masking needed).
+        foreach (['clickup_workspace_id', 'clickup_list_id'] as $k) {
             if (isset($input[$k])) $admin[$k] = trim($input[$k]);
         }
-        if (isset($input['requisitions'])) $admin['requisitions'] = $input['requisitions'];
+        if (isset($input['default_provider'])) $admin['default_provider'] = $input['default_provider'];
+        // Studio default currency — what new deals and jobs start as.
+        if (isset($input['default_currency'])) {
+            $c = strtoupper(trim($input['default_currency']));
+            if (in_array($c, supportedCurrencies(), true)) $admin['default_currency'] = $c;
+        }
+        // Per-provider model choice (empty = use the current default for that provider).
+        foreach (['groq_model', 'cerebras_model', 'gemini_model', 'anthropic_model'] as $k) {
+            if (isset($input[$k])) $admin[$k] = trim($input[$k]);
+        }
+        if (isset($input['requisitions'])) {
+            $admin['requisitions'] = $input['requisitions'];
+            // Mark this as an explicit save so getAdmin()'s one-time v1 migration
+            // never runs again and overwrites an intentionally cleared/edited list.
+            $admin['requisitions_version'] = 'sales_discovery_v1';
+        }
+        if (isset($input['service_options']) && is_array($input['service_options'])) {
+            $admin['service_options'] = array_values(array_filter(array_map('trim', $input['service_options'])));
+        }
 
         // Help & Support: where user-submitted tickets are emailed (and the From address).
         if (isset($input['support_email'])) $admin['support_email'] = trim($input['support_email']);
@@ -2937,22 +4012,13 @@ case 'admin-settings':
         // Sales outreach: verified From address for emails sent to leads from the system.
         if (isset($input['outreach_from'])) $admin['outreach_from'] = trim($input['outreach_from']);
 
-        // Zoho CRM settings
-        if (isset($input['zoho_client_id']) && strpos($input['zoho_client_id'], '****') === false) {
-            $admin['zoho_client_id'] = trim($input['zoho_client_id']);
+        // Team Chat real-time (Pusher). key/secret auto-mask on GET (via _key/_secret
+        // suffix); app_id/cluster are public and safe to expose to the client.
+        foreach (['pusher_key', 'pusher_secret'] as $k) {
+            if (isset($input[$k]) && strpos($input[$k], '****') === false) $admin[$k] = trim($input[$k]);
         }
-        if (isset($input['zoho_client_secret']) && strpos($input['zoho_client_secret'], '****') === false) {
-            $admin['zoho_client_secret'] = trim($input['zoho_client_secret']);
-        }
-        if (isset($input['zoho_datacenter'])) {
-            $admin['zoho_datacenter'] = $input['zoho_datacenter'];
-        }
-        if (isset($input['zoho_enabled_modules'])) {
-            $admin['zoho_enabled_modules'] = $input['zoho_enabled_modules'];
-        }
-        if (isset($input['zoho_auto_sync'])) {
-            $admin['zoho_auto_sync'] = (bool)$input['zoho_auto_sync'];
-        }
+        if (isset($input['pusher_app_id'])) $admin['pusher_app_id'] = trim($input['pusher_app_id']);
+        if (isset($input['pusher_cluster'])) $admin['pusher_cluster'] = trim($input['pusher_cluster']);
 
         saveAdmin($admin);
         respond(['success' => true]);
@@ -2972,7 +4038,9 @@ case 'test-api':
     $apiKey = $input['api_key'] ?? '';
     if (!$apiKey || strpos($apiKey, '****') !== false) { $admin = getAdmin(); $apiKey = $admin[$provider . '_key'] ?? ''; }
     if (!$apiKey) respond(['success' => false, 'error' => 'No API key for ' . $provider]);
-    $res = callLLM($provider, $apiKey, 'Say "Connection successful!" exactly.');
+    // No fallback here: this must report on the exact key being tested, or a
+    // broken key would look fine because another provider answered for it.
+    $res = callLLM($provider, $apiKey, 'Say "Connection successful!" exactly.', true);
     respond($res['success'] ? ['success' => true, 'message' => 'Connection successful!'] : ['success' => false, 'error' => $res['error']]);
     break;
 
@@ -3187,9 +4255,15 @@ case 'reset-user-data':
 case 'leads':
     if ($method !== 'GET') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
     $admin = getAdmin();
-    $leads = $userData['leads'] ?? [];
+    // Team-wide by default (the pipeline is a shared store) — an optional
+    // owner_id narrows to one rep's own leads, same filter shape as the
+    // existing status/source_type/search filters below.
+    $leads = getLeadsStore()['leads'];
+    $ownerFilter = trim($_GET['owner_id'] ?? '');
+    if ($ownerFilter !== '') {
+        $leads = array_filter($leads, fn($l) => ($l['owner_id'] ?? '') === $ownerFilter);
+    }
 
     // Filter out soft-deleted leads (unless requesting trash)
     $showTrash = ($_GET['trash'] ?? '') === 'true';
@@ -3203,6 +4277,14 @@ case 'leads':
     if ($status && $status !== 'all') {
         $targetStage = legacyStatusToStage($status);
         $leads = array_filter($leads, function($l) use ($targetStage) { return getLeadStage($l) === $targetStage; });
+    }
+
+    // Direct (came to us ourselves) vs Partner (referred by a channel partner).
+    $sourceType = $_GET['source_type'] ?? 'all';
+    if ($sourceType === 'direct') {
+        $leads = array_filter($leads, function($l) { return empty($l['partner_id']); });
+    } elseif ($sourceType === 'partner') {
+        $leads = array_filter($leads, function($l) { return !empty($l['partner_id']); });
     }
 
     // Search filter
@@ -3229,7 +4311,11 @@ case 'leads':
         'success' => true,
         'leads' => $paginatedLeads,
         'pagination' => ['page' => $page, 'per_page' => $perPage, 'total' => $total, 'pages' => $totalPages],
-        'requisitions' => $admin['requisitions'] ?? []
+        'requisitions' => $admin['requisitions'] ?? [],
+        // So the pipeline table can show "Direct" vs. a partner name/payout
+        // without a second round trip.
+        'partners' => getPartnersStore()['partners'],
+        'service_options' => $admin['service_options'] ?? []
     ]);
     break;
 
@@ -3238,7 +4324,8 @@ case 'lead':
     $userData = getUserData($user['id']);
     
     if ($method === 'GET' && isset($_GET['id'])) {
-        foreach ($userData['leads'] as $l) { if ($l['id'] === $_GET['id']) respond(['success' => true, 'lead' => $l]); }
+        $leadsStore = getLeadsStore();
+        foreach ($leadsStore['leads'] as $l) { if ($l['id'] === $_GET['id']) respond(['success' => true, 'lead' => $l]); }
         respond(['success' => false, 'error' => 'Not found'], 404);
     }
     
@@ -3247,22 +4334,7 @@ case 'lead':
         $email = trim($input['email'] ?? '');
         $linkedin = trim($input['linkedin'] ?? '');
         $website = trim($input['website'] ?? '');
-
-        // Email validation (if provided)
-        if (!empty($email) && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            respond(['success' => false, 'error' => 'Invalid email format. Please enter a valid email address.'], 400);
-        }
-
-        // LinkedIn URL validation (if provided)
-        if (!empty($linkedin) && stripos($linkedin, 'linkedin.com') === false) {
-            respond(['success' => false, 'error' => 'Invalid LinkedIn URL. Please enter a valid LinkedIn profile URL.'], 400);
-        }
-
-        // Website URL validation (if provided)
-        if (!empty($website) && !preg_match('/^https?:\/\/|^www\./i', $website)) {
-            // Auto-prepend https:// if missing
-            $website = 'https://' . $website;
-        }
+        $website = validateLeadContactFields($email, $linkedin, $website);
 
         $source = normalizeLeadSource($input['source'] ?? 'manual');
         $isWarm = !empty($input['warm']) || (($input['urgency_flag'] ?? '') === 'warm');
@@ -3283,6 +4355,37 @@ case 'lead':
             'linkedin' => $linkedin,
             'company_size' => sanitizeInput($input['company_size'] ?? ''),
             'notes' => sanitizeInput($input['notes'] ?? ''),
+            // Owner defaults to whoever's creating it, but can be assigned to
+            // any real team member at creation (the Add Lead form's Owner
+            // dropdown) — validated against the real users table so a bad id
+            // can never silently orphan a lead to a nonexistent owner.
+            'owner_id' => (function () use ($input, $user) {
+                $requested = trim($input['owner_id'] ?? '');
+                if ($requested === '') return $user['id'];
+                foreach (getUsers() as $u) { if ($u['id'] === $requested) return $requested; }
+                return $user['id'];
+            })(),
+            // Deal value stays zero/unset at creation (still starts at
+            // Qualified — see the New Lead redesign). The channel partner
+            // CAN be set at creation now (who referred this deal is known
+            // up front), but the commission payout stays hidden in the UI
+            // until the deal reaches Cost Proposal, since there's no deal
+            // value yet to compute it against.
+            'deal_amount' => dealMoney($input['deal_amount'] ?? 0),
+            'deal_currency' => normalizeCurrency($input['deal_currency'] ?? ''),
+            'partner_id' => '',
+            'partner_rate_type' => 'percentage',
+            'partner_rate_value' => 0,
+            'services' => [],
+            'services_other' => '',
+            'engagement_method' => [],
+            'generated_questions' => [],
+            'qualified_research' => null,
+            'meeting_link' => '',
+            'demo_checklist' => [],
+            'demo_checklist_answers' => [],
+            'demo_transcript' => '',
+            'demo_feasibility' => [],
             'enrichment' => '',
             'requisitions' => null,
             'source' => $source,
@@ -3303,126 +4406,23 @@ case 'lead':
             'email_history' => [],
             'created_at' => date('c'),
             'updated_at' => date('c'),
-
-            // === INTELLIGENCE STAGE TRACKING ===
-            'intelligence_stage' => 1,
-            'stage_history' => [],
-
-            // === STAGE 1: ACCOUNT INTELLIGENCE ===
-            'account_intelligence' => [
-                'completed' => false,
-                'completed_at' => null,
-                'validation_score' => 0,
-                'validation_errors' => [],
-                'company_profile' => [
-                    'description' => '',
-                    'key_products_services' => [],
-                    'market_position' => '',
-                    'growth_stage' => '',
-                    'business_model' => '',
-                    'revenue_model' => ''
-                ],
-                'operating_environment' => [
-                    'tech_stack_assumptions' => [],
-                    'system_constraints' => [],
-                    'operational_complexity' => '',
-                    'geographic_footprint' => ''
-                ],
-                'trigger_signals' => [
-                    'growth_signals' => [],
-                    'cost_pressure_signals' => [],
-                    'regulatory_signals' => [],
-                    'competitive_signals' => [],
-                    'technology_signals' => []
-                ],
-                'industry_context' => [
-                    'sector_challenges' => [],
-                    'market_trends' => [],
-                    'competitive_landscape' => ''
-                ],
-                'sources' => []
-            ],
-
-            // === STAGE 2: PERSONA INTELLIGENCE ===
-            'persona_intelligence' => [
-                'completed' => false,
-                'completed_at' => null,
-                'validation_score' => 0,
-                'validation_errors' => [],
-                'persona_profile' => [
-                    'role_category' => '',
-                    'function' => '',
-                    'seniority_level' => ''
-                ],
-                'kpis' => [
-                    'primary_metrics' => [],
-                    'secondary_metrics' => [],
-                    'time_horizons' => ''
-                ],
-                'decision_profile' => [
-                    'authority_level' => '',
-                    'budget_influence' => '',
-                    'buying_stage' => ''
-                ],
-                'objection_profile' => [
-                    'likely_objections' => [],
-                    'risk_tolerance' => ''
-                ],
-                'success_drivers' => [
-                    'career_motivations' => [],
-                    'professional_goals' => [],
-                    'personal_wins' => []
-                ]
-            ],
-
-            // === STAGE 3: PAIN HYPOTHESIS ===
-            'pain_hypothesis' => [
-                'completed' => false,
-                'completed_at' => null,
-                'validation_score' => 0,
-                'validation_errors' => [],
-                'hypotheses' => [],
-                'commercial_impact' => [
-                    'quantified_impact' => '',
-                    'impact_timeframe' => '',
-                    'impact_confidence' => ''
-                ],
-                'value_levers' => [],
-                'alignment_check' => [
-                    'company_pain_fit' => 0,
-                    'persona_pain_fit' => 0,
-                    'solution_relevance' => 0
-                ]
-            ],
-
-            // === STAGE 4: FIT SCORING ===
-            'fit_score' => [
-                'completed' => false,
-                'completed_at' => null,
-                'icp_fit' => ['score' => 0, 'factors' => [], 'disqualifiers' => []],
-                'authority_score' => ['score' => 0, 'rationale' => ''],
-                'urgency_score' => ['score' => 0, 'signals' => []],
-                'commercial_potential' => ['score' => 0, 'deal_size_estimate' => ''],
-                'complexity_score' => ['score' => 0, 'factors' => []],
-                'overall_score' => 0,
-                'overall_grade' => '',
-                'outreach_eligibility' => '',
-                'recommended_action' => ''
-            ],
-
-            // === STAGE 5: OUTREACH DATA ===
-            'outreach_data' => [
-                'unlocked' => false,
-                'unlocked_at' => null,
-                'unlock_grade' => '',
-                'channels_enabled' => [],
-                'sequence_stage' => 0,
-                'email_history' => [],
-                'call_history' => [],
-                'linkedin_history' => []
-            ]
         ];
         if (!$lead['email']) respond(['success' => false, 'error' => 'Email required'], 400);
+        // Channel partner at creation time — same validation/rate-fallback
+        // logic as set-deal-partner, so a lead created with a partner
+        // behaves identically to one that had a partner attached later.
+        $partnerId = trim($input['partner_id'] ?? '');
+        if ($partnerId !== '') {
+            $partner = findPartnerById(getPartnersStore()['partners'], $partnerId);
+            if ($partner) {
+                $lead['partner_id'] = $partnerId;
+                $rateType = $input['partner_rate_type'] ?? $partner['default_rate_type'] ?? 'percentage';
+                $lead['partner_rate_type'] = $rateType === 'fixed' ? 'fixed' : 'percentage';
+                $lead['partner_rate_value'] = isset($input['partner_rate_value'])
+                    ? dealMoney($input['partner_rate_value'])
+                    : dealMoney($partner['default_rate_value'] ?? 0);
+            }
+        }
         $lead = normalizeLeadForMapping($lead);
         $userData['leads'][] = $lead;
         saveUserData($user['id'], $userData);
@@ -3448,7 +4448,8 @@ case 'lead':
             }
         }
 
-        foreach ($userData['leads'] as &$lead) {
+        $leadsStore = getLeadsStore();
+        foreach ($leadsStore['leads'] as &$lead) {
             if ($lead['id'] === $_GET['id']) {
                 foreach (['first_name', 'last_name', 'email', 'phone', 'company', 'title', 'industry', 'country', 'website', 'linkedin', 'company_size', 'notes', 'enrichment', 'requisitions', 'source', 'source_detail', 'assigned_to', 'urgency_flag', 'rejection_reason', 'consultation_type'] as $f) {
                     if (isset($input[$f])) $lead[$f] = trim($input[$f]);
@@ -3463,7 +4464,7 @@ case 'lead':
                 }
                 $lead = normalizeLeadForMapping($lead);
                 $lead['updated_at'] = date('c');
-                saveUserData($user['id'], $userData);
+                saveLeadsStore($leadsStore);
                 respond(['success' => true, 'lead' => $lead]);
             }
         }
@@ -3472,7 +4473,8 @@ case 'lead':
     
     if ($method === 'DELETE' && isset($_GET['id'])) {
         $id = $_GET['id'];
-        foreach ($userData['leads'] as &$l) {
+        $leadsStore = getLeadsStore();
+        foreach ($leadsStore['leads'] as &$l) {
             if ($l['id'] === $id) {
                 $l['deleted_at'] = date('c');
                 $l['deleted_by'] = $user['id'];
@@ -3480,7 +4482,8 @@ case 'lead':
                 break;
             }
         }
-        saveUserData($user['id'], $userData);
+        unset($l);
+        saveLeadsStore($leadsStore);
         respond(['success' => true, 'message' => 'Lead moved to trash']);
     }
     break;
@@ -3488,11 +4491,11 @@ case 'lead':
 case 'permanent-delete':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['id'] ?? '';
     // Only allow permanent delete on trashed leads
     $found = false;
-    foreach ($userData['leads'] as $l) {
+    foreach ($leadsStore['leads'] as $l) {
         if ($l['id'] === $leadId) {
             if (empty($l['deleted_at'])) respond(['success' => false, 'error' => 'Lead must be in trash first'], 400);
             $found = true;
@@ -3500,26 +4503,26 @@ case 'permanent-delete':
         }
     }
     if (!$found) respond(['success' => false, 'error' => 'Lead not found'], 404);
-    $userData['leads'] = array_values(array_filter($userData['leads'], function($l) use ($leadId) {
+    $leadsStore['leads'] = array_values(array_filter($leadsStore['leads'], function($l) use ($leadId) {
         return $l['id'] !== $leadId;
     }));
-    saveUserData($user['id'], $userData);
+    saveLeadsStore($leadsStore);
     respond(['success' => true]);
     break;
 
 case 'restore-lead':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['id'] ?? '';
 
-    foreach ($userData['leads'] as &$l) {
+    foreach ($leadsStore['leads'] as &$l) {
         if ($l['id'] === $leadId) {
             unset($l['deleted_at']);
             unset($l['deleted_by']);
             $l['updated_at'] = date('c');
             logActivity($l, 'restored', 'Restored from trash');
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'message' => 'Lead restored']);
         }
     }
@@ -3529,26 +4532,26 @@ case 'restore-lead':
 case 'empty-trash':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
-    $userData['leads'] = array_values(array_filter($userData['leads'], function($l) {
+    $leadsStore = getLeadsStore();
+    $leadsStore['leads'] = array_values(array_filter($leadsStore['leads'], function($l) {
         return empty($l['deleted_at']);
     }));
-    saveUserData($user['id'], $userData);
+    saveLeadsStore($leadsStore);
     respond(['success' => true, 'message' => 'Trash emptied']);
     break;
 
 case 'save-requisitions':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['lead_id'] ?? '';
     $requisitions = $input['requisitions'] ?? null;
-    
-    foreach ($userData['leads'] as &$lead) {
+
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             $lead['requisitions'] = $requisitions;
             $lead['updated_at'] = date('c');
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
     }
@@ -3558,10 +4561,10 @@ case 'save-requisitions':
 case 'save-call-outcome':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['lead_id'] ?? '';
-    
-    foreach ($userData['leads'] as &$lead) {
+
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             $outcome = $input['outcome'] ?? '';
             $outcomeConfig = macktilesCallOutcomeConfig($outcome);
@@ -3611,8 +4614,32 @@ case 'save-call-outcome':
             else $callHistory[] = $entry;
             $lead['call_history'] = $callHistory;
             logActivity($lead, 'call_logged', 'Call outcome: ' . ($outcomeConfig['label'] ?? $outcome));
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
 
+            respond(['success' => true, 'lead' => $lead]);
+        }
+    }
+    respond(['success' => false, 'error' => 'Lead not found'], 404);
+    break;
+
+/**
+ * Add a timestamped note to a deal. Notes are append-only history (who wrote
+ * what, when) rather than a single overwritable field — replaces the old
+ * call-outcome "Notes" box, which was wiped on every save.
+ */
+case 'add-lead-note':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $leadsStore = getLeadsStore();
+    $leadId = $input['id'] ?? '';
+    $text = trim($input['note'] ?? '');
+    if ($text === '') respond(['success' => false, 'error' => 'Note cannot be empty'], 400);
+
+    foreach ($leadsStore['leads'] as &$lead) {
+        if ($lead['id'] === $leadId) {
+            logActivity($lead, 'note', $text, ['actor' => $user['name'] ?? $user['email'] ?? '']);
+            $lead['updated_at'] = date('c');
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
     }
@@ -3622,25 +4649,114 @@ case 'save-call-outcome':
 case 'update-lead':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['id'] ?? '';
-    
-    foreach ($userData['leads'] as &$lead) {
+
+    if (isset($input['meeting_link']) && trim($input['meeting_link']) !== '' && !filter_var(trim($input['meeting_link']), FILTER_VALIDATE_URL)) {
+        respond(['success' => false, 'error' => 'Meeting link must be a valid URL'], 400);
+    }
+
+    // Same email/LinkedIn/website checks the create path applies, so an
+    // edit from the Profile tab can't save an invalid value the create form
+    // would have rejected. Only runs when one of these fields is actually
+    // being changed — untouched fields don't need re-validating.
+    if (isset($input['email']) || isset($input['linkedin']) || isset($input['website'])) {
+        $leadForValidation = null;
+        foreach ($leadsStore['leads'] as $lv) { if ($lv['id'] === $leadId) { $leadForValidation = $lv; break; } }
+        $emailToCheck = trim($input['email'] ?? ($leadForValidation['email'] ?? ''));
+        $linkedinToCheck = trim($input['linkedin'] ?? ($leadForValidation['linkedin'] ?? ''));
+        $websiteToCheck = trim($input['website'] ?? ($leadForValidation['website'] ?? ''));
+        $normalizedWebsite = validateLeadContactFields($emailToCheck, $linkedinToCheck, $websiteToCheck);
+        if (isset($input['website'])) $input['website'] = $normalizedWebsite;
+    }
+
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
-            // Update allowed fields
-            $allowedFields = ['call_anchor', 'email_skipped', 'followup_date', 'notes', 'source', 'source_detail', 'assigned_to', 'urgency_flag', 'rejection_reason', 'consultation_type'];
+            // Update allowed fields — includes the Profile-tab contact/
+            // company fields (first/last name, email, phone, company,
+            // title, industry, country, website, linkedin, company_size),
+            // validated above when email/linkedin/website change.
+            $allowedFields = ['call_anchor', 'email_skipped', 'followup_date', 'notes', 'source', 'source_detail', 'assigned_to', 'urgency_flag', 'rejection_reason', 'consultation_type', 'services', 'services_other', 'engagement_method', 'engagement_date', 'engagement_status', 'engagement_note', 'meeting_link', 'demo_checklist_answers', 'demo_transcript', 'demo_feasibility', 'first_name', 'last_name', 'email', 'phone', 'company', 'title', 'industry', 'country', 'website', 'linkedin', 'company_size'];
             foreach ($allowedFields as $field) {
                 if (isset($input[$field])) {
-                    $lead[$field] = $input[$field];
+                    $lead[$field] = is_string($input[$field]) ? sanitizeInput($input[$field]) : $input[$field];
                 }
+            }
+            // Setting a follow-up date from the Cost Proposal panel also
+            // best-effort creates a ClickUp task due on that date, so it
+            // shows up in the team's ClickUp focus queue — only when the
+            // caller explicitly asks for it (every other followup_date
+            // writer in the app stays exactly as before).
+            if (isset($input['followup_date']) && !empty($input['create_clickup_reminder'])) {
+                $cuAdmin = getAdmin();
+                $cuToken = $cuAdmin['clickup_token'] ?? '';
+                $cuList = $cuAdmin['clickup_list_id'] ?? '';
+                if ($cuToken && $cuList) {
+                    $cuTitle = 'Follow up: ' . trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')) . ' (' . ($lead['company'] ?? '') . ')';
+                    clickupCreateTask($cuToken, $cuList, $cuTitle, ['due_date' => $input['followup_date']]);
+                    // Best-effort: a ClickUp failure here should never block saving the follow-up date locally.
+                }
+            }
+            // Reassigning ownership: validate against the real users table so a
+            // bad id can never silently orphan a lead (same rule as creation).
+            if (isset($input['owner_id']) && trim($input['owner_id']) !== '') {
+                foreach (getUsers() as $u) {
+                    if ($u['id'] === $input['owner_id']) { $lead['owner_id'] = $input['owner_id']; break; }
+                }
+            }
+            // The deal amount can be changed at any stage.
+            if (isset($input['deal_amount'])) setDealAmount($lead, $input['deal_amount'], '', $user['id']);
+            if (isset($input['deal_currency']) && trim($input['deal_currency']) !== '') {
+                $lead['deal_currency'] = normalizeCurrency($input['deal_currency']);
             }
             $requestedStage = trim($input['stage'] ?? $input['status'] ?? '');
             if ($requestedStage !== '') {
+                $targetStage = legacyStatusToStage($requestedStage);
+                // Winning must go through win-deal so a client + job get created;
+                // this endpoint would otherwise leave the registry out of sync.
+                if ($targetStage === 'won' && getLeadStage($lead) !== 'won') {
+                    respond(['success' => false, 'error' => 'needs_win_confirm', 'lead_id' => $lead['id']], 409);
+                }
+                // Leaving the Lead stage forward is locked server-side too (the
+                // UI already blocks it) until services + all generated
+                // questions + engagement method are filled in — mirrors
+                // leadQualifyChecklistDone() in index.html.
+                if (getLeadStage($lead) === 'lead' && $targetStage !== 'lost' && $targetStage !== 'lead' && !leadQualifyChecklistDone($lead)) {
+                    respond(['success' => false, 'error' => 'Complete the qualification checklist (services, questions, engagement method) before moving this deal forward'], 400);
+                }
+                // Leaving Qualified forward needs a meeting link on file — the
+                // rep books the call elsewhere (Meet/Zoom/Calendly) and pastes
+                // the link here; mirrors the equivalent Lead-stage gate above.
+                if (getLeadStage($lead) === 'qualified' && $targetStage !== 'lost' && $targetStage !== 'qualified' && empty($lead['meeting_link'])) {
+                    respond(['success' => false, 'error' => 'Add a meeting link before moving this deal to Demo'], 400);
+                }
+                // Leaving Demo forward always goes through link-deal-document
+                // (creating/attaching a cost proposal is what advances the
+                // stage) — this endpoint is not a valid way to skip that, so
+                // block it here even though the UI never offers the path.
+                if (getLeadStage($lead) === 'demo' && $targetStage !== 'lost' && $targetStage !== 'demo') {
+                    respond(['success' => false, 'error' => 'Create and link a cost proposal to advance from Demo'], 400);
+                }
+                // Same rule for Cost Proposal -> SOW: generating/linking the
+                // SOW (link-deal-document) is what advances the stage.
+                if (getLeadStage($lead) === 'cost_proposal' && $targetStage !== 'lost' && $targetStage !== 'cost_proposal') {
+                    respond(['success' => false, 'error' => 'Create and link a SOW to advance from Cost Proposal'], 400);
+                }
+                // A deal never regresses through this endpoint. The stage
+                // rail lets a rep VIEW an earlier stage's panel (and even
+                // edit its fields — services, answers, transcript, etc. all
+                // still save), but clicking that panel's own action button
+                // (e.g. "Qualify") must never actually move the deal
+                // backward just because an old panel happened to be on
+                // screen. Only Lost is allowed from anywhere.
+                if ($targetStage !== 'lost' && stageOrder($targetStage) < stageOrder(getLeadStage($lead))) {
+                    respond(['success' => false, 'error' => 'This deal has already moved past that stage'], 400);
+                }
                 setLeadStage($lead, $requestedStage, 'manual_update', $user['id']);
             }
             $lead = normalizeLeadForMapping($lead);
             $lead['updated_at'] = date('c');
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
     }
@@ -3804,15 +4920,15 @@ case 'import':
 case 'delete-lead':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $id = $input['id'] ?? '';
     if (!$id) respond(['success' => false, 'error' => 'No ID'], 400);
-    foreach ($userData['leads'] as &$l) {
+    foreach ($leadsStore['leads'] as &$l) {
         if ($l['id'] === $id) {
             $l['deleted_at'] = date('c');
             $l['deleted_by'] = $user['id'];
             logActivity($l, 'deleted', 'Moved to trash');
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true]);
         }
     }
@@ -3822,10 +4938,10 @@ case 'delete-lead':
 case 'bulk-delete':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $ids = $input['ids'] ?? [];
     $count = 0;
-    foreach ($userData['leads'] as &$l) {
+    foreach ($leadsStore['leads'] as &$l) {
         if (in_array($l['id'], $ids)) {
             $l['deleted_at'] = date('c');
             $l['deleted_by'] = $user['id'];
@@ -3833,7 +4949,8 @@ case 'bulk-delete':
             $count++;
         }
     }
-    saveUserData($user['id'], $userData);
+    unset($l);
+    saveLeadsStore($leadsStore);
     respond(['success' => true, 'deleted' => $count]);
     break;
 
@@ -3955,7 +5072,8 @@ case 'generate-email':
     if ($res['success']) {
         $leadId = $lead['id'] ?? '';
         if ($leadId) {
-            foreach ($userData['leads'] as &$l) {
+            $leadsStore = getLeadsStore();
+            foreach ($leadsStore['leads'] as &$l) {
                 if ($l['id'] === $leadId) {
                     $l['last_action'] = 'email_generated';
                     $l['last_action_at'] = date('c');
@@ -3963,7 +5081,8 @@ case 'generate-email':
                     break;
                 }
             }
-            saveUserData($user['id'], $userData);
+            unset($l);
+            saveLeadsStore($leadsStore);
         }
         $response = ['success' => true, 'email' => $res['content']];
         if ($stageWarning) {
@@ -3989,20 +5108,7 @@ case 'generate-call-pitch':
     $industry = $input['industry'] ?? '';
     $pitchType = $input['pitch_type'] ?? 'cold';
     $customInstructions = $input['custom_instructions'] ?? '';
-    $leadId = $input['lead_id'] ?? '';
-
     if (!$name) respond(['success' => false, 'error' => 'Name is required'], 400);
-
-    // Find the lead to get stage intelligence data
-    $leadData = null;
-    if ($leadId) {
-        foreach ($userData['leads'] as $l) {
-            if ($l['id'] === $leadId) {
-                $leadData = $l;
-                break;
-            }
-        }
-    }
 
     $res = generateCallPitch(
         $provider,
@@ -4013,8 +5119,7 @@ case 'generate-call-pitch':
         $industry,
         $pitchType,
         $customInstructions,
-        $userData['settings'] ?? [],
-        $leadData
+        $userData['settings'] ?? []
     );
 
     if ($res['success']) {
@@ -4062,7 +5167,8 @@ case 'enrich-lead':
         $leadId = $lead['id'] ?? '';
         $updatedLead = null;
         if ($leadId) {
-            foreach ($userData['leads'] as &$l) {
+            $leadsStore = getLeadsStore();
+            foreach ($leadsStore['leads'] as &$l) {
                 if ($l['id'] === $leadId) {
                     $l['enrichment'] = $content;
                     $l['last_action'] = 'researched';
@@ -4072,80 +5178,21 @@ case 'enrich-lead':
                     // research durably (last_action gets overwritten by later actions
                     // like email generation, so it cannot be the source of truth).
                     $l['activities'] = logLeadActivity($l, 'research', 'AI research completed');
-                    if (in_array(getLeadStage($l), ['new_lead', 'research'])) {
-                        setLeadStage($l, 'research', 'research_completed', $user['id']);
-                    }
+                    // Research is activity within the Lead stage, not a stage of its
+                    // own — the deal only advances when a human qualifies it.
 
                     // Auto-calculate ICP grade using shared function
                     $gradeResult = calculateLeadGrade($l, $admin, $parsed);
                     $l['fit_grade'] = $gradeResult['grade'];
                     $l['fit_score'] = $gradeResult['score'];
 
-                    // Auto-populate stage intelligence from enrichment
-                    if ($parsed) {
-                        // Stage 1: Account Intelligence
-                        if (!empty($parsed['company_profile'])) {
-                            if (!isset($l['account_intelligence'])) $l['account_intelligence'] = [];
-                            $l['account_intelligence']['company_profile'] = $parsed['company_profile'];
-                            $l['account_intelligence']['completed'] = true;
-                            $l['account_intelligence']['completed_at'] = date('c');
-                        }
-                        if (!empty($parsed['industry_intelligence'])) {
-                            if (!isset($l['account_intelligence'])) $l['account_intelligence'] = [];
-                            $l['account_intelligence']['industry_context'] = [
-                                'sector_challenges' => array_map(function($c) {
-                                    return is_array($c) ? ($c['challenge'] ?? $c['text'] ?? reset($c) ?? '') : $c;
-                                }, $parsed['industry_intelligence']['top_challenges'] ?? []),
-                                'market_trends' => $parsed['industry_intelligence']['trends'] ?? [],
-                                'competitive_landscape' => $parsed['industry_intelligence']['competitive_pressures'] ?? ''
-                            ];
-                            if (!empty($parsed['sources'])) {
-                                $l['account_intelligence']['sources'] = $parsed['sources'];
-                            }
-                        }
-
-                        // Stage 2: Persona Intelligence
-                        if (!empty($parsed['prospect_analysis'])) {
-                            if (!isset($l['persona_intelligence'])) $l['persona_intelligence'] = [];
-                            $l['persona_intelligence']['kpis'] = [
-                                'primary_metrics' => $parsed['prospect_analysis']['success_metrics'] ?? []
-                            ];
-                            $l['persona_intelligence']['decision_profile'] = [
-                                'authority_level' => $parsed['prospect_analysis']['buying_power'] ?? '',
-                                'responsibilities' => $parsed['prospect_analysis']['responsibilities'] ?? []
-                            ];
-                            $l['persona_intelligence']['completed'] = true;
-                            $l['persona_intelligence']['completed_at'] = date('c');
-                        }
-                        if (!empty($parsed['sales_strategy']['objections'])) {
-                            if (!isset($l['persona_intelligence'])) $l['persona_intelligence'] = [];
-                            $l['persona_intelligence']['objection_profile'] = [
-                                'likely_objections' => array_map(function($o) {
-                                    return is_array($o) ? ($o['objection'] ?? $o['text'] ?? reset($o) ?? '') : $o;
-                                }, $parsed['sales_strategy']['objections'])
-                            ];
-                        }
-
-                        // Stage 3: Pain Hypothesis
-                        if (!empty($parsed['prospect_analysis']['pain_points'])) {
-                            if (!isset($l['pain_hypothesis'])) $l['pain_hypothesis'] = [];
-                            $l['pain_hypothesis']['hypotheses'] = array_map(function($p) {
-                                return is_array($p) ? $p : ['pain' => $p, 'evidence' => ''];
-                            }, $parsed['prospect_analysis']['pain_points']);
-                            $l['pain_hypothesis']['completed'] = true;
-                            $l['pain_hypothesis']['completed_at'] = date('c');
-                        }
-
-                        // Mark all stages complete
-                        $l['intelligence_stage'] = 4;
-                    }
-
                     logActivity($l, 'researched', 'Lead researched (Grade ' . ($l['fit_grade'] ?? '?') . ')');
                     $updatedLead = $l;
                     break;
                 }
             }
-            saveUserData($user['id'], $userData);
+            unset($l);
+            saveLeadsStore($leadsStore);
         }
         respond([
             'success' => true,
@@ -4158,14 +5205,253 @@ case 'enrich-lead':
     respond(['success' => false, 'error' => $res['error']], 500);
     break;
 
+case 'generate-qualification-questions':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $admin = getAdmin();
+    $provider = $admin['default_provider'] ?? 'groq';
+    $apiKey = $admin[$provider . '_key'] ?? '';
+    if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
+
+    $leadId = $input['lead_id'] ?? '';
+    $services = is_array($input['services'] ?? null) ? array_values(array_filter(array_map('trim', $input['services']))) : [];
+    $servicesOther = trim($input['services_other'] ?? '');
+    if ($servicesOther !== '') $services[] = $servicesOther;
+    if (empty($services)) respond(['success' => false, 'error' => 'Select at least one service first'], 400);
+
+    $leadsStore = getLeadsStore();
+    $lead = null;
+    foreach ($leadsStore['leads'] as &$l) {
+        if ($l['id'] === $leadId) { $lead = &$l; break; }
+    }
+    if (!$lead) respond(['success' => false, 'error' => 'Lead not found'], 404);
+
+    $serviceList = implode(', ', $services);
+    $company = $lead['company'] ?? 'the prospect';
+    $industry = $lead['industry'] ?? 'unknown industry';
+
+    $prompt = <<<PROMPT
+You are a sales qualification assistant for Levata, a design and engineering studio that builds websites, software systems and brand identities.
+
+A new lead has come in for {$company} (industry: {$industry}), interested in: {$serviceList}.
+
+Generate 6 to 10 short, concrete qualifying questions a rep should ask this lead before moving them to the Qualified stage. Questions should surface things like: budget/deal size indicators, current systems or tools in use, urgency/timeline, decision-making process, team size, project scope or volume, and anything specific to the selected service(s) that would change how the project is scoped or priced. Steer toward questions relevant to {$serviceList} specifically, not generic filler.
+
+Return ONLY a JSON array (no markdown, no commentary), where each item has this shape:
+{"id": "short_snake_case_id", "title": "The question text", "type": "text|single|multi", "options": ["Option A", "Option B"]}
+
+Rules:
+- "type" is "text" for free-text answers, "single" for pick-one, "multi" for pick-many.
+- Only include "options" when type is "single" or "multi"; omit it entirely for "text".
+- Each "id" must be unique within the array.
+- Return between 6 and 10 questions.
+PROMPT;
+
+    $res = callLLM($provider, $apiKey, $prompt);
+    if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 500);
+
+    $content = $res['content'];
+    if (preg_match('/```(?:json)?\s*([\s\S]*?)```/', $content, $matches)) {
+        $content = trim($matches[1]);
+    }
+    $questions = json_decode($content, true);
+    if (!is_array($questions) || empty($questions)) {
+        respond(['success' => false, 'error' => 'AI returned an unusable response. Try again.'], 500);
+    }
+
+    // Normalize + de-dupe ids defensively (LLM output isn't fully trustworthy).
+    $seenIds = [];
+    $clean = [];
+    foreach ($questions as $i => $q) {
+        if (!is_array($q) || empty($q['title'])) continue;
+        $id = trim($q['id'] ?? '') ?: ('q' . ($i + 1));
+        if (isset($seenIds[$id])) $id = $id . '_' . ($i + 1);
+        $seenIds[$id] = true;
+        $type = in_array($q['type'] ?? '', ['text', 'single', 'multi']) ? $q['type'] : 'text';
+        $entry = ['id' => $id, 'title' => trim($q['title']), 'type' => $type];
+        if ($type !== 'text' && !empty($q['options']) && is_array($q['options'])) {
+            $entry['options'] = array_values(array_map('strval', $q['options']));
+        }
+        $clean[] = $entry;
+    }
+    if (empty($clean)) respond(['success' => false, 'error' => 'AI returned an unusable response. Try again.'], 500);
+
+    $lead['generated_questions'] = $clean;
+    $lead['services'] = $services;
+    if ($servicesOther !== '') $lead['services_other'] = $servicesOther;
+    $lead['updated_at'] = date('c');
+    unset($l);
+    saveLeadsStore($leadsStore);
+
+    respond(['success' => true, 'questions' => $clean, 'lead' => $lead]);
+    break;
+
+case 'generate-lead-research':
+    // Qualified-stage research: service + industry best-practice briefing for
+    // the rep ahead of the demo call. Deliberately separate from enrich-lead
+    // (the outbound ICP/scoring feature, hidden behind OUTBOUND_ENABLED) —
+    // this one is always on and has nothing to do with lead scoring.
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $admin = getAdmin();
+    $provider = $admin['default_provider'] ?? 'groq';
+    $apiKey = $admin[$provider . '_key'] ?? '';
+    if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
+
+    $leadId = $input['lead_id'] ?? '';
+    $leadsStore = getLeadsStore();
+    $lead = null;
+    foreach ($leadsStore['leads'] as &$l) {
+        if ($l['id'] === $leadId) { $lead = &$l; break; }
+    }
+    if (!$lead) respond(['success' => false, 'error' => 'Lead not found'], 404);
+
+    $services = $lead['services'] ?? [];
+    if (!empty($lead['services_other']) && !in_array($lead['services_other'], $services)) $services[] = $lead['services_other'];
+    if (empty($services)) respond(['success' => false, 'error' => 'This lead has no services selected yet'], 400);
+
+    $serviceList = implode(', ', $services);
+    $company = $lead['company'] ?? 'the prospect';
+    $industry = $lead['industry'] ?? 'unknown industry';
+    $answers = $lead['requisitions'] ?? [];
+    $answersText = '';
+    foreach (($lead['generated_questions'] ?? []) as $q) {
+        $v = $answers[$q['id']] ?? null;
+        if (empty($v)) continue;
+        $answersText .= '- ' . $q['title'] . ': ' . (is_array($v) ? implode(', ', $v) : $v) . "\n";
+    }
+
+    $prompt = <<<PROMPT
+You are a sales research assistant for Levata, a design and engineering studio that builds websites, software systems and brand identities.
+
+Prepare a short research briefing for a rep ahead of a demo call with {$company} (industry: {$industry}), who are interested in: {$serviceList}.
+
+{$answersText}
+
+Return ONLY a single JSON object (no markdown, no commentary) with this exact shape:
+{
+  "industry_context": "2-3 sentences on what matters in this industry right now, relevant to the service(s) requested",
+  "best_practices": ["short best-practice point relevant to {$serviceList}", "..."],
+  "talking_points": ["a specific, non-generic talking point for this demo", "..."],
+  "questions_to_probe": ["a sharp follow-up question the rep should ask on the call", "..."]
+}
+
+Rules:
+- 3 to 5 items in each array.
+- Ground everything in the service(s) and industry given, not generic sales advice.
+- If qualification answers were provided above, reference them specifically rather than restating generic industry facts.
+PROMPT;
+
+    $res = callLLM($provider, $apiKey, $prompt);
+    if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 500);
+
+    $content = $res['content'];
+    if (preg_match('/```(?:json)?\s*([\s\S]*?)```/', $content, $matches)) {
+        $content = trim($matches[1]);
+    }
+    $research = json_decode($content, true);
+    if (!is_array($research) || empty($research)) {
+        respond(['success' => false, 'error' => 'AI returned an unusable response. Try again.'], 500);
+    }
+
+    $clean = [
+        'industry_context' => trim($research['industry_context'] ?? ''),
+        'best_practices' => array_values(array_filter(array_map('trim', $research['best_practices'] ?? []))),
+        'talking_points' => array_values(array_filter(array_map('trim', $research['talking_points'] ?? []))),
+        'questions_to_probe' => array_values(array_filter(array_map('trim', $research['questions_to_probe'] ?? []))),
+        'generated_at' => date('c'),
+    ];
+
+    $lead['qualified_research'] = $clean;
+    $lead['updated_at'] = date('c');
+    unset($l);
+    saveLeadsStore($leadsStore);
+
+    respond(['success' => true, 'research' => $clean, 'lead' => $lead]);
+    break;
+
+case 'generate-demo-checklist':
+    // Demo-stage requirement-gathering checklist: what to nail down on the
+    // demo call itself, service-specific (SIP/web/custom per the storyboard).
+    // Same callLLM pattern as generate-qualification-questions, kept as its
+    // own endpoint since the two checklists serve different moments
+    // (pre-qualification vs. requirement-gathering during the demo).
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $admin = getAdmin();
+    $provider = $admin['default_provider'] ?? 'groq';
+    $apiKey = $admin[$provider . '_key'] ?? '';
+    if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
+
+    $leadId = $input['lead_id'] ?? '';
+    $leadsStore = getLeadsStore();
+    $lead = null;
+    foreach ($leadsStore['leads'] as &$l) {
+        if ($l['id'] === $leadId) { $lead = &$l; break; }
+    }
+    if (!$lead) respond(['success' => false, 'error' => 'Lead not found'], 404);
+
+    $services = $lead['services'] ?? [];
+    if (!empty($lead['services_other']) && !in_array($lead['services_other'], $services)) $services[] = $lead['services_other'];
+    if (empty($services)) respond(['success' => false, 'error' => 'This lead has no services selected yet'], 400);
+    $serviceList = implode(', ', $services);
+    $company = $lead['company'] ?? 'the prospect';
+
+    $prompt = <<<PROMPT
+You are a project scoping assistant for Levata, a design and engineering studio that builds websites, software systems and brand identities.
+
+A rep is about to run a demo call with {$company}, who need: {$serviceList}.
+
+Generate 6 to 10 short, concrete requirement-gathering checklist items the rep must nail down DURING this demo call before a cost proposal can be scoped accurately. Think: specific dates/deadlines, technical specifics (e.g. hosting, integrations, existing systems), stakeholders/decision-makers, exact scope boundaries, content/asset readiness, and anything specific to {$serviceList} that changes pricing or scope.
+
+Return ONLY a JSON array (no markdown, no commentary), where each item has this shape:
+{"id": "short_snake_case_id", "title": "The checklist item"}
+
+Rules:
+- Each item is a single concrete thing to confirm or gather, phrased as an action (e.g. "Confirm the go-live date", not "Go-live date?").
+- Each "id" must be unique within the array.
+- Return between 6 and 10 items.
+PROMPT;
+
+    $res = callLLM($provider, $apiKey, $prompt);
+    if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 500);
+
+    $content = $res['content'];
+    if (preg_match('/```(?:json)?\s*([\s\S]*?)```/', $content, $matches)) {
+        $content = trim($matches[1]);
+    }
+    $items = json_decode($content, true);
+    if (!is_array($items) || empty($items)) {
+        respond(['success' => false, 'error' => 'AI returned an unusable response. Try again.'], 500);
+    }
+
+    $seenIds = [];
+    $clean = [];
+    foreach ($items as $i => $it) {
+        if (!is_array($it) || empty($it['title'])) continue;
+        $id = trim($it['id'] ?? '') ?: ('c' . ($i + 1));
+        if (isset($seenIds[$id])) $id = $id . '_' . ($i + 1);
+        $seenIds[$id] = true;
+        $clean[] = ['id' => $id, 'title' => trim($it['title'])];
+    }
+    if (empty($clean)) respond(['success' => false, 'error' => 'AI returned an unusable response. Try again.'], 500);
+
+    $lead['demo_checklist'] = $clean;
+    $lead['updated_at'] = date('c');
+    unset($l);
+    saveLeadsStore($leadsStore);
+
+    respond(['success' => true, 'checklist' => $clean, 'lead' => $lead]);
+    break;
+
 case 'save-email':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['lead_id'] ?? '';
     $emailType = $input['type'] ?? 'initial';
 
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             // Save both subject and content in email_history
             $lead['email_history'][] = [
@@ -4179,12 +5465,9 @@ case 'save-email':
             $lead['last_action'] = 'email_sent';
             $lead['last_action_at'] = date('c');
             $lead['updated_at'] = date('c');
-            // Update canonical stage to email sent for cold outreach.
-            if (in_array(getLeadStage($lead), ['new_lead', 'research', 'engaged'])) {
-                setLeadStage($lead, 'email_sent', 'email_sent:' . $emailType, $user['id']);
-            }
+            // Sending an email is activity within the Lead stage, not a stage move.
             logActivity($lead, 'email_sent', ucfirst(str_replace('_', ' ', $emailType)) . ' email sent');
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
     }
@@ -4209,8 +5492,9 @@ case 'send-email':
     }
 
     // Find the lead and validate its email address up front.
+    $leadsStore = getLeadsStore();
     $target = null;
-    foreach ($userData['leads'] as $l) {
+    foreach ($leadsStore['leads'] as $l) {
         if ($l['id'] === $leadId) { $target = $l; break; }
     }
     if (!$target) respond(['success' => false, 'error' => 'Lead not found'], 404);
@@ -4285,7 +5569,7 @@ case 'send-email':
     $messageId = is_array($sendDecoded) ? ($sendDecoded['id'] ?? null) : null;
 
     // Delivered. Record it exactly like 'save-email' does.
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             $lead['email_history'][] = [
                 'type' => $emailType,
@@ -4300,11 +5584,8 @@ case 'send-email':
             $lead['last_action'] = 'email_sent';
             $lead['last_action_at'] = date('c');
             $lead['updated_at'] = date('c');
-            if (in_array(getLeadStage($lead), ['new_lead', 'research', 'engaged'])) {
-                setLeadStage($lead, 'email_sent', 'email_sent:' . $emailType, $user['id']);
-            }
             logActivity($lead, 'email_sent', ucfirst(str_replace('_', ' ', $emailType)) . ' email sent from system');
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
     }
@@ -4314,7 +5595,7 @@ case 'send-email':
 case 'email-outcome':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['lead_id'] ?? '';
     $emailIndex = intval($input['email_index'] ?? -1);
     $outcome = $input['outcome'] ?? ''; // replied, bounced, no_response, meeting_booked
@@ -4324,7 +5605,7 @@ case 'email-outcome':
         respond(['success' => false, 'error' => 'Invalid outcome. Use: ' . implode(', ', $validOutcomes)], 400);
     }
 
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             if ($emailIndex >= 0 && isset($lead['email_history'][$emailIndex])) {
                 $lead['email_history'][$emailIndex]['outcome'] = $outcome;
@@ -4340,16 +5621,16 @@ case 'email-outcome':
 
             // Update lead status based on outcome
             if ($outcome === 'meeting_booked') {
-                setLeadStage($lead, 'consultation_booked', 'email_outcome:meeting_booked', $user['id']);
+                setLeadStage($lead, 'demo', 'email_outcome:meeting_booked', $user['id']);
                 $lead['last_action'] = 'meeting_booked';
             } elseif ($outcome === 'replied') {
-                setLeadStage($lead, 'engaged', 'email_outcome:replied', $user['id']);
+                setLeadStage($lead, 'qualified', 'email_outcome:replied', $user['id']);
                 $lead['last_action'] = 'email_replied';
             }
             $lead['last_action_at'] = date('c');
             $lead['updated_at'] = date('c');
 
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
     }
@@ -4359,10 +5640,10 @@ case 'email-outcome':
 case 'start-call':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['lead_id'] ?? '';
 
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             $lead['call_started_at'] = date('c');
             $lead['calls_made'] = ($lead['calls_made'] ?? 0) + 1;
@@ -4380,10 +5661,8 @@ case 'start-call':
                 'rep_id' => $user['id'],
                 'rep_name' => $user['name'] ?? $user['email']
             ];
-            if (in_array(getLeadStage($lead), ['email_sent', 'research', 'new_lead'])) {
-                setLeadStage($lead, 'call_attempted', 'call_started', $user['id']);
-            }
-            saveUserData($user['id'], $userData);
+            // Starting a call is activity within the Lead stage, not a stage move.
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
     }
@@ -4393,10 +5672,10 @@ case 'start-call':
 case 'grade-override':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['lead_id'] ?? '';
 
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             $lead['grade_override'] = [
                 'enabled' => true,
@@ -4408,7 +5687,7 @@ case 'grade-override':
                 'original_grade' => $lead['fit_grade'] ?? ''
             ];
             $lead['updated_at'] = date('c');
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
     }
@@ -4418,11 +5697,11 @@ case 'grade-override':
 case 'recalculate-grade':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $admin = getAdmin();
     $leadId = $input['lead_id'] ?? '';
 
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             // Check if lead has enrichment data
             if (empty($lead['enrichment'])) {
@@ -4435,7 +5714,7 @@ case 'recalculate-grade':
             $lead['fit_score'] = $gradeResult['score'];
             $lead['updated_at'] = date('c');
 
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead, 'grade' => $gradeResult['grade'], 'score' => $gradeResult['score']]);
         }
     }
@@ -4447,7 +5726,7 @@ case 'recalculate-grade':
 case 'log-activity':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $admin = getAdmin();
     $leadId = $input['lead_id'] ?? '';
     $activityType = $input['type'] ?? '';
@@ -4457,7 +5736,7 @@ case 'log-activity':
         respond(['success' => false, 'error' => 'Activity type is required'], 400);
     }
 
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             // Add activity to the lead's activities array
             $lead['activities'] = logLeadActivity($lead, $activityType, $details);
@@ -4469,7 +5748,7 @@ case 'log-activity':
             $scores = recalculateAllLeadScores($lead, $admin);
             $lead = array_merge($lead, $scores);
 
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond([
                 'success' => true,
                 'lead' => $lead,
@@ -4483,12 +5762,12 @@ case 'log-activity':
 case 'recalculate-all-scores':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $admin = getAdmin();
     $leadId = $input['lead_id'] ?? null; // Optional: recalculate single lead
 
     $updated = 0;
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         // If lead_id provided, only update that lead
         if ($leadId && $lead['id'] !== $leadId) continue;
 
@@ -4499,12 +5778,12 @@ case 'recalculate-all-scores':
 
         // If single lead requested, respond immediately
         if ($leadId) {
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead, 'scores' => $scores]);
         }
     }
 
-    saveUserData($user['id'], $userData);
+    saveLeadsStore($leadsStore);
     respond(['success' => true, 'updated' => $updated, 'message' => "Recalculated scores for $updated leads"]);
     break;
 
@@ -4596,7 +5875,7 @@ case 'focus-queue':
 case 'skip-focus-item':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['lead_id'] ?? '';
     $duration = $input['duration'] ?? '1day'; // 1hour, 1day, 3days, 1week
 
@@ -4609,11 +5888,11 @@ case 'skip-focus-item':
 
     $skipUntil = date('c', strtotime($skipDurations[$duration] ?? '+1 day'));
 
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             $lead['skipped_until'] = $skipUntil;
             $lead['updated_at'] = date('c');
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'skipped_until' => $skipUntil]);
         }
     }
@@ -4623,20 +5902,20 @@ case 'skip-focus-item':
 case 'drop-lead':
     if ($method !== 'POST') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
+    $leadsStore = getLeadsStore();
     $leadId = $input['lead_id'] ?? '';
     $reason = $input['reason'] ?? '';
 
-    foreach ($userData['leads'] as &$lead) {
+    foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
-            setLeadStage($lead, 'nurture_parked', 'drop_lead', $user['id']);
+            setLeadStage($lead, 'lost', 'drop_lead', $user['id']);
             $lead['disqualified_reason'] = $reason;
             $lead['rejection_reason'] = $reason;
             $lead['disqualified_at'] = date('c');
             $lead['last_action'] = 'disqualified';
             $lead['last_action_at'] = date('c');
             $lead['updated_at'] = date('c');
-            saveUserData($user['id'], $userData);
+            saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
     }
@@ -4663,6 +5942,342 @@ case 'next-best-action':
         }
     }
     respond(['success' => false, 'error' => 'Lead not found'], 404);
+    break;
+
+// ==================== TEAM CHAT ====================
+case 'chat-channels':
+    $user = requireAuth();
+    if ($method === 'GET') {
+        $channels = getChatChannels();
+        $unread = getChatUnreadCounts($user['id']);
+        $isAdmin = isChatAdmin($user);
+        $channels = array_values(array_filter($channels, function($ch) use ($user, $isAdmin) {
+            $members = $ch['members'] ?? [];
+            return empty($members) || $isAdmin || in_array($user['id'], $members, true);
+        }));
+        foreach ($channels as &$ch) $ch['unread'] = $unread[$ch['id']] ?? 0;
+        respond(['success' => true, 'channels' => $channels]);
+    }
+    if ($method === 'POST') {
+        if (!isChatAdmin($user)) respond(['success' => false, 'error' => 'Only admins can create channels'], 403);
+        $name = strtolower(trim(preg_replace('/[^a-zA-Z0-9_\-]/', '', $input['name'] ?? '')));
+        if (!$name) respond(['success' => false, 'error' => 'Channel name required'], 400);
+        $channels = getChatChannels();
+        foreach ($channels as $ch) {
+            if ($ch['name'] === $name) respond(['success' => false, 'error' => 'Channel already exists'], 400);
+        }
+        $members = array_values(array_filter((array)($input['members'] ?? []), fn($id) => is_string($id) && $id !== ''));
+        $newChannel = ['id' => 'channel_' . bin2hex(random_bytes(4)), 'name' => $name, 'description' => $input['description'] ?? '', 'members' => $members, 'created_by' => $user['id'], 'created_at' => date('c')];
+        $channels[] = $newChannel;
+        saveChatChannels($channels);
+        respond(['success' => true, 'channel' => $newChannel]);
+    }
+    if ($method === 'DELETE') {
+        if (empty($user['is_super_admin'])) respond(['success' => false, 'error' => 'Only super admin can delete channels'], 403);
+        $channelId = $input['id'] ?? '';
+        if ($channelId === 'channel_general') respond(['success' => false, 'error' => 'Cannot delete the general channel'], 400);
+        if (!$channelId) respond(['success' => false, 'error' => 'Channel ID required'], 400);
+        $channels = array_values(array_filter(getChatChannels(), fn($ch) => $ch['id'] !== $channelId));
+        saveChatChannels($channels);
+        respond(['success' => true]);
+    }
+    break;
+
+case 'chat-channel-members':
+    $user = requireAuth();
+    if (!isChatAdmin($user)) respond(['success' => false, 'error' => 'Admin only'], 403);
+    if ($method === 'POST') {
+        $channelId = $input['channel_id'] ?? '';
+        $members = array_values(array_filter((array)($input['members'] ?? []), fn($id) => is_string($id) && $id !== ''));
+        $channels = getChatChannels();
+        $found = false;
+        foreach ($channels as &$ch) {
+            if ($ch['id'] === $channelId) {
+                $ch['members'] = $members;
+                if (!empty($input['name'])) {
+                    $newName = strtolower(trim(preg_replace('/[^a-zA-Z0-9_\-]/', '', $input['name'])));
+                    if ($newName) $ch['name'] = $newName;
+                }
+                if (isset($input['description'])) $ch['description'] = trim($input['description']);
+                $found = true;
+                break;
+            }
+        }
+        unset($ch);
+        if (!$found) respond(['success' => false, 'error' => 'Channel not found'], 404);
+        saveChatChannels($channels);
+        respond(['success' => true]);
+    }
+    break;
+
+case 'chat-messages':
+    $user = requireAuth();
+    $threadId = $_GET['thread'] ?? $input['thread'] ?? '';
+    if (!$threadId) respond(['success' => false, 'error' => 'Thread required'], 400);
+    if (!canAccessChatThread($user, $threadId)) respond(['success' => false, 'error' => 'Not authorized for this thread'], 403);
+    $safe = preg_replace('/[^a-zA-Z0-9_]/', '', $threadId);
+
+    if ($method === 'GET') {
+        $messages = getChannelMessages($safe);
+        $since = $_GET['since'] ?? null;
+        if ($since) $messages = array_values(array_filter($messages, fn($m) => ($m['sent_at'] ?? '') > $since));
+        if (empty($_GET['peek'])) dbSetLastRead($user['id'], $safe, date('c'));
+        respond(['success' => true, 'messages' => array_slice($messages, -100)]);
+    }
+
+    if ($method === 'POST') {
+        $text = trim($input['text'] ?? '');
+        if (!$text) respond(['success' => false, 'error' => 'Message required'], 400);
+        $messages = getChannelMessages($safe);
+        $msg = [
+            'id'        => 'msg_' . bin2hex(random_bytes(6)),
+            'user_id'   => $user['id'],
+            'user_name' => $user['name'] ?? $user['email'],
+            'text'      => htmlspecialchars($text, ENT_QUOTES, 'UTF-8'),
+            'sent_at'   => date('c'),
+            'reactions' => []
+        ];
+        $messages[] = $msg;
+        saveChannelMessages($safe, $messages);
+
+        pusherTrigger($safe, 'new-message', $msg);
+        notifyChatThread($user, $threadId, $safe, $msg, substr($text, 0, 100));
+        // @mentions only make sense in channels, not DMs
+        if (strpos($threadId, 'dm_') !== 0) {
+            $threadLabel = '#' . $safe;
+            foreach (getChatChannels() as $ch) {
+                if ($ch['id'] === $threadId) { $threadLabel = '#' . $ch['name']; break; }
+            }
+            notifyChatMentions($user, $text, $threadId, $threadLabel);
+        }
+        respond(['success' => true, 'message' => $msg]);
+    }
+    break;
+
+case 'chat-react':
+    $user = requireAuth();
+    if ($method !== 'POST') break;
+    $threadId = preg_replace('/[^a-zA-Z0-9_]/', '', $input['thread'] ?? '');
+    $msgId    = $input['message_id'] ?? '';
+    $emoji    = $input['emoji'] ?? '';
+    if (!$threadId || !$msgId || !$emoji) respond(['success' => false, 'error' => 'Missing fields'], 400);
+    if (!canAccessChatThread($user, $threadId)) respond(['success' => false, 'error' => 'Not authorized for this thread'], 403);
+    $messages = getChannelMessages($threadId);
+    foreach ($messages as &$m) {
+        if ($m['id'] === $msgId) {
+            if (!isset($m['reactions'])) $m['reactions'] = [];
+            $existing = false;
+            foreach ($m['reactions'] as &$r) {
+                if ($r['emoji'] === $emoji) {
+                    if (in_array($user['id'], $r['users'])) {
+                        $r['users'] = array_values(array_filter($r['users'], fn($u) => $u !== $user['id']));
+                    } else {
+                        $r['users'][] = $user['id'];
+                    }
+                    if (empty($r['users'])) $m['reactions'] = array_values(array_filter($m['reactions'], fn($rx) => $rx['emoji'] !== $emoji));
+                    $existing = true;
+                    break;
+                }
+            }
+            unset($r);
+            if (!$existing) $m['reactions'][] = ['emoji' => $emoji, 'users' => [$user['id']]];
+            break;
+        }
+    }
+    unset($m);
+    saveChannelMessages($threadId, $messages);
+    pusherTrigger($threadId, 'thread-updated', ['reason' => 'react']);
+    respond(['success' => true]);
+    break;
+
+case 'chat-dm-threads':
+    $user = requireAuth();
+    if ($method !== 'GET') break;
+    $unread = getChatUnreadCounts($user['id']);
+    $threads = [];
+    foreach (getUsers() as $u) {
+        if ($u['id'] === $user['id']) continue;
+        $threadId = getDmThreadId($user['id'], $u['id']);
+        $threads[] = [
+            'thread_id' => $threadId,
+            'user_id'   => $u['id'],
+            'user_name' => $u['name'] ?? $u['email'],
+            'unread'    => $unread[$threadId] ?? 0
+        ];
+    }
+    respond(['success' => true, 'threads' => $threads]);
+    break;
+
+case 'chat-delete-message':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $threadId = preg_replace('/[^a-zA-Z0-9_]/', '', $input['thread'] ?? '');
+    $msgId = $input['message_id'] ?? '';
+    if (!$threadId || !$msgId) respond(['success' => false, 'error' => 'Missing fields'], 400);
+    if (!canAccessChatThread($user, $threadId)) respond(['success' => false, 'error' => 'Not authorized for this thread'], 403);
+    $messages = getChannelMessages($threadId);
+    $found = false;
+    $isAdminUser = isChatAdmin($user);
+    foreach ($messages as $m) {
+        if ($m['id'] === $msgId) {
+            if ($m['user_id'] !== $user['id'] && !$isAdminUser) {
+                respond(['success' => false, 'error' => 'You can only delete your own messages'], 403);
+            }
+            $found = true;
+            break;
+        }
+    }
+    if (!$found) respond(['success' => false, 'error' => 'Message not found'], 404);
+    $messages = array_values(array_filter($messages, fn($m) => $m['id'] !== $msgId));
+    saveChannelMessages($threadId, $messages);
+    pusherTrigger($threadId, 'thread-updated', ['reason' => 'delete']);
+    respond(['success' => true]);
+    break;
+
+case 'chat-pin-message':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $threadId = preg_replace('/[^a-zA-Z0-9_]/', '', $input['thread'] ?? '');
+    $msgId    = $input['message_id'] ?? '';
+    $unpin    = !empty($input['unpin']);
+    if (!$threadId) respond(['success' => false, 'error' => 'Thread required'], 400);
+    if (!canAccessChatThread($user, $threadId)) respond(['success' => false, 'error' => 'Not authorized for this thread'], 403);
+    $messages = getChannelMessages($threadId);
+
+    if ($unpin) {
+        foreach ($messages as &$m) {
+            if ($m['id'] === $msgId) { $m['pinned'] = false; $m['pinned_at'] = null; $m['pinned_by'] = null; break; }
+        }
+        unset($m);
+        saveChannelMessages($threadId, $messages);
+        pusherTrigger($threadId, 'thread-updated', ['reason' => 'unpin']);
+        respond(['success' => true]);
+    } else {
+        $replacedName = null;
+        foreach ($messages as &$m) {
+            if (!empty($m['pinned']) && $m['id'] !== $msgId) {
+                if (($m['pinned_by'] ?? '') !== $user['id'] && !empty($m['pinned_by_name'])) $replacedName = $m['pinned_by_name'];
+                $m['pinned'] = false; $m['pinned_at'] = null; $m['pinned_by'] = null;
+            }
+        }
+        unset($m);
+        foreach ($messages as &$m) {
+            if ($m['id'] === $msgId) {
+                $m['pinned'] = true;
+                $m['pinned_at'] = date('c');
+                $m['pinned_by'] = $user['id'];
+                $m['pinned_by_name'] = $user['name'] ?? $user['email'];
+                break;
+            }
+        }
+        unset($m);
+        saveChannelMessages($threadId, $messages);
+        pusherTrigger($threadId, 'thread-updated', ['reason' => 'pin']);
+        respond(['success' => true, 'replaced' => $replacedName]);
+    }
+    break;
+
+case 'chat-upload':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $threadId = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['thread'] ?? '');
+    if (!$threadId) respond(['success' => false, 'error' => 'Thread required'], 400);
+    if (!canAccessChatThread($user, $threadId)) respond(['success' => false, 'error' => 'Not authorized for this thread'], 403);
+    if (empty($_FILES['file'])) respond(['success' => false, 'error' => 'No file uploaded'], 400);
+
+    $file = $_FILES['file'];
+    if ($file['size'] > 5 * 1024 * 1024) respond(['success' => false, 'error' => 'File too large (max 5MB)'], 400);
+
+    $allowed = ['image/jpeg','image/png','image/gif','image/webp','application/pdf','text/plain','text/csv'];
+    if (!in_array($file['type'], $allowed)) respond(['success' => false, 'error' => 'File type not allowed'], 400);
+
+    $uploadDir = DATA_DIR . '/uploads/';
+    if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+
+    $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+    $filename = bin2hex(random_bytes(8)) . '.' . strtolower($ext);
+    if (!move_uploaded_file($file['tmp_name'], $uploadDir . $filename)) respond(['success' => false, 'error' => 'Upload failed'], 500);
+
+    $caption = trim($_POST['caption'] ?? '');
+    $messages = getChannelMessages($threadId);
+    $isImage = strpos($file['type'], 'image/') === 0;
+    $msg = [
+        'id'        => 'msg_' . bin2hex(random_bytes(6)),
+        'user_id'   => $user['id'],
+        'user_name' => $user['name'] ?? $user['email'],
+        'text'      => $caption !== '' ? htmlspecialchars($caption, ENT_QUOTES, 'UTF-8') : '',
+        'file'      => ['name' => $file['name'], 'path' => 'data/uploads/' . $filename, 'type' => $file['type'], 'size' => $file['size'], 'is_image' => $isImage],
+        'sent_at'   => date('c'),
+        'reactions' => []
+    ];
+    $messages[] = $msg;
+    saveChannelMessages($threadId, $messages);
+
+    pusherTrigger($threadId, 'new-message', $msg);
+    $notifBody = $isImage ? '📷 Image' : '📎 ' . $file['name'];
+    if ($caption !== '') $notifBody .= ': ' . substr($caption, 0, 80);
+    notifyChatThread($user, $threadId, $threadId, $msg, $notifBody);
+
+    respond(['success' => true, 'message' => $msg]);
+    break;
+
+case 'chat-unread':
+    $user = requireAuth();
+    if ($method !== 'GET') break;
+    $counts = getChatUnreadCounts($user['id']);
+    respond(['success' => true, 'total' => array_sum($counts), 'counts' => $counts]);
+    break;
+
+case 'chat-assistant':
+    // AI Assistant — a function-calling agent over app data. Runs on the first
+    // configured provider (Cerebras / Groq / Gemini) and fails over to the next
+    // on a rate limit or outage; see assistantProviderChain() in chatbot.php.
+    // Body: { message: string, history?: Gemini contents[] }. Returns the reply
+    // plus the updated history so the client can carry the conversation forward.
+    $user = requireAuth();
+    if ($method !== 'POST') break;
+    $message = trim($input['message'] ?? '');
+    if ($message === '') respond(['success' => false, 'error' => 'Message is required'], 400);
+    $history = is_array($input['history'] ?? null) ? $input['history'] : [];
+    $result = runAssistant($message, $history, $user);
+    if (isset($result['error'])) respond(['success' => false, 'error' => $result['error']], 400);
+    respond([
+        'success'       => true,
+        'reply'         => $result['reply'],
+        'tools_used'    => $result['tools_used'],
+        'history'       => $result['history'],
+        'pending_action'=> $result['pending_action'] ?? null,
+        'provider'      => $result['provider'] ?? null,
+        'fell_back_from'=> $result['fell_back_from'] ?? null,
+    ]);
+    break;
+
+case 'assistant-execute':
+    // Perform a write the assistant PROPOSED, after the user clicked Confirm.
+    // Body: { type: string, spec: object }. Re-validated server-side; reuses the
+    // same write helpers as the normal save-* endpoints.
+    $user = requireAuth();
+    if ($method !== 'POST') break;
+    $type = trim($input['type'] ?? '');
+    $spec = is_array($input['spec'] ?? null) ? $input['spec'] : [];
+    if ($type === '') respond(['success' => false, 'error' => 'Action type is required'], 400);
+    $r = executeAssistantAction($type, $spec, $user);
+    if (isset($r['error'])) respond(['success' => false, 'error' => $r['error']], 400);
+    respond(['success' => true, 'message' => $r['message'] ?? 'Done.']);
+    break;
+
+case 'pusher-config':
+    // Returns only the PUBLIC Pusher creds (key + cluster) to authed clients so
+    // the browser can subscribe. The secret NEVER leaves the server.
+    requireAuth();
+    if ($method !== 'GET') break;
+    $c = pusherConfig();
+    respond([
+        'success' => true,
+        'enabled' => pusherEnabled(),
+        'key'     => $c['key'],
+        'cluster' => $c['cluster'],
+    ]);
     break;
 
 case 'notifications':
@@ -4692,20 +6307,35 @@ case 'notifications':
         $action = $input['action'] ?? '';
         $notifId = $input['notification_id'] ?? '';
 
+        // Mutate $userData['notifications'] IN PLACE by index. (Using
+        // `foreach (($userData['notifications'] ?? []) as &$n)` writes to a
+        // throwaway copy of the ?? expression, so read-flags never persisted —
+        // that was the "notification reappears after the next poll" bug.)
+        if (!isset($userData['notifications']) || !is_array($userData['notifications'])) {
+            $userData['notifications'] = [];
+        }
+
         if ($action === 'mark_read') {
-            foreach (($userData['notifications'] ?? []) as &$notif) {
-                if ($notif['id'] === $notifId) {
-                    $notif['read'] = true;
+            foreach ($userData['notifications'] as $i => $n) {
+                if (($n['id'] ?? '') === $notifId) $userData['notifications'][$i]['read'] = true;
+            }
+        } elseif ($action === 'mark_thread_read') {
+            // Reading a chat thread clears ALL its bell notifications at once, so
+            // opening a conversation dismisses its notifications everywhere.
+            $tid = $input['thread_id'] ?? '';
+            if ($tid !== '') {
+                foreach ($userData['notifications'] as $i => $n) {
+                    if (($n['thread_id'] ?? '') === $tid) $userData['notifications'][$i]['read'] = true;
                 }
             }
         } elseif ($action === 'mark_all_read') {
-            foreach (($userData['notifications'] ?? []) as &$notif) {
-                $notif['read'] = true;
+            foreach ($userData['notifications'] as $i => $n) {
+                $userData['notifications'][$i]['read'] = true;
             }
         } elseif ($action === 'dismiss') {
             $userData['notifications'] = array_values(array_filter(
-                $userData['notifications'] ?? [],
-                function($n) use ($notifId) { return $n['id'] !== $notifId; }
+                $userData['notifications'],
+                function($n) use ($notifId) { return ($n['id'] ?? '') !== $notifId; }
             ));
         }
 
@@ -4849,38 +6479,117 @@ case 'activity-feed':
 case 'stats':
     if ($method !== 'GET') break;
     $user = requireAuth();
-    $userData = getUserData($user['id']);
-    $leads = array_filter($userData['leads'] ?? [], function($l) { return empty($l['deleted_at']); });
-    $stats = [
-        'total' => count($leads),
-        'new_lead' => 0,
-        'research' => 0,
-        'email_sent' => 0,
-        'call_attempted' => 0,
-        'engaged' => 0,
-        'consultation_booked' => 0,
-        'nurture_parked' => 0,
-        'won' => 0,
-        'lost' => 0,
-        // Legacy aliases for backwards compatibility
-        'new' => 0,
-        'researched' => 0,
-        'call_due' => 0,
-        'outcome_logged' => 0,
-        'qualified' => 0,
-        'disqualified' => 0,
-        // Legacy statuses for backwards compatibility
-        'contacted' => 0,
-        'replied' => 0,
-        'meeting_booked' => 0,
-        'not_interested' => 0
-    ];
+    // Team-wide by default, matching the 'leads' action (same optional
+    // owner_id narrowing, mirrored so the stage strip's counts always match
+    // whatever the pipeline table below it is actually showing).
+    $leads = getLeadsStore()['leads'];
+    $ownerFilter = trim($_GET['owner_id'] ?? '');
+    if ($ownerFilter !== '') {
+        $leads = array_filter($leads, fn($l) => ($l['owner_id'] ?? '') === $ownerFilter);
+    }
+    $leads = array_filter($leads, function($l) { return empty($l['deleted_at']); });
+    // Direct (came to us ourselves) vs Partner (referred by a channel partner)
+    // — mirrors the same filter on the `leads` list, so the stage strip above
+    // the pipeline table matches whatever rows are actually showing below it.
+    $sourceType = $_GET['source_type'] ?? 'all';
+    if ($sourceType === 'direct') {
+        $leads = array_filter($leads, function($l) { return empty($l['partner_id']); });
+    } elseif ($sourceType === 'partner') {
+        $leads = array_filter($leads, function($l) { return !empty($l['partner_id']); });
+    }
+    $stats = ['total' => count($leads)];
+    foreach (array_keys(getMacktilesStages()) as $s) $stats[$s] = 0;
+    // Legacy aliases kept so older callers/exports don't break.
+    foreach (['new', 'researched', 'call_due', 'outcome_logged', 'qualified', 'disqualified'] as $s) {
+        if (!isset($stats[$s])) $stats[$s] = 0;
+    }
+    // Deal value per stage, plus open/won totals — every stage carries an
+    // amount. Grouped by currency (never summed across currencies — a deal in
+    // USD and one in LKR must not be added into one meaningless number).
+    $stageValue = [];
+    foreach (array_keys(getMacktilesStages()) as $s) $stageValue[$s] = [];
+    $openValue = []; $wonValue = [];
     foreach ($leads as $l) {
         $stage = getLeadStage($l);
         if (isset($stats[$stage])) $stats[$stage]++;
         $legacy = stageToLegacyStatus($stage);
         if ($legacy !== $stage && isset($stats[$legacy])) $stats[$legacy]++;
+        $amt = dealMoney($l['deal_amount'] ?? 0);
+        $cur = $l['deal_currency'] ?? '';
+        if (isset($stageValue[$stage])) addToCurrencyBucket($stageValue[$stage], $cur, $amt);
+        if ($stage === 'won') addToCurrencyBucket($wonValue, $cur, $amt);
+        elseif ($stage !== 'lost') addToCurrencyBucket($openValue, $cur, $amt);
     }
+    $stats['stage_value'] = $stageValue;
+    $stats['open_value'] = $openValue;
+    $stats['won_value'] = $wonValue;
+
+    // LKR-converted totals — an ADDITIONAL, clearly-labelled approximation
+    // for display only (never replaces the per-currency breakdown above).
+    // Source deal amounts are never touched.
+    $fx = getFxRates();
+    $stats['fx_stale'] = $fx['stale'];
+    $stats['fx_fetched_at'] = $fx['fetched_at'] ? date('c', $fx['fetched_at']) : null;
+    $stageValueLkr = [];
+    foreach ($stageValue as $s => $byCur) $stageValueLkr[$s] = fxConvertMapToLkr($byCur, $fx['rates']);
+    $stats['stage_value_lkr'] = $stageValueLkr;
+    $stats['open_value_lkr'] = fxConvertMapToLkr($openValue, $fx['rates']);
+    $stats['won_value_lkr'] = fxConvertMapToLkr($wonValue, $fx['rates']);
+
+    // Per-stage KPIs: count, avg days spent in that stage (from
+    // stage_history — how long a lead sat there before moving on, or how
+    // long it's been sitting there so far if it's still current), and
+    // conversion rate (of deals that ever reached this stage, what share
+    // moved forward vs. ended in Lost).
+    $kpi = [];
+    foreach (array_keys(getMacktilesStages()) as $s) {
+        if ($s === 'lost') continue;
+        $kpi[$s] = ['count' => 0, 'durations_days' => [], 'reached' => 0, 'lost_from_here' => 0, 'advanced' => 0];
+    }
+    foreach ($leads as $l) {
+        $stage = getLeadStage($l);
+        if (isset($kpi[$stage])) $kpi[$stage]['count']++;
+        $history = is_array($l['stage_history'] ?? null) ? $l['stage_history'] : [];
+        // Walk consecutive history entries to time how long the lead sat in
+        // each "from" stage before the next transition.
+        for ($i = 0; $i < count($history); $i++) {
+            $from = $history[$i]['from'] ?? null;
+            $to = $history[$i]['to'] ?? null;
+            $at = $history[$i]['timestamp'] ?? null;
+            if (!$from || !$to || !$at || !isset($kpi[$from])) continue;
+            $prevAt = $i > 0 ? ($history[$i - 1]['timestamp'] ?? null) : ($l['created_at'] ?? null);
+            if ($prevAt) {
+                $days = (strtotime($at) - strtotime($prevAt)) / 86400;
+                if ($days >= 0) $kpi[$from]['durations_days'][] = $days;
+            }
+            $kpi[$from]['reached']++;
+            if ($to === 'lost') $kpi[$from]['lost_from_here']++;
+            else $kpi[$from]['advanced']++;
+        }
+        // A lead currently sitting in a stage (hasn't moved on yet) still
+        // counts as having "reached" it, and contributes an in-progress
+        // duration so early-stage KPIs aren't blind to deals still active.
+        if (isset($kpi[$stage])) {
+            $kpi[$stage]['reached']++;
+            $enteredAt = $l['stage_entered_at'] ?? ($l['created_at'] ?? null);
+            if ($enteredAt) {
+                $days = (time() - strtotime($enteredAt)) / 86400;
+                if ($days >= 0) $kpi[$stage]['durations_days'][] = $days;
+            }
+        }
+    }
+    $stageKpi = [];
+    foreach ($kpi as $s => $k) {
+        $avgDays = count($k['durations_days']) ? round(array_sum($k['durations_days']) / count($k['durations_days']), 1) : null;
+        $conversionRate = $k['reached'] > 0 ? round(($k['advanced'] / $k['reached']) * 100) : null;
+        $stageKpi[$s] = [
+            'count' => $k['count'],
+            'avg_days_in_stage' => $avgDays,
+            'conversion_rate' => $conversionRate,
+        ];
+    }
+    $stats['stage_kpi'] = $stageKpi;
+
     respond(['success' => true, 'stats' => $stats]);
     break;
 
@@ -4896,8 +6605,12 @@ case 'command-center':
     $leads = [];
     $settings = [];
     if (!empty($user['is_admin'])) {
+        // Single shared-store read instead of looping getUserData() per team
+        // member — leads already carry owner_id now that they live in one
+        // shared store (leads.php), so this collapses to a filter+tag pass.
+        $usersById = [];
         foreach ($users as $teamUser) {
-            $teamData = getUserData($teamUser['id']);
+            $usersById[$teamUser['id']] = $teamUser;
             $teamActivity[$teamUser['id']] = [
                 'user_id' => $teamUser['id'],
                 'name' => $teamUser['name'] ?? 'User',
@@ -4908,13 +6621,15 @@ case 'command-center':
                 'consultations' => 0,
                 'leads_owned' => 0
             ];
-            foreach (($teamData['leads'] ?? []) as $lead) {
-                if (!empty($lead['deleted_at'])) continue;
-                $lead['_owner_id'] = $teamUser['id'];
-                $lead['_owner_name'] = $teamUser['name'] ?? 'User';
-                $leads[] = $lead;
-                $teamActivity[$teamUser['id']]['leads_owned']++;
-            }
+        }
+        foreach (getLeadsStore()['leads'] as $lead) {
+            if (!empty($lead['deleted_at'])) continue;
+            $ownerId = $lead['owner_id'] ?? '';
+            if (!isset($usersById[$ownerId])) continue; // not a team member in scope (e.g. filtered-out super admin)
+            $lead['_owner_id'] = $ownerId;
+            $lead['_owner_name'] = $usersById[$ownerId]['name'] ?? 'User';
+            $leads[] = $lead;
+            $teamActivity[$ownerId]['leads_owned']++;
         }
         $settings = getUserData($user['id'])['settings'] ?? [];
     } else {
@@ -4968,38 +6683,46 @@ case 'command-center':
         }
     }
 
-    // Status counts for funnel
-    $statuses = [
-        'new_lead' => 0, 'research' => 0, 'email_sent' => 0,
-        'call_attempted' => 0, 'engaged' => 0, 'consultation_booked' => 0,
-        'nurture_parked' => 0, 'won' => 0, 'lost' => 0
-    ];
+    // Status counts for funnel (where deals sit right now)
+    $statuses = [];
+    foreach (array_keys(getMacktilesStages()) as $s) $statuses[$s] = 0;
+    $stageValue = [];
+    foreach (array_keys(getMacktilesStages()) as $s) $stageValue[$s] = 0.0;
     foreach ($leads as $l) {
         $stage = getLeadStage($l);
-        if (isset($statuses[$stage])) {
-            $statuses[$stage]++;
-        }
+        if (isset($statuses[$stage])) $statuses[$stage]++;
+        if (isset($stageValue[$stage])) $stageValue[$stage] += dealMoney($l['deal_amount'] ?? 0);
     }
 
-    // Calculate conversion funnel rates
+    // Conversion funnel: how many deals ever REACHED each stage (via peak_stage),
+    // so each step is a true drop-off from the one before it.
     $funnel = [];
-    $stageOrder = ['new_lead', 'research', 'email_sent', 'call_attempted', 'engaged', 'consultation_booked', 'nurture_parked'];
-    $cumulative = 0;
-    foreach ($stageOrder as $i => $stage) {
-        $count = $statuses[$stage];
-        $cumulative += $count;
-        $rate = null;
-        if ($i > 0 && $cumulative > 0) {
-            // Calculate rate from previous cumulative stage
-            $previousCumulative = 0;
-            for ($j = 0; $j < $i; $j++) {
-                $previousCumulative += $statuses[$stageOrder[$j]];
-            }
-            if ($previousCumulative > 0) {
-                $rate = round(($cumulative / ($previousCumulative + $count)) * 100);
-            }
+    $stageOrder = ['lead', 'qualified', 'demo', 'cost_proposal', 'sow', 'won'];
+    $reached = array_fill_keys($stageOrder, 0);
+    $reachedValue = array_fill_keys($stageOrder, 0.0);
+    foreach ($leads as $l) {
+        $peak = $l['peak_stage'] ?? getLeadStage($l);
+        if (!isset($reached[$peak])) $peak = 'lead';
+        $amt = dealMoney($l['deal_amount'] ?? 0);
+        // A deal that reached SOW also passed through every earlier stage.
+        foreach ($stageOrder as $s) {
+            if (stageOrder($s) <= stageOrder($peak)) { $reached[$s]++; $reachedValue[$s] += $amt; }
         }
-        $funnel[] = ['stage' => $stage, 'count' => $statuses[$stage], 'cumulative' => $cumulative, 'rate' => $rate];
+    }
+    $topOfFunnel = $reached['lead'];
+    $prev = null;
+    foreach ($stageOrder as $stage) {
+        $count = $reached[$stage];
+        $funnel[] = [
+            'stage' => $stage,
+            'count' => $count,
+            'current' => $statuses[$stage] ?? 0,
+            'value' => $reachedValue[$stage],
+            // Conversion from the previous stage, plus share of all deals.
+            'rate' => ($prev === null || $prev === 0) ? null : round(($count / $prev) * 100),
+            'overall_rate' => $topOfFunnel > 0 ? round(($count / $topOfFunnel) * 100) : null,
+        ];
+        $prev = $count;
     }
 
     // Today's activity tracking
@@ -5062,7 +6785,7 @@ case 'command-center':
                 }
             }
         }
-        if (getLeadStage($l) === 'consultation_booked' && isset($teamActivity[$ownerId])) {
+        if (in_array(getLeadStage($l), ['demo','cost_proposal','sow'], true) && isset($teamActivity[$ownerId])) {
             $teamActivity[$ownerId]['consultations']++;
         }
     }
@@ -5081,7 +6804,7 @@ case 'command-center':
     $successByGrade = [];
     foreach (['A', 'B', 'C', 'D'] as $g) {
         $gradeLeads = array_filter($leads, fn($l) => ($l['fit_grade'] ?? '') === $g);
-        $qualified = count(array_filter($gradeLeads, fn($l) => getLeadStage($l) === 'consultation_booked' || getLeadStage($l) === 'won'));
+        $qualified = count(array_filter($gradeLeads, fn($l) => in_array(getLeadStage($l), ['demo', 'cost_proposal', 'sow', 'won'], true)));
         $gradeTotal = count($gradeLeads);
         $successByGrade[$g] = $gradeTotal > 0 ? round(($qualified / $gradeTotal) * 100) : 0;
     }
@@ -5090,7 +6813,7 @@ case 'command-center':
     $successByTemp = [];
     foreach (['on_fire', 'hot', 'warm', 'cold'] as $t) {
         $tempLeads = array_filter($leads, fn($l) => ($l['temperature'] ?? 'cold') === $t);
-        $qualified = count(array_filter($tempLeads, fn($l) => getLeadStage($l) === 'consultation_booked' || getLeadStage($l) === 'won'));
+        $qualified = count(array_filter($tempLeads, fn($l) => in_array(getLeadStage($l), ['demo', 'cost_proposal', 'sow', 'won'], true)));
         $tempTotal = count($tempLeads);
         $successByTemp[$t] = $tempTotal > 0 ? round(($qualified / $tempTotal) * 100) : 0;
     }
@@ -5101,7 +6824,7 @@ case 'command-center':
     foreach ($leads as $l) {
         if (!empty($l['followup_date'])) {
             $followupTime = strtotime($l['followup_date']);
-            if ($followupTime && $followupTime < $now && !in_array(getLeadStage($l), ['consultation_booked', 'nurture_parked', 'won', 'lost'])) {
+            if ($followupTime && $followupTime < $now && !in_array(getLeadStage($l), ['won', 'lost'])) {
                 $overdueCount++;
             }
         }
@@ -5124,9 +6847,9 @@ case 'command-center':
         $entered = strtotime($l['stage_entered_at'] ?? $l['created_at'] ?? 'now');
         $stageAges[$stage][] = max(0, floor(($now - $entered) / 86400));
         $sla = calculateSLAStatus($l);
-        if (!empty($sla['is_overdue']) && !in_array($stage, ['won', 'lost', 'nurture_parked'])) $staleCount++;
+        if (!empty($sla['is_overdue']) && !in_array($stage, ['won', 'lost'])) $staleCount++;
         if (substr($l['created_at'] ?? '', 0, 10) >= $weekStart) $leadsAddedThisWeek++;
-        if ($stage === 'consultation_booked' && substr($l['stage_entered_at'] ?? $l['updated_at'] ?? '', 0, 10) >= $monthStart) $consultationsMtd++;
+        if (in_array($stage, ['demo','cost_proposal','sow'], true) && substr($l['stage_entered_at'] ?? $l['updated_at'] ?? '', 0, 10) >= $monthStart) $consultationsMtd++;
         if (!empty($l['email_history'])) {
             $emailedCount++;
             foreach ($l['email_history'] as $eh) {
@@ -5136,7 +6859,7 @@ case 'command-center':
                 }
             }
         }
-        if (in_array($stage, ['nurture_parked', 'lost'])) {
+        if (in_array($stage, ['lost'])) {
             $reason = $l['rejection_reason'] ?? $l['disqualified_reason'] ?? 'No reason logged';
             $parkedReasons[$reason] = ($parkedReasons[$reason] ?? 0) + 1;
         }
@@ -5172,12 +6895,16 @@ case 'command-center':
         'totals' => [
             'all' => $total,
             'grades' => $grades,
-            'qualified' => $statuses['consultation_booked'] + $statuses['won'],
-            'disqualified' => $statuses['nurture_parked'] + $statuses['lost'],
-            'consultation_booked' => $statuses['consultation_booked'],
-            'nurture_parked' => $statuses['nurture_parked'],
+            'qualified' => $statuses['qualified'] + $statuses['demo'] + $statuses['cost_proposal'] + $statuses['sow'] + $statuses['won'],
+            'disqualified' => $statuses['lost'],
+            'consultation_booked' => $statuses['demo'],
+            'nurture_parked' => $statuses['lost'],
             'overdue' => $overdueCount,
-            'stale' => $staleCount
+            'stale' => $staleCount,
+            // Deal value across the pipeline (every stage carries an amount).
+            'open_value' => array_sum(array_diff_key($stageValue, ['won' => 0, 'lost' => 0])),
+            'won_value' => $stageValue['won'] ?? 0,
+            'stage_value' => $stageValue
         ],
         'temperature' => $temperatures,
         'velocity' => $velocities,
@@ -5222,7 +6949,7 @@ case 'lead-batches':
     foreach ($leads as $l) {
         if (!empty($l['deleted_at'])) continue;
         $status = getLeadStage($l);
-        if (($l['fit_grade'] ?? '') === 'Disqualified' && !in_array($status, ['nurture_parked', 'lost'])) continue;
+        if (($l['fit_grade'] ?? '') === 'Disqualified' && !in_array($status, ['lost'])) continue;
         $enrichment = $l['enrichment'] ?? '';
         $emailsSent = $l['emails_sent'] ?? 0;
         $callsMade = $l['calls_made'] ?? 0;
@@ -5231,37 +6958,37 @@ case 'lead-batches':
 
         if (in_array($status, ['won', 'lost'])) continue;
 
-        if (($l['source'] ?? '') === 'inbound' && $status === 'call_attempted') {
+        if (($l['source'] ?? '') === 'inbound' && $status === 'lead') {
             $batches['inbound_urgent'][] = $l;
         }
 
         // Needs Research: No enrichment data
-        if ($status === 'new_lead' || empty($enrichment)) {
+        if (empty($enrichment)) {
             $batches['needs_research'][] = $l;
         }
         // Needs Outreach: Has research but zero emails sent
-        elseif ($status === 'research' || $emailsSent === 0) {
+        elseif ($emailsSent === 0) {
             $batches['needs_outreach'][] = $l;
         }
         // Needs Calling: Has emails but zero calls
-        elseif ($status === 'email_sent' || $callsMade === 0) {
+        elseif ($callsMade === 0) {
             $batches['needs_calling'][] = $l;
         }
 
         // Needs Follow-up: Stalled velocity (re-engage)
-        if ($velocity === 'stalled' && !empty($enrichment) && !in_array($status, ['consultation_booked', 'nurture_parked'])) {
+        if ($velocity === 'stalled' && !empty($enrichment) && !in_array($status, ['demo', 'cost_proposal', 'sow', 'won', 'lost'])) {
             $batches['needs_followup'][] = $l;
         }
 
         // Hot Focus: On fire or hot temperature
-        if (in_array($temperature, ['on_fire', 'hot']) && !in_array($status, ['consultation_booked', 'nurture_parked'])) {
+        if (in_array($temperature, ['on_fire', 'hot']) && !in_array($status, ['demo', 'cost_proposal', 'sow', 'won', 'lost'])) {
             $batches['hot_focus'][] = $l;
         }
 
         // Overdue: Followup date in the past
         if (!empty($l['followup_date'])) {
             $followupTime = strtotime($l['followup_date']);
-            if ($followupTime && $followupTime < $now && !in_array($status, ['consultation_booked', 'nurture_parked', 'won', 'lost'])) {
+            if ($followupTime && $followupTime < $now && !in_array($status, ['won', 'lost'])) {
                 $batches['overdue'][] = $l;
             }
         }
@@ -5665,904 +7392,56 @@ case 'get-icp-config':
 case 'migrate-leads-to-stage-model':
     if ($method !== 'POST') break;
     requireAdmin();
-    $users = getUsers();
+    $leadsStore = getLeadsStore();
     $migratedCount = 0;
 
-    foreach ($users as $u) {
-        $userData = getUserData($u['id']);
-        foreach ($userData['leads'] as &$lead) {
-            $before = json_encode($lead);
-            foreach (getDefaultStageFields() as $field => $value) {
-                if (!isset($lead[$field])) $lead[$field] = $value;
-            }
-            $lead = normalizeLeadForMapping($lead);
-            if ($before !== json_encode($lead)) {
-                $migratedCount++;
-            }
+    foreach ($leadsStore['leads'] as &$lead) {
+        $before = json_encode($lead);
+        foreach (getDefaultStageFields() as $field => $value) {
+            if (!isset($lead[$field])) $lead[$field] = $value;
         }
-
-        saveUserData($u['id'], $userData);
+        $lead = normalizeLeadForMapping($lead);
+        if ($before !== json_encode($lead)) {
+            $migratedCount++;
+        }
     }
+    unset($lead);
+
+    saveLeadsStore($leadsStore);
 
     respond(['success' => true, 'migrated' => $migratedCount, 'message' => "Migrated {$migratedCount} leads to stage model"]);
-    break;
-
-// ============ ZOHO CRM INTEGRATION ============
-
-case 'zoho-auth-url':
-    requireAdmin();
-    $admin = getAdmin();
-
-    $clientId = $admin['zoho_client_id'] ?? '';
-    if (empty($clientId)) {
-        respond(['success' => false, 'error' => 'Zoho Client ID not configured. Please add it in Admin Settings.'], 400);
-    }
-
-    $datacenter = $admin['zoho_datacenter'] ?? 'com';
-    $redirectUri = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . '/api.php?action=zoho-oauth-callback';
-
-    $scopes = 'ZohoCRM.modules.ALL,ZohoCRM.settings.fields.ALL,ZohoCRM.settings.modules.READ,ZohoCRM.users.READ';
-
-    $authUrl = "https://accounts.zoho.{$datacenter}/oauth/v2/auth?" . http_build_query([
-        'scope' => $scopes,
-        'client_id' => $clientId,
-        'response_type' => 'code',
-        'access_type' => 'offline',
-        'redirect_uri' => $redirectUri,
-        'prompt' => 'consent'
-    ]);
-
-    respond(['success' => true, 'auth_url' => $authUrl, 'redirect_uri' => $redirectUri]);
-    break;
-
-case 'zoho-oauth-callback':
-    // This handles the OAuth callback from Zoho
-    $code = $_GET['code'] ?? '';
-    $error = $_GET['error'] ?? '';
-
-    if ($error) {
-        // Redirect to admin page with error
-        header('Location: index.html?zoho_error=' . urlencode($error));
-        exit;
-    }
-
-    if (empty($code)) {
-        header('Location: index.html?zoho_error=no_code');
-        exit;
-    }
-
-    $admin = getAdmin();
-    $clientId = $admin['zoho_client_id'] ?? '';
-    $clientSecret = $admin['zoho_client_secret'] ?? '';
-    $datacenter = $admin['zoho_datacenter'] ?? 'com';
-
-    if (empty($clientId) || empty($clientSecret)) {
-        header('Location: index.html?zoho_error=missing_credentials');
-        exit;
-    }
-
-    $redirectUri = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . '/api.php?action=zoho-oauth-callback';
-
-    // Exchange code for tokens
-    $tokenResult = exchangeZohoCode($code, $clientId, $clientSecret, $redirectUri, $datacenter);
-
-    if ($tokenResult['success']) {
-        $admin['zoho_access_token'] = $tokenResult['access_token'];
-        $admin['zoho_refresh_token'] = $tokenResult['refresh_token'];
-        $admin['zoho_token_expires'] = date('c', time() + ($tokenResult['expires_in'] ?? 3600));
-        $admin['zoho_connected'] = true;
-        $admin['zoho_connected_at'] = date('c');
-        saveAdmin($admin);
-
-        header('Location: index.html?zoho_connected=1');
-    } else {
-        header('Location: index.html?zoho_error=' . urlencode($tokenResult['error'] ?? 'token_exchange_failed'));
-    }
-    exit;
-    break;
-
-case 'zoho-disconnect':
-    requireAdmin();
-    $admin = getAdmin();
-
-    // Clear Zoho credentials
-    unset($admin['zoho_access_token']);
-    unset($admin['zoho_refresh_token']);
-    unset($admin['zoho_token_expires']);
-    $admin['zoho_connected'] = false;
-
-    saveAdmin($admin);
-    respond(['success' => true, 'message' => 'Disconnected from Zoho CRM']);
-    break;
-
-case 'zoho-status':
-    requireAdmin();
-    $admin = getAdmin();
-
-    $tokenExpired = !empty($admin['zoho_token_expires']) && strtotime($admin['zoho_token_expires']) < time();
-    $tokenExpiresIn = !empty($admin['zoho_token_expires']) ? max(0, strtotime($admin['zoho_token_expires']) - time()) : 0;
-
-    respond([
-        'success' => true,
-        'connected' => $admin['zoho_connected'] ?? false,
-        'connected_at' => $admin['zoho_connected_at'] ?? null,
-        'datacenter' => $admin['zoho_datacenter'] ?? 'com',
-        'last_sync' => $admin['zoho_last_sync'] ?? null,
-        'sync_history' => array_slice($admin['zoho_sync_history'] ?? [], 0, 10),
-        'token_expired' => $tokenExpired,
-        'token_expires_in_seconds' => $tokenExpiresIn
-    ]);
-    break;
-
-case 'zoho-refresh-token':
-    requireAdmin();
-    $admin = getAdmin();
-
-    if (empty($admin['zoho_refresh_token'])) {
-        respond(['success' => false, 'error' => 'No refresh token available. Please reconnect to Zoho.'], 400);
-    }
-
-    $refreshResult = refreshZohoToken($admin);
-    if ($refreshResult['success']) {
-        $admin['zoho_access_token'] = $refreshResult['access_token'];
-        $admin['zoho_token_expires'] = date('c', time() + ($refreshResult['expires_in'] ?? 3600));
-        saveAdmin($admin);
-        respond(['success' => true, 'message' => 'Token refreshed successfully', 'expires' => $admin['zoho_token_expires']]);
-    }
-    respond(['success' => false, 'error' => 'Refresh failed: ' . ($refreshResult['error'] ?? 'Unknown error. You may need to reconnect.')], 500);
-    break;
-
-case 'zoho-get-modules':
-    requireAdmin();
-    $admin = getAdmin();
-
-    if (empty($admin['zoho_connected'])) {
-        respond(['success' => false, 'error' => 'Not connected to Zoho CRM'], 400);
-    }
-
-    $result = callZohoAPI('GET', '/settings/modules', null, $admin);
-
-    if ($result['success']) {
-        // Filter to relevant modules
-        $relevantModules = ['Leads', 'Contacts', 'Accounts', 'Deals', 'Calls', 'Meetings', 'Tasks'];
-        $modules = array_filter($result['data']['modules'] ?? [], function($m) use ($relevantModules) {
-            return in_array($m['api_name'], $relevantModules);
-        });
-        respond(['success' => true, 'modules' => array_values($modules)]);
-    } else {
-        respond($result);
-    }
-    break;
-
-case 'zoho-get-fields':
-    requireAdmin();
-    $admin = getAdmin();
-    $module = $_GET['module'] ?? 'Leads';
-
-    if (empty($admin['zoho_connected'])) {
-        respond(['success' => false, 'error' => 'Not connected to Zoho CRM'], 400);
-    }
-
-    $result = callZohoAPI('GET', "/settings/fields?module={$module}", null, $admin);
-
-    if ($result['success']) {
-        respond(['success' => true, 'fields' => $result['data']['fields'] ?? [], 'module' => $module]);
-    } else {
-        respond($result);
-    }
-    break;
-
-case 'zoho-save-mapping':
-    requireAdmin();
-    $input = json_decode(file_get_contents('php://input'), true);
-    $admin = getAdmin();
-
-    $module = $input['module'] ?? '';
-    $mapping = $input['mapping'] ?? [];
-
-    if (empty($module)) {
-        respond(['success' => false, 'error' => 'Module name required'], 400);
-    }
-
-    if (!isset($admin['zoho_field_mappings'])) {
-        $admin['zoho_field_mappings'] = [];
-    }
-
-    $admin['zoho_field_mappings'][$module] = $mapping;
-    saveAdmin($admin);
-
-    respond(['success' => true, 'message' => "Field mapping saved for {$module}"]);
-    break;
-
-case 'zoho-get-mapping':
-    requireAdmin();
-    $admin = getAdmin();
-    $module = $_GET['module'] ?? '';
-
-    if (empty($module)) {
-        respond(['success' => true, 'mappings' => $admin['zoho_field_mappings'] ?? []]);
-    } else {
-        respond(['success' => true, 'mapping' => $admin['zoho_field_mappings'][$module] ?? getDefaultZohoMapping($module)]);
-    }
-    break;
-
-case 'zoho-sync-pull':
-    $user = requireAuth();
-    $admin = getAdmin();
-    $input = json_decode(file_get_contents('php://input'), true);
-
-    if (empty($admin['zoho_connected'])) {
-        respond(['success' => false, 'error' => 'Not connected to Zoho CRM'], 400);
-    }
-
-    $module = $input['module'] ?? 'Leads';
-    $since = $input['since'] ?? null;
-
-    $result = pullFromZoho($module, $admin, $user['id'], $since);
-
-    // Log sync
-    if ($result['success']) {
-        $admin['zoho_last_sync'] = date('c');
-        if (!isset($admin['zoho_sync_history'])) $admin['zoho_sync_history'] = [];
-        array_unshift($admin['zoho_sync_history'], [
-            'id' => 'sync_' . bin2hex(random_bytes(4)),
-            'timestamp' => date('c'),
-            'direction' => 'pull',
-            'module' => $module,
-            'created' => $result['created'] ?? 0,
-            'updated' => $result['updated'] ?? 0,
-            'skipped' => $result['skipped'] ?? 0,
-            'errors' => $result['errors'] ?? []
-        ]);
-        $admin['zoho_sync_history'] = array_slice($admin['zoho_sync_history'], 0, 50);
-        saveAdmin($admin);
-    }
-
-    respond($result);
-    break;
-
-case 'zoho-sync-push':
-    $user = requireAuth();
-    $admin = getAdmin();
-    $input = json_decode(file_get_contents('php://input'), true);
-
-    if (empty($admin['zoho_connected'])) {
-        respond(['success' => false, 'error' => 'Not connected to Zoho CRM'], 400);
-    }
-
-    $module = $input['module'] ?? 'Leads';
-    $leadIds = $input['lead_ids'] ?? null; // null = all dirty leads
-
-    $userData = getUserData($user['id']);
-    $leadsToSync = [];
-
-    foreach ($userData['leads'] as $lead) {
-        if ($leadIds === null) {
-            // Sync all leads that are dirty or have no zoho_id
-            if (!empty($lead['zoho_dirty']) || empty($lead['zoho_id'])) {
-                $leadsToSync[] = $lead;
-            }
-        } else {
-            // Sync specific leads
-            if (in_array($lead['id'], $leadIds)) {
-                $leadsToSync[] = $lead;
-            }
-        }
-    }
-
-    $result = pushToZoho($module, $admin, $leadsToSync, $user['id']);
-
-    // Log sync
-    if ($result['success']) {
-        $admin['zoho_last_sync'] = date('c');
-        if (!isset($admin['zoho_sync_history'])) $admin['zoho_sync_history'] = [];
-        array_unshift($admin['zoho_sync_history'], [
-            'id' => 'sync_' . bin2hex(random_bytes(4)),
-            'timestamp' => date('c'),
-            'direction' => 'push',
-            'module' => $module,
-            'created' => $result['created'] ?? 0,
-            'updated' => $result['updated'] ?? 0,
-            'skipped' => $result['skipped'] ?? 0,
-            'errors' => $result['errors'] ?? []
-        ]);
-        $admin['zoho_sync_history'] = array_slice($admin['zoho_sync_history'], 0, 50);
-        saveAdmin($admin);
-    }
-
-    respond($result);
-    break;
-
-case 'zoho-sync-lead':
-    $user = requireAuth();
-    $admin = getAdmin();
-    $input = json_decode(file_get_contents('php://input'), true);
-
-    if (empty($admin['zoho_connected'])) {
-        respond(['success' => false, 'error' => 'Not connected to Zoho CRM'], 400);
-    }
-
-    $leadId = $input['lead_id'] ?? '';
-    $direction = $input['direction'] ?? 'push'; // 'push', 'pull', 'both'
-
-    if (empty($leadId)) {
-        respond(['success' => false, 'error' => 'Lead ID required'], 400);
-    }
-
-    $userData = getUserData($user['id']);
-    $lead = null;
-    $leadIndex = null;
-
-    foreach ($userData['leads'] as $idx => $l) {
-        if ($l['id'] === $leadId) {
-            $lead = $l;
-            $leadIndex = $idx;
-            break;
-        }
-    }
-
-    if (!$lead) {
-        respond(['success' => false, 'error' => 'Lead not found'], 404);
-    }
-
-    $result = ['success' => true, 'push' => null, 'pull' => null];
-
-    if ($direction === 'push' || $direction === 'both') {
-        $pushResult = pushToZoho('Leads', $admin, [$lead], $user['id']);
-        $result['push'] = $pushResult;
-    }
-
-    if (($direction === 'pull' || $direction === 'both') && !empty($lead['zoho_id'])) {
-        $pullResult = pullSingleFromZoho('Leads', $admin, $lead['zoho_id'], $user['id']);
-        $result['pull'] = $pullResult;
-    }
-
-    respond($result);
     break;
 
 default:
     respond(['success' => false, 'error' => 'Invalid endpoint'], 404);
 }
 
-// ============ ZOHO API HELPER FUNCTIONS ============
-
-function getZohoBaseUrl($datacenter = 'com') {
-    return "https://www.zohoapis.{$datacenter}/crm/v2";
-}
-
-function exchangeZohoCode($code, $clientId, $clientSecret, $redirectUri, $datacenter = 'com') {
-    $tokenUrl = "https://accounts.zoho.{$datacenter}/oauth/v2/token";
-
-    $ch = curl_init($tokenUrl);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => http_build_query([
-            'grant_type' => 'authorization_code',
-            'client_id' => $clientId,
-            'client_secret' => $clientSecret,
-            'redirect_uri' => $redirectUri,
-            'code' => $code
-        ]),
-        CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-        CURLOPT_TIMEOUT => 30
-    ]);
-
-    $response = curl_exec($ch);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($error) {
-        return ['success' => false, 'error' => $error];
-    }
-
-    $data = json_decode($response, true);
-
-    if (isset($data['access_token'])) {
-        return [
-            'success' => true,
-            'access_token' => $data['access_token'],
-            'refresh_token' => $data['refresh_token'] ?? '',
-            'expires_in' => $data['expires_in'] ?? 3600
-        ];
-    }
-
-    return ['success' => false, 'error' => $data['error'] ?? 'Unknown error'];
-}
-
-function refreshZohoToken($admin) {
-    $datacenter = $admin['zoho_datacenter'] ?? 'com';
-    $tokenUrl = "https://accounts.zoho.{$datacenter}/oauth/v2/token";
-
-    $ch = curl_init($tokenUrl);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => http_build_query([
-            'grant_type' => 'refresh_token',
-            'client_id' => $admin['zoho_client_id'],
-            'client_secret' => $admin['zoho_client_secret'],
-            'refresh_token' => $admin['zoho_refresh_token']
-        ]),
-        CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
-        CURLOPT_TIMEOUT => 30
-    ]);
-
-    $response = curl_exec($ch);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($error) {
-        return ['success' => false, 'error' => $error];
-    }
-
-    $data = json_decode($response, true);
-
-    if (isset($data['access_token'])) {
-        return [
-            'success' => true,
-            'access_token' => $data['access_token'],
-            'expires_in' => $data['expires_in'] ?? 3600
-        ];
-    }
-
-    return ['success' => false, 'error' => $data['error'] ?? 'Token refresh failed'];
-}
-
-function callZohoAPI($method, $endpoint, $data = null, &$admin = null) {
-    // Check if token needs refresh
-    if ($admin && !empty($admin['zoho_token_expires'])) {
-        $expiresAt = strtotime($admin['zoho_token_expires']);
-        if ($expiresAt && $expiresAt < time() + 300) { // Refresh if expires in < 5 minutes
-            $refreshResult = refreshZohoToken($admin);
-            if ($refreshResult['success']) {
-                $admin['zoho_access_token'] = $refreshResult['access_token'];
-                $admin['zoho_token_expires'] = date('c', time() + ($refreshResult['expires_in'] ?? 3600));
-                saveAdmin($admin);
-            } else {
-                return ['success' => false, 'error' => 'Token refresh failed: ' . ($refreshResult['error'] ?? 'Unknown')];
-            }
-        }
-    }
-
-    $datacenter = $admin['zoho_datacenter'] ?? 'com';
-    $baseUrl = getZohoBaseUrl($datacenter);
-    $url = $baseUrl . $endpoint;
-
-    $ch = curl_init($url);
-    $headers = [
-        'Authorization: Zoho-oauthtoken ' . ($admin['zoho_access_token'] ?? ''),
-        'Content-Type: application/json'
-    ];
-
-    $curlOpts = [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => $headers,
-        CURLOPT_TIMEOUT => 60
-    ];
-
-    if ($method === 'POST') {
-        $curlOpts[CURLOPT_POST] = true;
-        if ($data) $curlOpts[CURLOPT_POSTFIELDS] = json_encode($data);
-    } elseif ($method === 'PUT') {
-        $curlOpts[CURLOPT_CUSTOMREQUEST] = 'PUT';
-        if ($data) $curlOpts[CURLOPT_POSTFIELDS] = json_encode($data);
-    } elseif ($method === 'DELETE') {
-        $curlOpts[CURLOPT_CUSTOMREQUEST] = 'DELETE';
-    }
-
-    curl_setopt_array($ch, $curlOpts);
-
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $error = curl_error($ch);
-    curl_close($ch);
-
-    if ($error) {
-        return ['success' => false, 'error' => $error];
-    }
-
-    $responseData = json_decode($response, true);
-
-    // Handle Zoho API errors
-    if ($httpCode >= 400) {
-        $errorMsg = $responseData['message'] ?? $responseData['error']['message'] ?? "HTTP {$httpCode}";
-        return ['success' => false, 'error' => $errorMsg, 'code' => $httpCode];
-    }
-
-    return ['success' => true, 'data' => $responseData];
-}
-
-function callZohoAPIWithRetry($method, $endpoint, $data = null, &$admin = null, $maxRetries = 2) {
-    $lastResult = null;
-    for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
-        $result = callZohoAPI($method, $endpoint, $data, $admin);
-
-        if ($result['success']) return $result;
-
-        $lastResult = $result;
-        $httpCode = $result['code'] ?? 0;
-
-        // On 401 (token expired), force refresh and retry
-        if ($httpCode === 401 && $attempt < $maxRetries && $admin) {
-            $refreshResult = refreshZohoToken($admin);
-            if ($refreshResult['success']) {
-                $admin['zoho_access_token'] = $refreshResult['access_token'];
-                $admin['zoho_token_expires'] = date('c', time() + ($refreshResult['expires_in'] ?? 3600));
-                saveAdmin($admin);
-                continue;
-            }
-        }
-
-        // On 429 (rate limit), wait and retry
-        if ($httpCode === 429 && $attempt < $maxRetries) {
-            sleep(2);
-            continue;
-        }
-
-        // Other errors: don't retry
-        break;
-    }
-    return $lastResult;
-}
-
-function getDefaultZohoMapping($module) {
-    $mappings = [
-        'Leads' => [
-            'macktiles_to_zoho' => [
-                'first_name' => 'First_Name',
-                'last_name' => 'Last_Name',
-                'email' => 'Email',
-                'title' => 'Title',
-                'website' => 'Website',
-                'phone' => 'Phone',
-                'linkedin' => 'Linkedin',
-                'company' => 'Company',
-                'industry' => 'Industry',
-                'country' => 'Country',
-                'notes' => 'Description',
-                'fit_grade' => 'ICP_Fit',
-                'fit_score' => 'Lead_Qualification_Score',
-                'company_size' => 'Company_Size_Bucket',
-                'status' => 'Lead_Status',
-                'temperature' => 'Deal_Stage'
-            ],
-            'sync_direction' => 'bidirectional',
-            'conflict_resolution' => 'latest_wins'
-        ],
-        'Contacts' => [
-            'macktiles_to_zoho' => [
-                'first_name' => 'First_Name',
-                'last_name' => 'Last_Name',
-                'email' => 'Email',
-                'title' => 'Title',
-                'phone' => 'Phone',
-                'linkedin' => 'Linkedin',
-                'company' => 'Account_Name',
-                'country' => 'Mailing_Country',
-                'notes' => 'Description'
-            ],
-            'sync_direction' => 'bidirectional',
-            'conflict_resolution' => 'latest_wins'
-        ],
-        'Accounts' => [
-            'macktiles_to_zoho' => [
-                'company' => 'Account_Name',
-                'industry' => 'Industry',
-                'website' => 'Website',
-                'phone' => 'Phone',
-                'country' => 'Billing_Country',
-                'company_size' => 'Employees',
-                'notes' => 'Description'
-            ],
-            'sync_direction' => 'bidirectional',
-            'conflict_resolution' => 'latest_wins'
-        ],
-        'Deals' => [
-            'macktiles_to_zoho' => [
-                'company' => 'Account_Name',
-                'fit_grade' => 'ICP_Fit',
-                'fit_score' => 'Lead_Qualification_Score',
-                'company_size' => 'Company_Size_Bucket'
-            ],
-            'sync_direction' => 'to_zoho',
-            'conflict_resolution' => 'zoho_wins'
-        ]
-    ];
-
-    return $mappings[$module] ?? ['macktiles_to_zoho' => [], 'sync_direction' => 'bidirectional', 'conflict_resolution' => 'latest_wins'];
-}
-
-function mapMacktilesToZoho($lead, $mapping) {
-    $zohoRecord = [];
-    $fieldMap = $mapping['macktiles_to_zoho'] ?? [];
-
-    foreach ($fieldMap as $macktileField => $zohoField) {
-        // Handle nested fields like requisitions.consulting_service
-        if (strpos($macktileField, '.') !== false) {
-            $parts = explode('.', $macktileField);
-            $value = $lead;
-            foreach ($parts as $part) {
-                $value = $value[$part] ?? null;
-                if ($value === null) break;
-            }
-        } else {
-            $value = $lead[$macktileField] ?? null;
-        }
-
-        if ($value !== null && $value !== '') {
-            $zohoRecord[$zohoField] = $value;
-        }
-    }
-
-    return $zohoRecord;
-}
-
-function mapZohoToMacktiles($zohoRecord, $mapping) {
-    $lead = [];
-    $fieldMap = $mapping['macktiles_to_zoho'] ?? [];
-
-    // Reverse the mapping
-    foreach ($fieldMap as $macktileField => $zohoField) {
-        $value = $zohoRecord[$zohoField] ?? null;
-
-        if ($value !== null && $value !== '') {
-            // Handle nested fields
-            if (strpos($macktileField, '.') !== false) {
-                $parts = explode('.', $macktileField);
-                $ref = &$lead;
-                foreach ($parts as $i => $part) {
-                    if ($i === count($parts) - 1) {
-                        $ref[$part] = $value;
-                    } else {
-                        if (!isset($ref[$part])) $ref[$part] = [];
-                        $ref = &$ref[$part];
-                    }
-                }
-            } else {
-                $lead[$macktileField] = $value;
-            }
-        }
-    }
-
-    return $lead;
-}
-
-function pullFromZoho($module, $admin, $userId, $since = null) {
-    $mapping = $admin['zoho_field_mappings'][$module] ?? getDefaultZohoMapping($module);
-
-    // Build query
-    $endpoint = "/{$module}";
-    if ($since) {
-        $endpoint .= "?modified_time=" . urlencode($since);
-    }
-
-    $result = callZohoAPIWithRetry('GET', $endpoint, null, $admin);
-
-    if (!$result['success']) {
-        return $result;
-    }
-
-    $records = $result['data']['data'] ?? [];
-    $userData = getUserData($userId);
-
-    $stats = ['created' => 0, 'updated' => 0, 'skipped' => 0, 'errors' => []];
-
-    // Build index of existing leads by zoho_id
-    $existingByZohoId = [];
-    foreach ($userData['leads'] as $idx => $lead) {
-        if (!empty($lead['zoho_id'])) {
-            $existingByZohoId[$lead['zoho_id']] = $idx;
-        }
-    }
-
-    foreach ($records as $zohoRecord) {
-        $zohoId = $zohoRecord['id'] ?? '';
-        if (empty($zohoId)) continue;
-
-        try {
-            $macktileData = mapZohoToMacktiles($zohoRecord, $mapping);
-
-            if (isset($existingByZohoId[$zohoId])) {
-                // Update existing
-                $idx = $existingByZohoId[$zohoId];
-                $existingLead = $userData['leads'][$idx];
-
-                // Apply conflict resolution
-                $strategy = $mapping['conflict_resolution'] ?? 'latest_wins';
-                if ($strategy === 'zoho_wins' || ($strategy === 'latest_wins' && strtotime($zohoRecord['Modified_Time'] ?? '') > strtotime($existingLead['updated_at'] ?? ''))) {
-                    $userData['leads'][$idx] = array_merge($existingLead, $macktileData, [
-                        'zoho_synced_at' => date('c'),
-                        'zoho_dirty' => false,
-                        'updated_at' => date('c')
-                    ]);
-                    $stats['updated']++;
-                } else {
-                    $stats['skipped']++;
-                }
-            } else {
-                // Create new lead
-                $newLead = array_merge([
-                    'id' => 'lead_' . bin2hex(random_bytes(8)),
-                    'zoho_id' => $zohoId,
-                    'zoho_module' => $module,
-                    'zoho_synced_at' => date('c'),
-                    'zoho_dirty' => false,
-                    'source' => 'zoho',
-                    'stage' => 'new_lead',
-                    'status' => stageToLegacyStatus('new_lead'),
-                    'stage_entered_at' => date('c'),
-                    'stage_history' => [],
-                    'urgency_flag' => 'normal',
-                    'call_history' => [],
-                    'rejection_reason' => '',
-                    'consultation_type' => '',
-                    'created_at' => date('c'),
-                    'updated_at' => date('c'),
-                    'requisitions' => []
-                ], $macktileData, getDefaultStageFields());
-
-                $userData['leads'][] = $newLead;
-                $stats['created']++;
-            }
-        } catch (Exception $e) {
-            $stats['errors'][] = "Record {$zohoId}: " . $e->getMessage();
-        }
-    }
-
-    saveUserData($userId, $userData);
-
-    return array_merge(['success' => true], $stats);
-}
-
-function pullSingleFromZoho($module, $admin, $zohoId, $userId) {
-    $mapping = $admin['zoho_field_mappings'][$module] ?? getDefaultZohoMapping($module);
-
-    $result = callZohoAPIWithRetry('GET', "/{$module}/{$zohoId}", null, $admin);
-
-    if (!$result['success']) {
-        return $result;
-    }
-
-    $zohoRecord = $result['data']['data'][0] ?? null;
-    if (!$zohoRecord) {
-        return ['success' => false, 'error' => 'Record not found in Zoho'];
-    }
-
-    $userData = getUserData($userId);
-    $macktileData = mapZohoToMacktiles($zohoRecord, $mapping);
-
-    // Find and update the lead
-    foreach ($userData['leads'] as &$lead) {
-        if ($lead['zoho_id'] === $zohoId) {
-            $lead = array_merge($lead, $macktileData, [
-                'zoho_synced_at' => date('c'),
-                'zoho_dirty' => false,
-                'updated_at' => date('c')
-            ]);
-            saveUserData($userId, $userData);
-            return ['success' => true, 'lead' => $lead];
-        }
-    }
-
-    return ['success' => false, 'error' => 'Lead not found locally'];
-}
-
-function pushToZoho($module, $admin, $leads, $userId) {
-    $mapping = $admin['zoho_field_mappings'][$module] ?? getDefaultZohoMapping($module);
-
-    $stats = ['created' => 0, 'updated' => 0, 'skipped' => 0, 'errors' => []];
-
-    if (empty($leads)) {
-        return array_merge(['success' => true, 'message' => 'No leads to sync'], $stats);
-    }
-
-    $userData = getUserData($userId);
-
-    // Build index for updating leads after push
-    $leadIndex = [];
-    foreach ($userData['leads'] as $idx => $lead) {
-        $leadIndex[$lead['id']] = $idx;
-    }
-
-    // Batch records for Zoho (max 100 per request)
-    $createRecords = [];
-    $updateRecords = [];
-    $leadIdToZohoData = [];
-
-    foreach ($leads as $lead) {
-        $zohoData = mapMacktilesToZoho($lead, $mapping);
-
-        if (empty($zohoData)) {
-            $stats['skipped']++;
-            continue;
-        }
-
-        if (!empty($lead['zoho_id'])) {
-            $zohoData['id'] = $lead['zoho_id'];
-            $updateRecords[] = $zohoData;
-        } else {
-            $createRecords[] = $zohoData;
-        }
-
-        $leadIdToZohoData[$lead['id']] = $zohoData;
-    }
-
-    // Create new records
-    if (!empty($createRecords)) {
-        $chunks = array_chunk($createRecords, 100);
-        foreach ($chunks as $chunk) {
-            $result = callZohoAPIWithRetry('POST', "/{$module}", ['data' => $chunk], $admin);
-
-            if ($result['success'] && !empty($result['data']['data'])) {
-                foreach ($result['data']['data'] as $i => $response) {
-                    if ($response['status'] === 'success' && !empty($response['details']['id'])) {
-                        // Find the lead by matching fields and update zoho_id
-                        $createdZohoId = $response['details']['id'];
-
-                        // Match by index position in the chunk
-                        foreach ($leads as $lead) {
-                            if (empty($lead['zoho_id']) && isset($leadIndex[$lead['id']])) {
-                                $idx = $leadIndex[$lead['id']];
-                                if (!isset($userData['leads'][$idx]['zoho_id']) || empty($userData['leads'][$idx]['zoho_id'])) {
-                                    $userData['leads'][$idx]['zoho_id'] = $createdZohoId;
-                                    $userData['leads'][$idx]['zoho_module'] = $module;
-                                    $userData['leads'][$idx]['zoho_synced_at'] = date('c');
-                                    $userData['leads'][$idx]['zoho_dirty'] = false;
-                                    $stats['created']++;
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        $stats['errors'][] = $response['message'] ?? 'Create failed';
-                    }
-                }
-            } elseif (!$result['success']) {
-                $stats['errors'][] = $result['error'] ?? 'Batch create failed';
-            }
-        }
-    }
-
-    // Update existing records
-    if (!empty($updateRecords)) {
-        $chunks = array_chunk($updateRecords, 100);
-        foreach ($chunks as $chunk) {
-            $result = callZohoAPIWithRetry('PUT', "/{$module}", ['data' => $chunk], $admin);
-
-            if ($result['success'] && !empty($result['data']['data'])) {
-                foreach ($result['data']['data'] as $response) {
-                    if ($response['status'] === 'success') {
-                        $zohoId = $response['details']['id'];
-                        // Update local lead
-                        foreach ($userData['leads'] as &$lead) {
-                            if ($lead['zoho_id'] === $zohoId) {
-                                $lead['zoho_synced_at'] = date('c');
-                                $lead['zoho_dirty'] = false;
-                                break;
-                            }
-                        }
-                        $stats['updated']++;
-                    } else {
-                        $stats['errors'][] = $response['message'] ?? 'Update failed';
-                    }
-                }
-            } elseif (!$result['success']) {
-                $stats['errors'][] = $result['error'] ?? 'Batch update failed';
-            }
-        }
-    }
-
-    saveUserData($userId, $userData);
-
-    return array_merge(['success' => true], $stats);
-}
-
 // ============ LLM FUNCTIONS ============
 
-function callLLM($provider, $apiKey, $prompt) {
+/**
+ * Single-shot LLM call, with automatic provider fallback.
+ *
+ * $provider/$apiKey are the CALLER'S PREFERENCE (nearly every call site passes
+ * the configured default_provider and its key). The call starts there, then
+ * fails over to the other configured providers if that one is rate-limited or
+ * down. Signature and return shape are unchanged, so every existing call site
+ * gained fallback without modification.
+ *
+ * Pass $noFallback = true to force exactly one provider (used by `test-api`,
+ * which must report on the specific key being tested).
+ */
+function callLLM($provider, $apiKey, $prompt, $noFallback = false) {
+    if ($noFallback) return callLLMOnce($provider, $apiKey, $prompt);
+    return llmWithFallback(function ($p, $key) use ($prompt) {
+        return callLLMOnce($p, $key, $prompt);
+    }, $provider);
+}
+
+/** One attempt against one provider. */
+function callLLMOnce($provider, $apiKey, $prompt) {
     switch ($provider) {
         case 'groq': return callGroq($apiKey, $prompt);
+        case 'cerebras': return callCerebras($apiKey, $prompt);
         case 'gemini': return callGemini($apiKey, $prompt);
         case 'anthropic': return callAnthropic($apiKey, $prompt);
         default: return ['success' => false, 'error' => 'Unknown provider'];
@@ -6570,27 +7449,48 @@ function callLLM($provider, $apiKey, $prompt) {
 }
 
 function callGroq($apiKey, $prompt) {
-    $ch = curl_init('https://api.groq.com/openai/v1/chat/completions');
+    return callOpenAICompatible('https://api.groq.com/openai/v1/chat/completions', $apiKey, chosenModelFor('groq'), $prompt);
+}
+
+function callCerebras($apiKey, $prompt) {
+    return callOpenAICompatible('https://api.cerebras.ai/v1/chat/completions', $apiKey, chosenModelFor('cerebras'), $prompt);
+}
+
+/**
+ * Shared OpenAI-shaped chat call (Groq and Cerebras speak the same dialect).
+ * Reports 'retryable' so callLLM's fallback chain can tell a rate limit
+ * (worth trying elsewhere) from a bad key (worth surfacing immediately).
+ */
+function callOpenAICompatible($url, $apiKey, $model, $prompt) {
+    $ch = curl_init($url);
     curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true, 
-        CURLOPT_POST => true, 
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => json_encode([
-            'model' => chosenModelFor('groq'),
+            'model' => $model,
             'messages' => [['role' => 'user', 'content' => $prompt]],
             'max_tokens' => 2048,
             'temperature' => 0.7
         ]),
-        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer ' . $apiKey], 
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer ' . $apiKey],
         CURLOPT_TIMEOUT => 120
     ]);
-    $response = curl_exec($ch); 
-    $error = curl_error($ch); 
+    $response = curl_exec($ch);
+    $error = curl_error($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
-    if ($error) return ['success' => false, 'error' => $error];
+    if ($error) return ['success' => false, 'error' => $error, 'retryable' => true];
     $r = json_decode($response, true);
-    return isset($r['choices'][0]['message']['content']) 
-        ? ['success' => true, 'content' => $r['choices'][0]['message']['content']] 
-        : ['success' => false, 'error' => $r['error']['message'] ?? 'API error'];
+    if (isset($r['choices'][0]['message']['content'])) {
+        return ['success' => true, 'content' => $r['choices'][0]['message']['content']];
+    }
+    // Groq nests the message under "error"; Cerebras returns it at the top level.
+    $detail = $r['error']['message'] ?? ($r['message'] ?? null);
+    return [
+        'success' => false,
+        'error' => $detail ?: 'API error',
+        'retryable' => llmIsRetryableStatus($status),
+    ];
 }
 
 function callGemini($apiKey, $prompt) {
@@ -6602,14 +7502,20 @@ function callGemini($apiKey, $prompt) {
         CURLOPT_HTTPHEADER => ['Content-Type: application/json'], 
         CURLOPT_TIMEOUT => 120
     ]);
-    $response = curl_exec($ch); 
-    $error = curl_error($ch); 
+    $response = curl_exec($ch);
+    $error = curl_error($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
-    if ($error) return ['success' => false, 'error' => $error];
+    if ($error) return ['success' => false, 'error' => $error, 'retryable' => true];
     $r = json_decode($response, true);
-    return isset($r['candidates'][0]['content']['parts'][0]['text']) 
-        ? ['success' => true, 'content' => $r['candidates'][0]['content']['parts'][0]['text']] 
-        : ['success' => false, 'error' => $r['error']['message'] ?? 'API error'];
+    if (isset($r['candidates'][0]['content']['parts'][0]['text'])) {
+        return ['success' => true, 'content' => $r['candidates'][0]['content']['parts'][0]['text']];
+    }
+    return [
+        'success' => false,
+        'error' => $r['error']['message'] ?? 'API error',
+        'retryable' => llmIsRetryableStatus($status),
+    ];
 }
 
 function callAnthropic($apiKey, $prompt) {
@@ -6626,14 +7532,20 @@ function callAnthropic($apiKey, $prompt) {
         CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'x-api-key: ' . $apiKey, 'anthropic-version: 2023-06-01'],
         CURLOPT_TIMEOUT => 120
     ]);
-    $response = curl_exec($ch); 
-    $error = curl_error($ch); 
+    $response = curl_exec($ch);
+    $error = curl_error($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
-    if ($error) return ['success' => false, 'error' => $error];
+    if ($error) return ['success' => false, 'error' => $error, 'retryable' => true];
     $r = json_decode($response, true);
-    return isset($r['content'][0]['text'])
-        ? ['success' => true, 'content' => $r['content'][0]['text']]
-        : ['success' => false, 'error' => $r['error']['message'] ?? 'API error'];
+    if (isset($r['content'][0]['text'])) {
+        return ['success' => true, 'content' => $r['content'][0]['text']];
+    }
+    return [
+        'success' => false,
+        'error' => $r['error']['message'] ?? 'API error',
+        'retryable' => llmIsRetryableStatus($status),
+    ];
 }
 
 
@@ -6786,32 +7698,6 @@ SOCIAL PROOF: {$socialProof}";
         $context .= "\nSPECIAL INSTRUCTIONS: {$customInstructions}";
     }
 
-    // Add stage intelligence context if available
-    if (!empty($lead['pain_hypothesis']['hypotheses'])) {
-        $primaryPain = $lead['pain_hypothesis']['hypotheses'][0]['pain'] ?? '';
-        $impact = $lead['pain_hypothesis']['commercial_impact']['quantified_impact'] ?? '';
-        $context .= "\nVALIDATED PAIN HYPOTHESIS: {$primaryPain}";
-        if ($impact) $context .= " (Commercial Impact: {$impact})";
-    }
-    if (!empty($lead['persona_intelligence']['kpis']['primary_metrics'])) {
-        $kpis = implode(', ', $lead['persona_intelligence']['kpis']['primary_metrics']);
-        $context .= "\nPERSONA KPIs: {$kpis}";
-    }
-    if (!empty($lead['persona_intelligence']['objection_profile']['likely_objections'])) {
-        $objections = implode(', ', array_slice($lead['persona_intelligence']['objection_profile']['likely_objections'], 0, 2));
-        $context .= "\nLIKELY OBJECTIONS: {$objections}";
-    }
-    if (!empty($lead['account_intelligence']['trigger_signals'])) {
-        $signals = [];
-        foreach (['growth_signals', 'cost_pressure_signals', 'technology_signals'] as $type) {
-            if (!empty($lead['account_intelligence']['trigger_signals'][$type])) {
-                $signals = array_merge($signals, array_slice($lead['account_intelligence']['trigger_signals'][$type], 0, 1));
-            }
-        }
-        if ($signals) {
-            $context .= "\nTRIGGER SIGNALS: " . implode(', ', $signals);
-        }
-    }
 
     // Add email performance context from outcomes
     if (!empty($lead['email_history'])) {
@@ -7030,7 +7916,7 @@ BODY: [your complete body]";
 
 // ============ CALL PITCH GENERATION ============
 
-function generateCallPitch($provider, $apiKey, $name, $title, $company, $industry, $pitchType, $customInstructions, $settings, $leadData = null) {
+function generateCallPitch($provider, $apiKey, $name, $title, $company, $industry, $pitchType, $customInstructions, $settings) {
     $senderName = $settings['sender_name'] ?? '';
     $senderTitle = $settings['sender_title'] ?? 'Business Development Manager';
     $senderCompany = $settings['sender_company'] ?? 'Levata';
@@ -7048,33 +7934,6 @@ EMAIL ALREADY SENT: " . ($emailSent ? 'Yes' : 'No');
         $context .= "\n\nCUSTOM CONTEXT:\n{$customInstructions}";
     }
 
-    // Add stage intelligence context if available
-    if ($leadData) {
-        if (!empty($leadData['pain_hypothesis']['hypotheses'])) {
-            $painList = [];
-            foreach (array_slice($leadData['pain_hypothesis']['hypotheses'], 0, 3) as $h) {
-                $painList[] = $h['pain'] ?? '';
-            }
-            $context .= "\n\nVALIDATED PAIN POINTS:\n- " . implode("\n- ", array_filter($painList));
-        }
-        if (!empty($leadData['persona_intelligence']['kpis']['primary_metrics'])) {
-            $context .= "\n\nPERSONA KPIs: " . implode(', ', $leadData['persona_intelligence']['kpis']['primary_metrics']);
-        }
-        if (!empty($leadData['persona_intelligence']['objection_profile']['likely_objections'])) {
-            $context .= "\n\nLIKELY OBJECTIONS:\n- " . implode("\n- ", array_slice($leadData['persona_intelligence']['objection_profile']['likely_objections'], 0, 3));
-        }
-        if (!empty($leadData['account_intelligence']['trigger_signals'])) {
-            $signals = [];
-            foreach (['growth_signals', 'cost_pressure_signals', 'technology_signals'] as $type) {
-                if (!empty($leadData['account_intelligence']['trigger_signals'][$type])) {
-                    $signals = array_merge($signals, array_slice($leadData['account_intelligence']['trigger_signals'][$type], 0, 1));
-                }
-            }
-            if ($signals) {
-                $context .= "\n\nTRIGGER SIGNALS: " . implode(', ', $signals);
-            }
-        }
-    }
 
     $reasonA = "I will be really quick. I am calling about an email I sent earlier. We design and build websites, software systems, and brand identities, and I wanted to see if you had a chance to look at it.";
 
@@ -7177,7 +8036,7 @@ No pressure at all, just a practical look at whether there is a fit. Would you b
 
 [THEY PICK]
 
-\"Perfect. I'll send a calendar invite. Your email is [confirm] — correct?\"
+\"Perfect. I'll send a calendar invite. Your email is [confirm], correct?\"
 
 \"Thanks {$name}, looking forward to [Day]. Have a great day.\"
 

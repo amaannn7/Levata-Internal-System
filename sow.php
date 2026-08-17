@@ -7,7 +7,7 @@
  *   - refineSow($provider, $apiKey, $markdown, $instruction)
  *   - callLLMForSow() — like callLLM but with a larger token budget, since a
  *     12-section SOW exceeds the default 2048 cap used elsewhere.
- *   - Fireflies integration: firefliesListMeetings(), firefliesFetchTranscript()
+ *   - ClickUp integration: clickupListMeetingDocs(), clickupFetchDocText(), clickupCreateTask()
  *   - extractSowInput() — transcript -> SOW form fields
  *   - nextDocumentNumber() — sequential CP-0001 / SOW-0001 numbering
  *
@@ -21,6 +21,7 @@
 function defaultModelFor($provider) {
     switch ($provider) {
         case 'groq':      return 'llama-3.3-70b-versatile';
+        case 'cerebras':  return 'gpt-oss-120b';
         case 'anthropic': return 'claude-opus-4-8';
         case 'gemini':    return 'gemini-3.5-flash';
         default:          return '';
@@ -46,7 +47,7 @@ You are a senior proposal writer at Levata, a premium design and engineering stu
 Voice and standards:
 - Calm, refined, confident, and conversion-focused. Clear and unhurried, never salesy or padded.
 - British/international English spelling. No emoji. No marketing cliches.
-- Do NOT use em dashes or en dashes in ordinary prose sentences. Rewrite such sentences using commas, parentheses, a colon, or two shorter sentences. (Numeric/date ranges in tables, e.g. "Weeks 1-2", may use a hyphen.) EXCEPTION: the fixed document patterns below DO use an em dash and you must keep it exactly: Section 5 step bullets ("**Discovery —** aligning on...") and the Section 10 Fees milestone labels ("**Advance — 50%**", "**Balance — 50%**").
+- Do NOT use em dashes or en dashes anywhere in the document, including Section 5 step bullets and the Section 10 Fees milestone labels. Rewrite such sentences using commas, parentheses, a colon, or two shorter sentences. (Numeric/date ranges in tables, e.g. "Weeks 1-2", may use a hyphen.) Section 5 step bullets use a colon instead, in the exact form "- **Discovery:** aligning on...". Section 10 Fees milestone labels use a colon too, in the exact form "**Advance: 50%**", "**Balance: 50%**".
 - Concrete and specific: turn the client's inputs into precise scope, deliverables, and assumptions. Where the inputs are thin, expand sensibly with professional, industry-standard detail, but never invent fees, dates, or commitments the inputs do not support.
 
 Output rules:
@@ -57,12 +58,13 @@ Output rules:
 - Section 1 (Engagement Overview): two short paragraphs. The first says what Levata will build and the outcome it drives; the second adds context about the client or their audience. Plain prose, no bullets.
 - Section 2 (Objectives): a bulleted list of 4 to 6 concrete single-sentence bullets, each starting with "- ".
 - Section 3 (Scope of Work): expand into numbered sub-clauses. Each sub-clause MUST be its own paragraph on its own line, separated by a blank line, and MUST begin with a bold lead-in in the exact form "**3.1 Title.**", followed by one or two plain sentences. Never run them together; never omit the bold markers.
-- Section 5 (Levata Approach): an intro line, then a bulleted list. Each bullet is a bold step name followed by an em dash and a short description, in the EXACT form "- **Discovery —** aligning on vision, audience, goals, and competitive context." Keep the em dash. Use 4 to 7 stages fitting the project type (e.g. Discovery, Architecture, Wireframing/Design, Development, QA & Testing, Deployment).
+- Section 5 (Levata Approach): an intro line, then a bulleted list. Each bullet is a bold step name followed by a colon and a short description, in the EXACT form "- **Discovery:** aligning on vision, audience, goals, and competitive context." Do NOT use an em dash. Use 4 to 7 stages fitting the project type (e.g. Discovery, Architecture, Wireframing/Design, Development, QA & Testing, Deployment).
 - Sections 2, 6, 7, 8 are bulleted lists (lines starting with "- "), never paragraphs or tables.
 - Section 4 (Architecture): NOT website-only. Infer the project type, then adapt the heading and the table's column labels: Website -> "Site Architecture", Page | Purpose; Software/system -> "System Architecture", Module | Function; Mobile app -> "App Architecture", Screen | Purpose; Branding/other -> "Deliverable Breakdown", Item | Description. Replace {{architectureHeading}}, {{architectureColLabel}}, {{architectureColPurpose}} accordingly.
 - Section 9 (Timeline): the table has EXACTLY two columns, Phase and Activity. The Phase column is the TIME PERIOD in weeks (e.g. "Weeks 1-2", "Week 6"), NOT a stage name. Bold the Phase cell. Never add a third column.
 - Engagement field (top table): a SHORT one-line description of the work (e.g. "Design and development of a new website", "Brand identity and design system"), NOT the project name and NOT a sentence with a full stop.
-- Section 10 (Fees): the intro line must state the total investment with the numeric amount AND the amount written out in words in parentheses, e.g. "LKR 450,000 (four hundred and fifty thousand Sri Lankan Rupees)". The table's third column header MUST be "Amount (CUR)" where CUR is the currency from the investment (e.g. "Amount (LKR)"). Compute the 50% advance and 50% balance as actual numbers from the total if a numeric amount is given (e.g. 225,000); otherwise write "50% of total". Bold the first column of each row. Use "Due upon delivery" (or "Due upon deployment" for a website) as the balance trigger.
+- Section 10 (Fees) for a ONE-OFF engagement: the intro line must state the total investment with the numeric amount AND the amount written out in words in parentheses, e.g. "LKR 450,000 (four hundred and fifty thousand Sri Lankan Rupees)". The table's third column header MUST be "Amount (CUR)" where CUR is the currency from the investment (e.g. "Amount (LKR)"). Compute the 50% advance and 50% balance as actual numbers from the total if a numeric amount is given (e.g. 225,000); otherwise write "50% of total". Bold the first column of each row. Use "Due upon delivery" (or "Due upon deployment" for a website) as the balance trigger.
+- Section 10 (Fees) for a RETAINER engagement: do NOT use the advance/balance milestone structure at all. The FEES SUMMARY block given to you in the project details is authoritative. Write a short intro line stating the pricing structure in plain words (setup fee if any, the recurring retainer amount and its billing basis, minimum term if stated), then a table with columns "Component | Basis | Amount": one row for the one-time setup/onboarding fee (omit this row entirely if no setup fee was given), one row for the recurring retainer (its Basis cell states the billing basis, e.g. "per licence / month" or "flat / month"), and one row per third-party pass-through cost if any were given (Basis cell says "billed separately" or similar; these are NOT included in the Levata total). Bold the first column of each row. After the table, state the minimum term if one was given, and note that pass-through costs (if any) are billed directly and are not part of the Levata fee. Never invent an advance/balance split for a retainer.
 - In the Section 4 and Section 9 tables, bold the first column of each data row with ** **.
 - Keep all tables as valid GitHub-flavoured Markdown tables (pipe-delimited, with a header divider row).
 PROMPT;
@@ -80,7 +82,7 @@ function sowTemplate() {
 | **Service Provider** | Levata, a brand of Unknwn Global (Pvt) Ltd, 21A, 17th Lane, Colombo 03, Sri Lanka (levatahq.com) |
 | **Project ID** | {{projectId}} |
 | **Engagement** | {{engagement}} |
-| **Investment** | {{investment}} (excluding applicable taxes and third-party costs) |
+| **Investment** | {{investmentSummary}} (excluding applicable taxes and third-party costs) |
 | **Estimated duration** | {{timeline}} |
 | **Effective date** | {{effectiveDate}} |
 
@@ -108,7 +110,7 @@ Present the planned structure of the solution as a table, adapted to what is bei
 ## 5. Levata Approach
 Our process is built around partnership: the Client stays informed and in control at every stage while Levata manages the complexity of execution.
 
-Write the stages as a bulleted list. Each bullet is a bold step name, then an em dash, then a short description, in the exact form "- **Discovery —** aligning on vision, audience, goals, and competitive context." Use four to seven stages fitting the project type.
+Write the stages as a bulleted list. Each bullet is a bold step name, then a colon, then a short description, in the exact form "- **Discovery:** aligning on vision, audience, goals, and competitive context." Use four to seven stages fitting the project type.
 
 ## 6. Deliverables
 {{deliverables}}
@@ -133,8 +135,8 @@ Total investment: {{investment}} (write the amount in words in parentheses here)
 
 | Milestone | Trigger | Amount |
 | --- | --- | --- |
-| **Advance — 50%** | Due at project kickoff | _50% of the total_ |
-| **Balance — 50%** | Due upon final delivery | _50% of the total_ |
+| **Advance: 50%** | Due at project kickoff | _50% of the total_ |
+| **Balance: 50%** | Due upon final delivery | _50% of the total_ |
 | **Total** | | _the total investment_ |
 
 Work commences once the advance payment is received in cleared funds. Payments are made by bank transfer to the details provided on the invoice, on the terms set out in the MSA.
@@ -178,6 +180,25 @@ function sowBulletList($items) {
     return implode("\n", array_map(function ($i) { return "- $i"; }, $clean));
 }
 
+/**
+ * A short one-line investment summary for the top Field|Detail table, valid for
+ * either a one-off figure or a retainer (setup fee + recurring billing).
+ */
+function sowInvestmentSummary($input) {
+    if (($input['engagementType'] ?? 'one_off') === 'retainer') {
+        $parts = [];
+        $setup = trim($input['setupFee'] ?? '');
+        if ($setup !== '') $parts[] = $setup . ' setup';
+        $retainer = trim($input['retainerAmount'] ?? '');
+        if ($retainer !== '') {
+            $basis = trim($input['retainerBasis'] ?? '');
+            $parts[] = $retainer . ($basis !== '' ? ' (' . $basis . ')' : '') . ' recurring';
+        }
+        return $parts ? implode(' + ', $parts) : 'To be confirmed';
+    }
+    return ($input['investment'] ?? '') ?: 'to be confirmed';
+}
+
 /** Fill the template placeholders from the form input. */
 function sowFillTemplate($template, $input) {
     $effectiveDate = '______ / ______ / ' . date('Y');
@@ -194,6 +215,7 @@ function sowFillTemplate($template, $input) {
         'timeline'      => ($input['timeline'] ?? '') ?: 'to be confirmed at kickoff',
         'assumptions'   => ($input['assumptions'] ?? '') ?: 'The Client will provide content, branding assets, and timely feedback.',
         'investment'    => ($input['investment'] ?? '') ?: 'to be confirmed',
+        'investmentSummary' => sowInvestmentSummary($input),
         'date'          => $effectiveDate,
         'effectiveDate' => $effectiveDate,
         'architectureHeading'    => 'Solution Architecture',
@@ -208,6 +230,17 @@ function sowFillTemplate($template, $input) {
 /** Build the full user prompt: filled template + raw project details. */
 function buildSowUserPrompt($template, $input) {
     $filled = sowFillTemplate($template, $input);
+    $engagementType = ($input['engagementType'] ?? 'one_off') === 'retainer' ? 'retainer' : 'one_off';
+    $feesSummary = "Engagement type: " . ($engagementType === 'retainer' ? 'RETAINER (recurring billing, no advance/balance split)' : 'ONE-OFF (single total fee, advance/balance split)') . "\n";
+    if ($engagementType === 'retainer') {
+        $feesSummary .= "Setup / onboarding fee: " . (($input['setupFee'] ?? '') ?: 'none') . "\n"
+            . "Recurring retainer amount: " . ($input['retainerAmount'] ?? '') . "\n"
+            . "Billing basis: " . (($input['retainerBasis'] ?? '') ?: 'not specified') . "\n"
+            . "Minimum term: " . (($input['retainerTerm'] ?? '') ?: 'not specified') . "\n"
+            . "Third-party pass-through costs: " . (implode('; ', $input['passthroughCosts'] ?? []) ?: 'none') . "\n";
+    } else {
+        $feesSummary .= "Total investment: " . ($input['investment'] ?? '') . "\n";
+    }
     $details = "PROJECT DETAILS:\n"
         . "Project name: " . ($input['projectName'] ?? '') . "\n"
         . "Client: " . ($input['clientName'] ?? '') . "\n"
@@ -217,9 +250,89 @@ function buildSowUserPrompt($template, $input) {
         . "Timeline: " . ($input['timeline'] ?? '') . "\n"
         . "Team: " . ($input['team'] ?? '') . "\n"
         . "Assumptions: " . ($input['assumptions'] ?? '') . "\n"
-        . "Investment: " . ($input['investment'] ?? '') . "\n";
+        . "FEES SUMMARY (authoritative for Section 10, do not deviate from these figures):\n" . $feesSummary;
     return "Fill in and complete the following SOW template using the project details. Follow every output rule.\n\n"
         . "=== TEMPLATE ===\n" . $filled . "\n\n" . $details;
+}
+
+/* =====================================================================
+ * Provider fallback (system-wide)
+ *
+ * Every AI feature used to call a single provider and fail hard when that
+ * provider was rate-limited. These helpers resolve an ordered chain of the
+ * providers that actually have a key, and retry the next one when a call fails
+ * TRANSIENTLY (429 rate limit, 5xx, network). A fatal error (bad key, malformed
+ * request) is returned immediately, since retrying elsewhere would fail the same
+ * way and would hide a real misconfiguration.
+ *
+ * Used by callLLM() (short prompts) and callLLMForSow() (documents), which
+ * between them back every AI feature: research, emails, call pitches, SOW/CP
+ * generation and refinement, minutes, extraction, briefings.
+ * ===================================================================== */
+
+/**
+ * Is this HTTP status worth retrying on a DIFFERENT provider?
+ *
+ *   429 rate limit, 5xx outage, 0 network error  -> yes, transient
+ *   402 payment required / quota exhausted       -> yes: this provider is
+ *       unusable but the others may work, so fall through rather than dead-end
+ *   401/403 bad key, 400 bad request             -> no: a real misconfiguration
+ *       that would fail identically elsewhere and must be surfaced
+ */
+function llmIsRetryableStatus($status) {
+    $status = (int) $status;
+    return $status === 0 || $status === 429 || $status === 402 || $status >= 500;
+}
+
+/**
+ * Ordered list of ['provider'=>..,'key'=>..] to try, preferred first.
+ * Providers without a configured key are skipped entirely.
+ */
+function llmProviderChain($preferred = '') {
+    $admin = function_exists('getAdmin') ? getAdmin() : [];
+    $keys = [
+        'groq'      => trim($admin['groq_key'] ?? ''),
+        'cerebras'  => trim($admin['cerebras_key'] ?? ''),
+        'gemini'    => trim($admin['gemini_key'] ?? ''),
+        'anthropic' => trim($admin['anthropic_key'] ?? ''),
+    ];
+    $preferred = trim($preferred) !== '' ? trim($preferred) : trim($admin['default_provider'] ?? 'groq');
+    // Cerebras before Groq as the general fallback: far more generous free tier.
+    $order = ['cerebras', 'groq', 'gemini', 'anthropic'];
+    if (isset($keys[$preferred])) {
+        $order = array_merge([$preferred], array_values(array_diff($order, [$preferred])));
+    }
+    $chain = [];
+    foreach ($order as $p) {
+        if (($keys[$p] ?? '') !== '') $chain[] = ['provider' => $p, 'key' => $keys[$p]];
+    }
+    return $chain;
+}
+
+/**
+ * Run $fn(provider, apiKey) across the chain until one succeeds.
+ * $fn must return the app's usual ['success'=>bool, 'content'|'error'=>..] shape,
+ * optionally with 'retryable'=>bool. Adds 'provider' (who answered) and
+ * 'fell_back_from' (the preferred provider, when a fallback was used).
+ */
+function llmWithFallback(callable $fn, $preferred = '') {
+    $chain = llmProviderChain($preferred);
+    if (empty($chain)) {
+        return ['success' => false, 'error' => 'No AI provider is configured. Add an API key in Admin > Settings.'];
+    }
+    $last = null;
+    foreach ($chain as $i => $hop) {
+        $res = $fn($hop['provider'], $hop['key']);
+        if (!empty($res['success'])) {
+            $res['provider'] = $hop['provider'];
+            if ($i > 0) $res['fell_back_from'] = $chain[0]['provider'];
+            return $res;
+        }
+        $last = $res;
+        // Stop on a fatal error; only transient failures move to the next provider.
+        if (empty($res['retryable'])) return $res;
+    }
+    return $last ?: ['success' => false, 'error' => 'All AI providers failed.'];
 }
 
 /**
@@ -227,12 +340,29 @@ function buildSowUserPrompt($template, $input) {
  * document is not truncated. Used by both SOW and CP generation (cp.php calls this).
  */
 function callLLMForSow($provider, $apiKey, $system, $user) {
+    // $provider/$apiKey are the preference; fail over to other configured
+    // providers on a rate limit or outage. Document generation is long and
+    // expensive to retry by hand, so this matters most here.
+    return llmWithFallback(function ($p, $key) use ($system, $user) {
+        return callLLMForSowOnce($p, $key, $system, $user);
+    }, $provider);
+}
+
+/** One document-sized attempt against one provider. */
+function callLLMForSowOnce($provider, $apiKey, $system, $user) {
     $prompt = $system . "\n\n" . $user;
     $maxTokens = 8000;
     switch ($provider) {
         case 'groq':
             return sowProviderCall('https://api.groq.com/openai/v1/chat/completions', $apiKey, [
                 'model' => chosenModelFor('groq'),
+                'messages' => [['role' => 'user', 'content' => $prompt]],
+                'max_tokens' => $maxTokens,
+                'temperature' => 0.4,
+            ], 'openai');
+        case 'cerebras':
+            return sowProviderCall('https://api.cerebras.ai/v1/chat/completions', $apiKey, [
+                'model' => chosenModelFor('cerebras'),
                 'messages' => [['role' => 'user', 'content' => $prompt]],
                 'max_tokens' => $maxTokens,
                 'temperature' => 0.4,
@@ -275,8 +405,11 @@ function sowProviderCall($url, $apiKey, $payload, $shape) {
     ]);
     $response = curl_exec($ch);
     $error = curl_error($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
-    if ($error) return ['success' => false, 'error' => $error];
+    // 'retryable' tells llmWithFallback() whether trying another provider is
+    // worth it: rate limits/outages yes, a bad key or bad request no.
+    if ($error) return ['success' => false, 'error' => $error, 'retryable' => true];
     $r = json_decode($response, true);
 
     if ($shape === 'openai') {
@@ -287,7 +420,14 @@ function sowProviderCall($url, $apiKey, $payload, $shape) {
         $text = $r['candidates'][0]['content']['parts'][0]['text'] ?? null;
     }
     if (!$text) {
-        return ['success' => false, 'error' => $r['error']['message'] ?? 'AI returned an empty response'];
+        // Error shapes differ per provider: OpenAI/Groq nest under "error",
+        // Cerebras puts "message" at the top level.
+        $detail = $r['error']['message'] ?? ($r['message'] ?? null);
+        return [
+            'success' => false,
+            'error' => $detail ?: 'AI returned an empty response',
+            'retryable' => llmIsRetryableStatus($status),
+        ];
     }
     return ['success' => true, 'content' => trim($text)];
 }
@@ -300,97 +440,95 @@ function generateSow($provider, $apiKey, $input) {
 
 /** Refine an existing SOW per an instruction. */
 function refineSow($provider, $apiKey, $markdown, $instruction) {
-    $system = "You are a senior proposal writer at Levata. You revise an existing Statement of Work according to an instruction. Apply the change faithfully while keeping the document's structure, headings, tables, tone, formatting (bold lead-ins, bullet lists, bold first-column table cells), and confidential footer intact. Keep everything the instruction does not ask you to change. Do NOT introduce em dashes into ordinary prose, but KEEP the existing em dashes in the Section 5 step bullets ('**Discovery —** ...') and the Section 10 Fees labels ('**Advance — 50%**'). Return ONLY the full revised SOW as clean GitHub-flavoured Markdown, no preamble or commentary.";
+    $system = "You are a senior proposal writer at Levata. You revise an existing Statement of Work according to an instruction. Apply the change faithfully while keeping the document's structure, headings, tables, tone, formatting (bold lead-ins, bullet lists, bold first-column table cells), and confidential footer intact. Keep everything the instruction does not ask you to change. Do NOT use em dashes anywhere in the document. If the existing document contains em dashes (e.g. in Section 5 step bullets or the Section 10 Fees labels), replace them with a colon as part of this revision (e.g. '**Discovery —** ...' becomes '**Discovery:** ...', '**Advance — 50%**' becomes '**Advance: 50%**'). Return ONLY the full revised SOW as clean GitHub-flavoured Markdown, no preamble or commentary.";
     $user = "CURRENT SOW:\n\n$markdown\n\n=== INSTRUCTION ===\n$instruction";
     return callLLMForSow($provider, $apiKey, $system, $user);
 }
 
-/* ================= Fireflies + transcript extraction ================= */
+/* ================= ClickUp + transcript extraction ================= */
 
-/** Core Fireflies GraphQL call (Bearer auth). */
-function firefliesQuery($apiKey, $query, $variables = null) {
-    $payload = ['query' => $query];
-    if ($variables !== null) $payload['variables'] = $variables;
-    $ch = curl_init('https://api.fireflies.ai/graphql');
-    curl_setopt_array($ch, [
+/** Core ClickUp REST call (raw personal-token auth, no Bearer prefix). */
+function clickupRequest($apiToken, $method, $path, $body = null) {
+    $ch = curl_init('https://api.clickup.com/api' . $path);
+    $headers = ['Content-Type: application/json', 'Authorization: ' . $apiToken];
+    $opts = [
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode($payload),
-        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer ' . $apiKey],
+        CURLOPT_HTTPHEADER => $headers,
         CURLOPT_TIMEOUT => 60,
-    ]);
+        CURLOPT_CUSTOMREQUEST => $method,
+    ];
+    if ($body !== null) $opts[CURLOPT_POSTFIELDS] = json_encode($body);
+    curl_setopt_array($ch, $opts);
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $error = curl_error($ch);
     curl_close($ch);
-    if ($error) return ['success' => false, 'error' => 'Could not reach Fireflies. ' . $error];
+    if ($error) return ['success' => false, 'error' => 'Could not reach ClickUp. ' . $error];
     if ($httpCode === 401 || $httpCode === 403) {
-        return ['success' => false, 'error' => 'Fireflies rejected the API key. Check it in Settings.'];
+        return ['success' => false, 'error' => 'ClickUp rejected the API token. Check it in Settings.'];
     }
     if ($httpCode === 429) {
-        return ['success' => false, 'error' => 'Fireflies rate limit reached. Wait a moment and try again.'];
+        return ['success' => false, 'error' => 'ClickUp rate limit reached. Wait a moment and try again.'];
     }
     $r = json_decode($response, true);
-    if (!empty($r['errors'])) {
-        return ['success' => false, 'error' => $r['errors'][0]['message'] ?? 'Fireflies returned an error.'];
+    if ($httpCode >= 400) {
+        return ['success' => false, 'error' => ($r['err'] ?? null) ?: 'ClickUp returned an error.'];
     }
-    if (!isset($r['data'])) return ['success' => false, 'error' => 'Fireflies returned no data.'];
-    return ['success' => true, 'data' => $r['data']];
+    if (!is_array($r)) return ['success' => false, 'error' => 'ClickUp returned no data.'];
+    return ['success' => true, 'data' => $r];
 }
 
-/** List the most recent meetings for the picker. */
-function firefliesListMeetings($apiKey, $limit = 15) {
-    $query = 'query Recent($limit: Int) { transcripts(limit: $limit) { id title date } }';
-    $res = firefliesQuery($apiKey, $query, ['limit' => $limit]);
+/** List the most recently updated Docs for the meeting picker (AI Notetaker writes meeting notes into a Doc). */
+function clickupListMeetingDocs($apiToken, $workspaceId, $limit = 15) {
+    // The ClickUp Docs endpoint has no sort/order param, so fetch a larger raw
+    // page and sort by recency ourselves before trimming to the requested limit.
+    $qs = http_build_query(['limit' => max($limit, 100)]);
+    $res = clickupRequest($apiToken, 'GET', "/v3/workspaces/{$workspaceId}/docs?{$qs}");
     if (!$res['success']) return $res;
-    $list = $res['data']['transcripts'] ?? [];
+    $list = $res['data']['docs'] ?? [];
     $meetings = [];
-    foreach ($list as $t) {
-        if (empty($t['id'])) continue;
-        $date = $t['date'] ?? 0;
-        if (is_string($date)) { $ts = strtotime($date); $date = $ts ? $ts * 1000 : 0; }
-        $meetings[] = ['id' => $t['id'], 'title' => trim($t['title'] ?? '') ?: 'Untitled meeting', 'date' => $date];
+    foreach ($list as $d) {
+        if (empty($d['id'])) continue;
+        $date = $d['date_updated'] ?? ($d['date_created'] ?? 0);
+        $meetings[] = ['id' => $d['id'], 'title' => trim($d['name'] ?? '') ?: 'Untitled doc', 'date' => (int)$date];
     }
-    return ['success' => true, 'meetings' => $meetings];
+    usort($meetings, fn($a, $b) => $b['date'] <=> $a['date']);
+    return ['success' => true, 'meetings' => array_slice($meetings, 0, $limit)];
 }
 
-/** Fetch one transcript and flatten it (summary + spoken lines) to plain text. */
-function firefliesFetchTranscript($apiKey, $id) {
-    $query = 'query One($id: String!) { transcript(id: $id) { title summary { overview action_items keywords } sentences { speaker_name text } } }';
-    $res = firefliesQuery($apiKey, $query, ['id' => $id]);
+/** Fetch one Doc's page content and flatten it to plain text (used as the "transcript"). */
+function clickupFetchDocText($apiToken, $workspaceId, $docId) {
+    $qs = http_build_query(['content_format' => 'text/plain']);
+    $res = clickupRequest($apiToken, 'GET', "/v3/workspaces/{$workspaceId}/docs/{$docId}/pages?{$qs}");
     if (!$res['success']) return $res;
-    $t = $res['data']['transcript'] ?? null;
-    if (!$t) return ['success' => false, 'error' => 'That meeting could not be found.'];
+    $pages = $res['data'] ?? [];
+    if (!is_array($pages) || !$pages) return ['success' => false, 'error' => 'That doc has no readable content yet.'];
 
-    $title = trim($t['title'] ?? '') ?: 'Meeting';
-    $summaryParts = ["MEETING: $title"];
-    $hasSummary = false;
-    if (!empty($t['summary']['overview']))      { $summaryParts[] = "\nSUMMARY:\n" . trim($t['summary']['overview']); $hasSummary = true; }
-    if (!empty($t['summary']['action_items']))  { $summaryParts[] = "\nACTION ITEMS:\n" . trim($t['summary']['action_items']); $hasSummary = true; }
-    if (!empty($t['summary']['keywords'])) {
-        $kw = $t['summary']['keywords'];
-        $kwText = is_array($kw) ? implode(', ', $kw) : (string)$kw;
-        if (trim($kwText)) { $summaryParts[] = "\nKEYWORDS: " . trim($kwText); $hasSummary = true; }
+    $title = trim($pages[0]['name'] ?? '') ?: 'Meeting';
+    $parts = [];
+    foreach ($pages as $p) {
+        $content = trim($p['content'] ?? '');
+        if ($content !== '') $parts[] = $content;
     }
+    $joined = implode("\n\n", $parts);
+    if (strlen($joined) > 6000) $joined = substr($joined, 0, 6000) . "\n[... notes truncated ...]";
+    if (!$joined) return ['success' => false, 'error' => 'That doc has no readable content yet.'];
+    return ['success' => true, 'title' => $title, 'text' => "MEETING: $title\n\n$joined"];
+}
 
-    if ($hasSummary) {
-        return ['success' => true, 'title' => $title, 'text' => trim(implode("\n", $summaryParts))];
+/** Create a task in the configured ClickUp List (best-effort push after a local task save). */
+function clickupCreateTask($apiToken, $listId, $title, $opts = []) {
+    $body = ['name' => $title];
+    if (!empty($opts['notes'])) $body['description'] = $opts['notes'];
+    if (!empty($opts['due_date'])) {
+        $ts = strtotime($opts['due_date']);
+        if ($ts) $body['due_date'] = $ts * 1000;
     }
-
-    $sentences = [];
-    foreach (($t['sentences'] ?? []) as $s) {
-        $said = trim($s['text'] ?? '');
-        if (!$said) continue;
-        $who = trim($s['speaker_name'] ?? '');
-        $sentences[] = $who ? "$who: $said" : $said;
-    }
-    $joined = implode("\n", $sentences);
-    if (strlen($joined) > 6000) $joined = substr($joined, 0, 6000) . "\n[... transcript truncated ...]";
-    if ($joined) $summaryParts[] = "\nTRANSCRIPT:\n" . $joined;
-
-    $text = trim(implode("\n", $summaryParts));
-    if (!$text || $text === "MEETING: $title") return ['success' => false, 'error' => 'That meeting has no readable transcript yet.'];
-    return ['success' => true, 'title' => $title, 'text' => $text];
+    $res = clickupRequest($apiToken, 'POST', "/v2/list/{$listId}/task", $body);
+    if (!$res['success']) return $res;
+    $t = $res['data'];
+    if (empty($t['id'])) return ['success' => false, 'error' => 'ClickUp did not return a task id.'];
+    return ['success' => true, 'id' => $t['id'], 'url' => $t['url'] ?? ''];
 }
 
 /** System prompt for extracting SOW form fields from meeting notes. */
@@ -399,13 +537,25 @@ function extractSystemPrompt() {
 You extract structured project details from a client meeting transcript or notes so they can pre-fill a Statement of Work form.
 
 Return ONLY a single JSON object (no prose, no code fences) with EXACTLY these keys:
-{ "projectName": string, "projectId": string, "clientName": string, "contactPerson": string, "email": string, "engagement": string, "description": string, "scopeHighlights": string[], "timeline": string, "deliverables": string[], "team": string, "assumptions": string, "investment": string }
+{ "projectName": string, "projectId": string, "clientName": string, "contactPerson": string, "email": string, "engagement": string, "description": string, "scopeHighlights": string[], "timeline": string, "deliverables": string[], "team": string, "assumptions": string, "engagementType": string, "investment": string, "setupFee": string, "retainerAmount": string, "retainerBasis": string, "retainerTerm": string, "passthroughCosts": string[] }
 
 Rules:
 - Extract only what the transcript actually supports. If something is not mentioned, use an empty string "" (or [] for list fields). NEVER invent a client name, fee, date, contact, or commitment not in the notes.
+- projectName: a SHORT label for the type of engagement (e.g. "Website Redesign", "Marketing Plan"), not a sentence.
+- projectId: a short internal reference CODE only (e.g. "PID-097"), never a title or description. If the transcript does not state an explicit ID/reference code, leave this "" — do NOT invent one and do NOT reuse the project name or meeting title here.
 - engagement: a SHORT one-line label for the work (e.g. "Design and development of a new website"), not a full sentence.
 - description: 2 to 4 sentences summarising what is being built and why. This is the only field you may lightly paraphrase.
 - scopeHighlights / deliverables: one short string each.
+- engagementType: "retainer" if the pricing discussed is a recurring/ongoing arrangement (a monthly or periodic fee, a subscription, a per-licence or per-seat charge, an ongoing service relationship), otherwise "one_off" for a single fixed-scope project with one total fee. Default to "one_off" if unclear.
+- If engagementType is "one_off": use ONLY the investment field (see its rule below) and leave setupFee, retainerAmount, retainerBasis, retainerTerm, passthroughCosts all "" / [].
+- If engagementType is "retainer": leave investment "" and instead use:
+  - setupFee: a one-time setup, onboarding, customization, or implementation fee, as a currency amount, if one was explicitly discussed. Otherwise "".
+  - retainerAmount: the recurring fee amount, as a currency amount (e.g. "LKR 75,000"). Otherwise "".
+  - retainerBasis: how the recurring fee is charged, in a few words (e.g. "per licence, per month", "flat, monthly", "per seat"). Otherwise "".
+  - retainerTerm: any stated minimum commitment period (e.g. "3 months minimum, then month-to-month"). Otherwise "".
+  - passthroughCosts: separate third-party costs the client pays that are NOT part of Levata's fee (e.g. a named database/subscription/tool cost mentioned as billed separately, with its billing terms if stated). One short string per cost. Otherwise [].
+- investment (one-off only): the total project fee ONLY, as a currency amount (e.g. "LKR 450,000"). Use this field only if the transcript states a specific figure that both sides clearly treat as the agreed or proposed total price for this project. Do NOT use a budget range, a client's stated ceiling ("we can spend up to X"), a competitor's quote, a cost for one deliverable within a larger scope, or any other number that is not the total fee being proposed here — leave "" in all of those cases rather than guess.
+- Never invent a specific number for any fee field. If a fee was discussed only vaguely (e.g. "pricing to be sent later", "proposal to follow"), leave the relevant field(s) "".
 - Do NOT use em dashes.
 - Output must be valid JSON that parses. Use straight double quotes. No trailing commas.
 P;
@@ -443,7 +593,13 @@ function extractSowInput($provider, $apiKey, $transcript) {
         'deliverables'   => $arr($obj['deliverables'] ?? []),
         'team'           => $str($obj['team'] ?? ''),
         'assumptions'    => $str($obj['assumptions'] ?? ''),
+        'engagementType' => ($obj['engagementType'] ?? '') === 'retainer' ? 'retainer' : 'one_off',
         'investment'     => $str($obj['investment'] ?? ''),
+        'setupFee'       => $str($obj['setupFee'] ?? ''),
+        'retainerAmount' => $str($obj['retainerAmount'] ?? ''),
+        'retainerBasis'  => $str($obj['retainerBasis'] ?? ''),
+        'retainerTerm'   => $str($obj['retainerTerm'] ?? ''),
+        'passthroughCosts' => $arr($obj['passthroughCosts'] ?? []),
     ];
     return ['success' => true, 'input' => $input];
 }
@@ -462,6 +618,16 @@ function documentNumberPrefix($type) {
             return 'CP';
         case 'invoice':
             return 'INV';
+        case 'nda':
+            return 'NDA';
+        case 'google_ads_report':
+        case 'google_ads':
+        case 'gar':
+            return 'GAR';
+        case 'meta_report':
+        case 'meta':
+        case 'mar':
+            return 'MAR';
         case 'sow':
         default:
             return 'SOW';
@@ -488,32 +654,31 @@ function nextDocumentNumber($documents, $type) {
  * (CP-0001 / SOW-0001) is global across the company so numbers never collide.
  */
 
-define('DOCS_FILE', DATA_DIR . '/documents.json');
-
 /** Read the shared documents store. Shape: ['documents' => [...]]. */
 function getDocsStore() {
-    if (!file_exists(DOCS_FILE)) {
-        // One-time migration: gather any documents that still live in user_*.json.
+    $store = dbGetBlob('documents', null);
+    if ($store === null) {
+        // One-time migration: gather any documents that still live in legacy user_*.json files, if any exist on disk.
         $store = migrateDocsFromUsers();
         saveDocsStore($store);
         return $store;
     }
-    $store = json_decode(file_get_contents(DOCS_FILE), true);
-    if (!is_array($store)) $store = [];
     if (!isset($store['documents']) || !is_array($store['documents'])) $store['documents'] = [];
     return $store;
 }
 
-/** Write the shared documents store with an exclusive lock (mirrors saveJobsStore). */
+/** Write the shared documents store (mirrors saveJobsStore), plus refresh the reporting projection. */
 function saveDocsStore($store) {
-    $fp = fopen(DOCS_FILE, 'c');
-    if (flock($fp, LOCK_EX)) {
-        ftruncate($fp, 0);
-        fwrite($fp, json_encode($store, JSON_PRETTY_PRINT));
-        fflush($fp);
-        flock($fp, LOCK_UN);
-    }
-    fclose($fp);
+    dbSaveBlob('documents', $store);
+    dbSyncReportingTable('documents', $store['documents'] ?? [], [
+        'doc_no' => 'doc_no',
+        'type' => 'type',
+        'client' => 'client',
+        'owner_id' => 'owner_id',
+        'linked_cost_proposal' => 'linked_cost_proposal',
+        'created_at' => fn($d) => $d['created_at'] ?? null,
+        'updated_at' => fn($d) => $d['updated_at'] ?? null,
+    ]);
 }
 
 /** Convenience: just the documents array from the shared store. */

@@ -61,6 +61,7 @@ function addUserNotification($userId, $notif) {
     usort($data['notifications'], fn($a, $b) => strtotime($b['created_at'] ?? '0') - strtotime($a['created_at'] ?? '0'));
     $data['notifications'] = array_slice($data['notifications'], 0, 50);
     saveUserData($userId, $data);
+    if (function_exists('pusherNotifyUser')) pusherNotifyUser($userId, $notif);
 }
 
 /** Notify every admin/super-admin (used when a new ticket arrives at the hub). */
@@ -122,7 +123,7 @@ $TICKET_STATUS_LABELS = [
 /** Map a stored code to its human label, falling back to a tidied version of the code. */
 function ticketLabel($map, $code) {
     if (isset($map[$code])) return $map[$code];
-    return $code === '' ? '—' : ucfirst(str_replace('_', ' ', $code));
+    return $code === '' ? '-' : ucfirst(str_replace('_', ' ', $code));
 }
 
 /** Build/validate a ticket's user-editable fields. Used by create and edit. */
@@ -455,6 +456,10 @@ function sendReplyToSpoke($ticket, $reply) {
         'secret' => $secret,
         'remote_id' => $remoteId,   // the spoke's own ticket id
         'reply' => [
+            // The hub's own reply id travels with the payload so the spoke can
+            // recognise a redelivery (timeout retry, double submit) and skip it
+            // instead of appending the same message twice.
+            'source_reply_id' => $reply['id'] ?? '',
             'author_name' => $reply['author_name'] ?? 'Support',
             'is_staff' => true,       // it's a reply from the vendor/support side
             'message' => $reply['message'] ?? '',
@@ -463,6 +468,88 @@ function sendReplyToSpoke($ticket, $reply) {
     ];
 
     $ch = curl_init($replyUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 10,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code >= 200 && $code < 300;
+}
+
+/**
+ * HUB side: push a status change back to the spoke the ticket came from, so
+ * clicking Resolved (or any status) on the hub's copy updates the client's
+ * own local ticket too — the mirror of sendReplyToSpoke(), same callback URL
+ * and secret. Best-effort; returns false quietly if the ticket isn't
+ * client-forwarded, has no callback URL, or the spoke is unreachable.
+ */
+function sendStatusToSpoke($ticket) {
+    if (($ticket['source'] ?? '') !== 'client') return false;   // not a forwarded ticket
+    $replyUrl = trim($ticket['reply_url'] ?? '');
+    $remoteId = trim($ticket['remote_id'] ?? '');
+    if ($replyUrl === '' || $remoteId === '') return false;
+
+    $admin = getAdmin();
+    $secret = trim($admin['ticket_ingest_secret'] ?? '');
+    if ($secret === '') return false;
+
+    // Reuse the reply callback URL, swapping its action the same way
+    // sendReplyToHub() does for the return leg.
+    $statusUrl = preg_replace('/action=ingest-reply/', 'action=ingest-status', $replyUrl);
+    if ($statusUrl === $replyUrl && strpos($replyUrl, 'action=') === false) {
+        $statusUrl = $replyUrl . (strpos($replyUrl, '?') === false ? '?' : '&') . 'action=ingest-status';
+    }
+
+    $payload = [
+        'secret' => $secret,
+        'remote_id' => $remoteId,   // the spoke's own ticket id
+        'status' => $ticket['status'] ?? 'open',
+    ];
+
+    $ch = curl_init($statusUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 10,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code >= 200 && $code < 300;
+}
+
+/**
+ * HUB side: push a deletion back to the spoke the ticket came from, so
+ * deleting the hub's copy of a client-forwarded ticket deletes their local
+ * copy too. Same callback URL/secret pattern as sendStatusToSpoke(). Called
+ * BEFORE the hub's own copy is removed from the store (the caller still has
+ * $ticket in hand at that point).
+ */
+function sendDeleteToSpoke($ticket) {
+    if (($ticket['source'] ?? '') !== 'client') return false;   // not a forwarded ticket
+    $replyUrl = trim($ticket['reply_url'] ?? '');
+    $remoteId = trim($ticket['remote_id'] ?? '');
+    if ($replyUrl === '' || $remoteId === '') return false;
+
+    $admin = getAdmin();
+    $secret = trim($admin['ticket_ingest_secret'] ?? '');
+    if ($secret === '') return false;
+
+    $deleteUrl = preg_replace('/action=ingest-reply/', 'action=ingest-delete', $replyUrl);
+    if ($deleteUrl === $replyUrl && strpos($replyUrl, 'action=') === false) {
+        $deleteUrl = $replyUrl . (strpos($replyUrl, '?') === false ? '?' : '&') . 'action=ingest-delete';
+    }
+
+    $payload = ['secret' => $secret, 'remote_id' => $remoteId];
+
+    $ch = curl_init($deleteUrl);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_POST => true,
@@ -487,22 +574,44 @@ function ingestReplyFromHub($localTicketId, $reply) {
     $message = trim($reply['message'] ?? '');
     if ($localTicketId === '' || $message === '') return false;
 
+    $sourceId = trim($reply['source_reply_id'] ?? '');
+    $createdAt = trim($reply['created_at'] ?? '');
+    $authorName = trim($reply['author_name'] ?? '') ?: 'Support';
+
     $store = getTicketsStore();
     $found = false;
     $ownerTicket = null; $newReply = null;
     foreach ($store['tickets'] as &$ticket) {
         if (($ticket['id'] ?? '') === $localTicketId) {
             if (!isset($ticket['replies']) || !is_array($ticket['replies'])) $ticket['replies'] = [];
+
+            // Idempotency: the hub retries on timeout and an admin can double-submit,
+            // so the SAME reply can arrive more than once. Match on the hub's reply id
+            // where available, else on content+timestamp+author for older payloads.
+            // Returning true (not false) keeps the hub from treating it as a failure
+            // and retrying forever.
+            foreach ($ticket['replies'] as $existing) {
+                $sameSource = $sourceId !== '' && ($existing['source_reply_id'] ?? '') === $sourceId;
+                $sameContent = $sourceId === ''
+                    && ($existing['message'] ?? '') === $message
+                    && ($existing['created_at'] ?? '') === $createdAt
+                    && ($existing['author_name'] ?? '') === $authorName;
+                if ($sameSource || $sameContent) return true; // already stored; ignore
+            }
+
             $newReply = [
                 'id' => 'rep_' . bin2hex(random_bytes(6)),
+                'source_reply_id' => $sourceId,
                 'author_id' => '',
-                'author_name' => trim($reply['author_name'] ?? '') ?: 'Support',
+                'author_name' => $authorName,
                 'is_staff' => true,
                 'message' => $message,
-                'created_at' => trim($reply['created_at'] ?? '') ?: date('c'),
+                'created_at' => $createdAt ?: date('c'),
             ];
             $ticket['replies'][] = $newReply;
             $ticket['updated_at'] = date('c');
+            // Mirror the hub's own auto-status rule locally: staff picked this up.
+            if (($ticket['status'] ?? 'open') === 'open') $ticket['status'] = 'in_progress';
             $ownerTicket = $ticket;
             $found = true;
             break;
@@ -513,5 +622,173 @@ function ingestReplyFromHub($localTicketId, $reply) {
     saveTicketsStore($store);
     // Light up the bell for the user who raised this ticket.
     notifyOwnerOfReply($ownerTicket, $newReply);
+    return true;
+}
+
+/**
+ * SPOKE side: store a status change pushed down from the hub (e.g. an admin
+ * clicked Resolved on the hub's copy of a client-forwarded ticket), so the
+ * client's own local ticket reflects it too. Mirror of ingestReplyFromHub(),
+ * same idempotent shape — applying the same status twice is harmless.
+ * Returns true on success, false if the ticket isn't found or the status is
+ * invalid.
+ */
+function ingestStatusFromHub($localTicketId, $status) {
+    global $VALID_TICKET_STATUS;
+    $localTicketId = trim($localTicketId);
+    if ($localTicketId === '' || !in_array($status, $VALID_TICKET_STATUS, true)) return false;
+
+    $store = getTicketsStore();
+    $found = false;
+    foreach ($store['tickets'] as &$ticket) {
+        if (($ticket['id'] ?? '') === $localTicketId) {
+            $ticket['status'] = $status;
+            $ticket['updated_at'] = date('c');
+            $found = true;
+            break;
+        }
+    }
+    unset($ticket);
+    if (!$found) return false;
+    saveTicketsStore($store);
+    return true;
+}
+
+/**
+ * SPOKE side: delete a ticket pushed down from the hub (an admin deleted the
+ * hub's copy of a client-forwarded ticket). Removing an already-removed
+ * ticket is treated as success (idempotent), same as the reply/status
+ * ingest functions, so a retried delivery is never reported as a failure.
+ */
+function ingestDeleteFromHub($localTicketId) {
+    $localTicketId = trim($localTicketId);
+    if ($localTicketId === '') return false;
+
+    $store = getTicketsStore();
+    $before = count($store['tickets']);
+    $store['tickets'] = array_values(array_filter($store['tickets'], fn($t) => ($t['id'] ?? '') !== $localTicketId));
+    if (count($store['tickets']) === $before) return true; // already gone; nothing to do
+    saveTicketsStore($store);
+    return true;
+}
+
+/**
+ * SPOKE side (Phase 3): push a client user's reply UP to the hub, so the vendor
+ * sees the client's follow-up in the same thread. The mirror image of
+ * sendReplyToSpoke(). Called after a non-admin replies on a spoke deployment.
+ *
+ * The hub finds its own copy of the ticket by matching the spoke's ticket id
+ * against the 'remote_id' it stored when the ticket was first forwarded, so no
+ * extra id bookkeeping is needed on the spoke.
+ *
+ * Best-effort; returns false quietly if this deployment isn't a spoke or the hub
+ * is unreachable. Never throws.
+ */
+function sendReplyToHub($ticket, $reply) {
+    $admin = getAdmin();
+    $hubUrl = trim($admin['ticket_hub_url'] ?? '');
+    $secret = trim($admin['ticket_hub_secret'] ?? '');
+    if ($hubUrl === '' || $secret === '') return false; // not a spoke
+    $localId = trim($ticket['id'] ?? '');
+    if ($localId === '') return false;
+
+    // The hub's ingest URL is configured as ...?action=ingest-ticket; the client
+    // reply endpoint lives alongside it, so swap the action rather than making
+    // the admin configure a second URL.
+    $replyUrl = preg_replace('/action=ingest-ticket/', 'action=ingest-client-reply', $hubUrl);
+    if ($replyUrl === $hubUrl && strpos($hubUrl, 'action=') === false) {
+        $replyUrl = $hubUrl . (strpos($hubUrl, '?') === false ? '?' : '&') . 'action=ingest-client-reply';
+    }
+
+    $payload = [
+        'secret' => $secret,
+        // The spoke's own ticket id: the hub stored this as remote_id.
+        'remote_id' => $localId,
+        'reply' => [
+            // Carry the spoke's reply id so the hub can ignore redeliveries.
+            'source_reply_id' => $reply['id'] ?? '',
+            'author_name' => $reply['author_name'] ?? 'Client',
+            'is_staff' => false,        // a reply from the client's side
+            'message' => $reply['message'] ?? '',
+            'created_at' => $reply['created_at'] ?? date('c'),
+        ],
+    ];
+
+    $ch = curl_init($replyUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 10,
+    ]);
+    curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return $code >= 200 && $code < 300;
+}
+
+/**
+ * HUB side (Phase 3): store a client user's reply pushed up from a spoke.
+ * Finds the hub's copy of the ticket by matching the spoke's ticket id against
+ * the stored 'remote_id', appends the reply as a NON-staff message, and lights
+ * up the bell for admins so the vendor sees the follow-up.
+ *
+ * Idempotent: the same reply can arrive more than once (spoke retry on timeout,
+ * double submit), so a reply already present is ignored and reported as success.
+ * Returns true on success, false if no matching ticket or the reply is empty.
+ */
+function ingestClientReply($remoteTicketId, $reply) {
+    if (!is_array($reply)) return false;
+    $message = trim($reply['message'] ?? '');
+    $remoteTicketId = trim($remoteTicketId);
+    if ($remoteTicketId === '' || $message === '') return false;
+
+    $sourceId = trim($reply['source_reply_id'] ?? '');
+    $createdAt = trim($reply['created_at'] ?? '');
+    $authorName = trim($reply['author_name'] ?? '') ?: 'Client';
+
+    $store = getTicketsStore();
+    $found = false;
+    $hubTicket = null; $newReply = null;
+    foreach ($store['tickets'] as &$ticket) {
+        // Only client-forwarded tickets have a remote_id to match on.
+        if (($ticket['source'] ?? '') !== 'client') continue;
+        if (trim($ticket['remote_id'] ?? '') !== $remoteTicketId) continue;
+
+        if (!isset($ticket['replies']) || !is_array($ticket['replies'])) $ticket['replies'] = [];
+        foreach ($ticket['replies'] as $existing) {
+            $sameSource = $sourceId !== '' && ($existing['source_reply_id'] ?? '') === $sourceId;
+            $sameContent = $sourceId === ''
+                && ($existing['message'] ?? '') === $message
+                && ($existing['created_at'] ?? '') === $createdAt
+                && ($existing['author_name'] ?? '') === $authorName;
+            if ($sameSource || $sameContent) return true; // already stored; ignore
+        }
+
+        $newReply = [
+            'id' => 'rep_' . bin2hex(random_bytes(6)),
+            'source_reply_id' => $sourceId,
+            'author_id' => '',
+            'author_name' => $authorName,
+            'is_staff' => false,
+            'message' => $message,
+            'created_at' => $createdAt ?: date('c'),
+        ];
+        $ticket['replies'][] = $newReply;
+        $ticket['updated_at'] = date('c');
+        // A client follow-up should pull a resolved/closed ticket back into view
+        // (mirrors the same-deployment reply path in api.php's 'ticket-reply').
+        if (in_array($ticket['status'] ?? '', ['resolved', 'closed'], true)) $ticket['status'] = 'open';
+        $hubTicket = $ticket;
+        $found = true;
+        break;
+    }
+    unset($ticket);
+    if (!$found) return false;
+    saveTicketsStore($store);
+    // Light up the bell for hub admins, and live-append for anyone with it open.
+    notifyAdminsOfTicket($hubTicket);
+    if (function_exists('pusherTriggerTicket')) pusherTriggerTicket($hubTicket['id'] ?? '', 'new-reply', $newReply);
     return true;
 }

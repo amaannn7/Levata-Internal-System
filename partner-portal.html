@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Partner Portal - Levata</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+    :root {
+        --navy: #0f172a; --navy-dark: #020617;
+        --accent: #6366f1; --accent-dark: #4f46e5; --accent-darker: #4338ca;
+        --accent-soft: #eef2ff; --accent-softer: #f5f6ff; --accent-line: #e0e7ff;
+        --ai-from: #6366f1; --ai-to: #8b5cf6;
+        --bg-main: #eef1f6; --bg-subtle: #f1f5f9; --bg-white: #ffffff;
+        --border: #dde3ec; --border-light: #eaeef4;
+        --text-primary: #0f172a; --text-secondary: #475569; --text-muted: #94a3b8;
+        --success: #059669; --success-bg: #ecfdf5;
+        --warning: #d97706; --warning-bg: #fffbeb;
+        --danger: #dc2626; --danger-bg: #fef2f2;
+        --radius-sm: 7px; --radius-md: 10px; --radius-lg: 14px; --radius-xl: 20px;
+        --shadow-xs: 0 1px 2px rgba(15,23,42,0.04);
+        --shadow-sm: 0 1px 2px rgba(15,23,42,0.04), 0 1px 3px rgba(15,23,42,0.05);
+        --shadow-md: 0 2px 6px rgba(15,23,42,0.05), 0 10px 28px rgba(15,23,42,0.06);
+        --shadow-lg: 0 8px 20px rgba(15,23,42,0.08), 0 24px 56px rgba(15,23,42,0.12);
+        --shadow-accent: 0 10px 30px rgba(99,102,241,0.28);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: var(--bg-main); color: var(--text-primary); line-height: 1.55;
+        -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; letter-spacing: -0.006em;
+    }
+    a { color: inherit; }
+    button { font-family: inherit; }
+    ::selection { background: var(--accent-line); color: var(--accent-darker); }
+
+    /* ============================= LOGIN SCREEN ============================= */
+    /* Matches the main app's auth screen exactly: single centered card over a
+       soft dotted-gradient background, not a split hero layout. */
+    .auth-screen {
+        min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; position: relative;
+        background:
+            radial-gradient(ellipse 900px 640px at 12% 8%, rgba(99,102,241,0.14), transparent 58%),
+            radial-gradient(ellipse 760px 520px at 92% 94%, rgba(139,92,246,0.11), transparent 60%),
+            radial-gradient(rgba(15,23,42,0.04) 1px, transparent 1px) 0 0 / 24px 24px,
+            #f8fafc;
+    }
+    .auth-card {
+        background: rgba(255,255,255,0.86); backdrop-filter: saturate(180%) blur(12px); -webkit-backdrop-filter: saturate(180%) blur(12px);
+        border: 1px solid rgba(255,255,255,0.7); border-radius: var(--radius-xl); padding: 44px 36px 36px;
+        width: 100%; max-width: 440px; box-shadow: var(--shadow-lg);
+    }
+    .auth-logo { text-align: center; margin: 0 0 26px; }
+    .auth-logo img { height: 46px; width: auto; max-width: 90%; object-fit: contain; image-rendering: -webkit-optimize-contrast; }
+    .auth-title { text-align: center; font-size: 23px; font-weight: 700; letter-spacing: -0.03em; margin-bottom: 6px; }
+    .auth-subtitle { text-align: center; color: var(--text-secondary); margin-bottom: 30px; font-size: 14px; }
+
+    .form-group { margin-bottom: 16px; }
+    .form-label { display: block; margin-bottom: 7px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); letter-spacing: -0.01em; }
+    .form-input {
+        width: 100%; padding: 10px 13px; background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-md);
+        font-size: 14px; font-family: inherit; color: var(--text-primary); transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+    }
+    .form-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 15px; border-radius: var(--radius-md); font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s, box-shadow 0.15s, transform 0.08s, border-color 0.15s; border: none; font-family: inherit; white-space: nowrap; text-decoration: none; line-height: 1.2; letter-spacing: -0.01em; }
+    .btn-lg { padding: 13px 20px; font-size: 15px; width: 100%; border-radius: var(--radius-lg); }
+    .btn-primary { background: var(--accent); color: #fff; box-shadow: var(--shadow-sm); }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-dark); }
+    .btn-primary:active:not(:disabled) { transform: translateY(1px); }
+    .btn:disabled { opacity: 0.65; cursor: default; }
+    .btn-secondary { background: var(--bg-white); color: var(--text-secondary); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--bg-subtle); color: var(--text-primary); }
+
+    .spinner { width: 15px; height: 15px; border: 2px solid rgba(255,255,255,0.4); border-top-color: white; border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .login-error {
+        background: var(--danger-bg); color: var(--danger); padding: 11px 14px; border-radius: var(--radius-md);
+        font-size: 13px; font-weight: 600; margin-bottom: 18px; display: none; align-items: center; gap: 8px;
+    }
+    .login-error svg { width: 15px; height: 15px; flex-shrink: 0; }
+    .login-footnote { text-align: center; margin-top: 14px; font-size: 12px; color: var(--text-muted); }
+
+    /* ============================= DASHBOARD ============================= */
+    #app-view { display: none; min-height: 100vh; }
+    .portal-header {
+        background: var(--bg-white); border-bottom: 1px solid var(--border);
+        padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+        position: sticky; top: 0; z-index: 10;
+    }
+    .portal-header .brand-mark { display: flex; align-items: center; gap: 9px; font-weight: 800; font-size: 15.5px; }
+    .portal-header .brand-mark img { height: 22px; width: auto; }
+    .portal-header .brand-mark .divider { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+    .portal-header .brand-mark .partner-label { color: var(--text-secondary); font-weight: 600; font-size: 13.5px; }
+
+    .header-right { display: flex; align-items: center; gap: 14px; }
+    .partner-avatar {
+        width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, var(--ai-from), var(--ai-to));
+        color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0;
+    }
+    .signout-btn { display: flex; align-items: center; gap: 6px; }
+    .signout-btn svg { width: 14px; height: 14px; }
+
+    .portal-content { max-width: 1080px; margin: 0 auto; padding: 32px 24px 60px; }
+    .page-heading { margin-bottom: 24px; }
+    .page-heading h1 { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 4px; }
+    .page-heading p { color: var(--text-secondary); font-size: 13.5px; }
+
+    .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 28px; }
+    .stat-card {
+        background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-lg);
+        padding: 18px 20px; box-shadow: var(--shadow-xs); transition: box-shadow 0.15s, border-color 0.15s;
+    }
+    .stat-card:hover { box-shadow: var(--shadow-md); }
+    .stat-card.highlight {
+        background: linear-gradient(140deg, var(--accent) 0%, var(--accent-darker) 60%, var(--navy) 100%);
+        border-color: transparent; box-shadow: var(--shadow-accent); color: white;
+    }
+    .stat-card .stat-label { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 6px; }
+    .stat-card.highlight .stat-label { color: rgba(255,255,255,0.75); }
+    .stat-card .stat-value { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .stat-card .stat-value .stat-extra { display: block; font-size: 13px; font-weight: 600; opacity: 0.72; margin-top: 2px; }
+    .stat-card .stat-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 5px; }
+    .stat-card.highlight .stat-sub { color: rgba(255,255,255,0.65); }
+
+    .section-card { background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); overflow: hidden; }
+    .section-head { padding: 18px 22px; border-bottom: 1px solid var(--border-light); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .section-head h2 { font-size: 15px; font-weight: 700; }
+    .filter-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+    .filter-pill {
+        padding: 6px 13px; border-radius: 999px; font-size: 12px; font-weight: 700; cursor: pointer;
+        border: 1px solid var(--border); background: var(--bg-white); color: var(--text-secondary); transition: all 0.15s; white-space: nowrap;
+    }
+    .filter-pill:hover { border-color: var(--accent); color: var(--accent-dark); }
+    .filter-pill.active { background: var(--accent); border-color: var(--accent); color: white; }
+
+    /* Deal cards, richer than a plain table row but still scan like one on desktop */
+    .deals-list { display: flex; flex-direction: column; }
+    .deal-row {
+        display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr; gap: 12px; align-items: center;
+        padding: 16px 22px; border-bottom: 1px solid var(--border-light); transition: background 0.12s;
+    }
+    .deal-row:last-child { border-bottom: none; }
+    .deal-row:hover { background: var(--accent-softer); }
+    .deal-row.deal-row-head {
+        font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);
+        background: var(--bg-subtle); padding: 11px 22px;
+    }
+    .deal-row.deal-row-head:hover { background: var(--bg-subtle); }
+    .deal-company { font-weight: 700; font-size: 13.5px; }
+    .deal-meta-cell { font-size: 13px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+    .deal-payout { font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; }
+
+    .stage-pill { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 700; background: var(--accent-soft); color: var(--accent-dark); white-space: nowrap; }
+    .stage-pill.stage-won { background: var(--success-bg); color: var(--success); }
+    .stage-pill.stage-lost { background: var(--danger-bg); color: var(--danger); }
+    .stage-pill.stage-sow, .stage-pill.stage-cost_proposal { background: var(--warning-bg); color: var(--warning); }
+
+    /* Mobile: cards stack instead of a grid row */
+    @media (max-width: 760px) {
+        .deal-row.deal-row-head { display: none; }
+        .deal-row { grid-template-columns: 1fr; gap: 6px; padding: 16px 20px; }
+        .deal-row .deal-meta-cell::before { content: attr(data-label) ": "; color: var(--text-muted); font-weight: 600; }
+        .deal-payout { font-size: 16px; margin-top: 4px; }
+    }
+
+    .empty-state { text-align: center; padding: 56px 24px; color: var(--text-muted); }
+    .empty-state .icon { width: 44px; height: 44px; margin: 0 auto 14px; color: var(--border); }
+    .empty-state h3 { font-size: 15px; font-weight: 700; color: var(--text-secondary); margin-bottom: 6px; }
+    .empty-state p { font-size: 13px; max-width: 360px; margin: 0 auto; line-height: 1.6; }
+
+    .skeleton-row { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr; gap: 12px; align-items: center; padding: 16px 22px; border-bottom: 1px solid var(--border-light); }
+    .skeleton-bar { height: 13px; border-radius: 4px; background: linear-gradient(90deg, var(--border-light) 25%, var(--bg-subtle) 50%, var(--border-light) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+    .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px; }
+    .toast { background: var(--navy); color: white; padding: 11px 16px; border-radius: var(--radius-md); font-size: 13px; font-weight: 600; box-shadow: var(--shadow-lg); animation: toast-in 0.2s ease; }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+
+<!-- ============================= LOGIN SCREEN ============================= -->
+<div class="auth-screen" id="login-view">
+    <div class="auth-card">
+        <div class="auth-logo"><img src="levatalogo.png" alt="Levata"></div>
+        <h2 class="auth-title">Partner Portal</h2>
+        <p class="auth-subtitle">Sign in to check your referred deals</p>
+
+        <div class="login-error" id="login-error">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span id="login-error-text"></span>
+        </div>
+
+        <form id="login-form">
+            <div class="form-group">
+                <label class="form-label">Email</label>
+                <input type="email" class="form-input" id="login-email" required autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Password</label>
+                <input type="password" class="form-input" id="login-password" required autocomplete="current-password">
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg" id="login-btn">Sign In</button>
+        </form>
+        <p class="login-footnote">Don't have login details? Ask your contact at Levata to send you an invite.</p>
+    </div>
+</div>
+
+<!-- ============================= DASHBOARD ============================= -->
+<div id="app-view">
+    <div class="portal-header">
+        <div class="brand-mark">
+            <img src="levatalogo.png" alt="Levata">
+            <span class="divider"></span>
+            <span class="partner-label">Partner Portal</span>
+        </div>
+        <div class="header-right">
+            <div class="partner-avatar" id="partner-avatar">?</div>
+            <button class="btn btn-secondary signout-btn" onclick="logout()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                <span>Sign out</span>
+            </button>
+        </div>
+    </div>
+
+    <div class="portal-content">
+        <div class="page-heading">
+            <h1 id="partner-name-heading">Welcome back</h1>
+            <p>Every deal you've referred, its current stage, and what's owed to you.</p>
+        </div>
+
+        <div class="stat-row" id="stat-row">
+            <div class="stat-card"><div class="stat-label">Loading</div><div class="stat-value skeleton-bar" style="width:70%;height:22px;"></div></div>
+        </div>
+
+        <div class="section-card">
+            <div class="section-head">
+                <h2>Your referred deals</h2>
+                <div class="filter-pills" id="filter-pills">
+                    <button type="button" class="filter-pill active" data-filter="all">All</button>
+                    <button type="button" class="filter-pill" data-filter="open">Open</button>
+                    <button type="button" class="filter-pill" data-filter="won">Won</button>
+                    <button type="button" class="filter-pill" data-filter="lost">Lost</button>
+                </div>
+            </div>
+            <div id="deals-list">
+                <div class="skeleton-row"><div class="skeleton-bar" style="width:80%"></div><div class="skeleton-bar" style="width:60%"></div><div class="skeleton-bar" style="width:50%"></div><div class="skeleton-bar" style="width:40%"></div><div class="skeleton-bar" style="width:50%"></div></div>
+                <div class="skeleton-row"><div class="skeleton-bar" style="width:70%"></div><div class="skeleton-bar" style="width:55%"></div><div class="skeleton-bar" style="width:45%"></div><div class="skeleton-bar" style="width:35%"></div><div class="skeleton-bar" style="width:45%"></div></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+const API = 'api.php';
+let ALL_DEALS = [];
+let CURRENT_FILTER = 'all';
+
+async function api(action, method, body) {
+    const opts = { method: method || 'GET', headers: {} };
+    const token = localStorage.getItem('partner_token');
+    if (token) opts.headers['X-Partner-Token'] = token;
+    if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    try {
+        const r = await fetch(API + '?action=' + action, opts);
+        return await r.json();
+    } catch (e) {
+        return { success: false, error: 'Could not reach the server. Check your connection and try again.' };
+    }
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+function money(n, cur) { const v = Number(n) || 0; return (cur || '') + ' ' + v.toLocaleString(undefined, { maximumFractionDigits: 0 }); }
+function initials(name) {
+    const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '?';
+    return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+function toast(msg) {
+    const c = document.getElementById('toast-container');
+    const el = document.createElement('div');
+    el.className = 'toast'; el.textContent = msg;
+    c.appendChild(el);
+    setTimeout(() => el.remove(), 3200);
+}
+const STAGE_LABELS = { lead: 'Lead', qualified: 'Qualified', demo: 'Demo/Discussion', cost_proposal: 'Cost Proposal', sow: 'SOW', won: 'Won', lost: 'Lost' };
+
+// ---- Login ----
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('login-btn');
+    const errBox = document.getElementById('login-error');
+    errBox.style.display = 'none';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+    const r = await api('partner-login', 'POST', {
+        email: document.getElementById('login-email').value,
+        password: document.getElementById('login-password').value,
+    });
+    btn.disabled = false;
+    btn.textContent = 'Sign In';
+    if (r.success) {
+        localStorage.setItem('partner_token', r.token);
+        showApp(r.partner);
+    } else {
+        document.getElementById('login-error-text').textContent = r.error || 'Sign in failed. Check your email and password.';
+        errBox.style.display = 'flex';
+    }
+});
+
+function logout() {
+    localStorage.removeItem('partner_token');
+    document.getElementById('app-view').style.display = 'none';
+    document.getElementById('login-view').style.display = 'flex';
+    document.getElementById('login-form').reset();
+    document.getElementById('login-error').style.display = 'none';
+}
+
+function showApp(partner) {
+    document.getElementById('partner-name-heading').textContent = 'Welcome back, ' + (partner.name || 'Partner');
+    document.getElementById('partner-avatar').textContent = initials(partner.name);
+    document.getElementById('login-view').style.display = 'none';
+    document.getElementById('app-view').style.display = 'block';
+    loadDeals();
+}
+
+// ---- Filters ----
+document.getElementById('filter-pills').addEventListener('click', (e) => {
+    const btn = e.target.closest('.filter-pill');
+    if (!btn) return;
+    CURRENT_FILTER = btn.dataset.filter;
+    [...document.querySelectorAll('.filter-pill')].forEach(p => p.classList.toggle('active', p === btn));
+    renderDeals();
+});
+
+function filteredDeals() {
+    if (CURRENT_FILTER === 'all') return ALL_DEALS;
+    if (CURRENT_FILTER === 'open') return ALL_DEALS.filter(d => d.stage !== 'won' && d.stage !== 'lost');
+    return ALL_DEALS.filter(d => d.stage === CURRENT_FILTER);
+}
+
+// ---- Data + rendering ----
+async function loadDeals() {
+    const r = await api('partner-portal');
+    if (!r.success) { toast(r.error || 'Session expired. Please sign in again.'); logout(); return; }
+    ALL_DEALS = r.deals || [];
+    renderStats(r.total_payout || {});
+    renderDeals();
+}
+
+function renderStats(totals) {
+    const row = document.getElementById('stat-row');
+    const open = ALL_DEALS.filter(d => d.stage !== 'won' && d.stage !== 'lost').length;
+    const won = ALL_DEALS.filter(d => d.stage === 'won').length;
+    const totalRows = Object.entries(totals).filter(([, v]) => Math.abs(v) > 0.005);
+
+    const owedHtml = totalRows.length
+        ? totalRows.map(([cur, amt], i) => i === 0
+            ? money(amt, cur)
+            : `<span class="stat-extra">${money(amt, cur)}</span>`).join('')
+        : '-';
+
+    row.innerHTML = `
+        <div class="stat-card highlight">
+            <div class="stat-label">Commission owed</div>
+            <div class="stat-value">${owedHtml}</div>
+            <div class="stat-sub">Across all open and won deals</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Total referred</div>
+            <div class="stat-value">${ALL_DEALS.length}</div>
+            <div class="stat-sub">Deals sent to Levata</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">In progress</div>
+            <div class="stat-value">${open}</div>
+            <div class="stat-sub">Still moving through the pipeline</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Won</div>
+            <div class="stat-value">${won}</div>
+            <div class="stat-sub">Closed and confirmed</div>
+        </div>
+    `;
+}
+
+function renderDeals() {
+    const list = document.getElementById('deals-list');
+    const deals = filteredDeals();
+
+    if (!ALL_DEALS.length) {
+        list.innerHTML = `<div class="empty-state">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            <h3>No deals yet</h3>
+            <p>Once you refer someone and it's logged as a deal at Levata, it will show up here with its stage and commission.</p>
+        </div>`;
+        return;
+    }
+    if (!deals.length) {
+        list.innerHTML = `<div class="empty-state">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <h3>No deals match this filter</h3>
+            <p>Try a different filter above.</p>
+        </div>`;
+        return;
+    }
+
+    const rows = deals.map(d => {
+        const stage = d.stage || 'lead';
+        const rate = d.rate_type === 'fixed' ? money(d.rate_value, d.currency) : `${d.rate_value}%`;
+        return `<div class="deal-row">
+            <div class="deal-company">${esc(d.company || 'Untitled deal')}</div>
+            <div class="deal-meta-cell" data-label="Stage"><span class="stage-pill stage-${esc(stage)}">${esc(STAGE_LABELS[stage] || stage)}</span></div>
+            <div class="deal-meta-cell" data-label="Deal value">${money(d.amount, d.currency)}</div>
+            <div class="deal-meta-cell" data-label="Rate">${esc(rate)}</div>
+            <div class="deal-payout" data-label="Payout">${money(d.payout, d.currency)}</div>
+        </div>`;
+    }).join('');
+
+    list.innerHTML = `<div class="deal-row deal-row-head">
+        <div>Company</div><div>Stage</div><div>Deal value</div><div>Rate</div><div>Payout</div>
+    </div>` + rows;
+}
+
+// ---- Boot ----
+(async function init() {
+    const token = localStorage.getItem('partner_token');
+    if (!token) return;
+    const r = await api('partner-me');
+    if (r.success) showApp(r.partner);
+    else localStorage.removeItem('partner_token');
+})();
+</script>
+</body>
+</html>

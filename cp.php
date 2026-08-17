@@ -33,7 +33,8 @@ Output rules:
 - Project Objectives and Levata Approach are bulleted lists. Approach bullets use the form "- **Discovery:** description".
 - Timeline: include ONLY if the service type has a schedule. Web/software use a Phase|Activity table whose Phase column is the actual TIME PERIOD in weeks or days (e.g. "Weeks 1 to 2", "Weeks 3 to 5", "Week 6"), NEVER generic stage names like "Phase 1". Branding usually has NO timeline section.
 - Type-specific tables when relevant: Photography includes an "Estimated Shot Allocation" table (Content Area | Shots) and a Deliverables list; Video includes a Deliverables table (Deliverable | Duration | Primary Use); Booking engine includes Deliverables and Exclusions sections.
-- Investment: a "Total Investment" line showing the amount (e.g. "LKR 450,000", or "LKR XXX,000" if no amount given), then a Payment Schedule (default 50% at kickoff, 50% on deployment/delivery; branding may be 50% before, 50% within 7 days of completion).
+- Investment for a ONE-OFF engagement: a "Total Investment" line showing the amount (e.g. "LKR 450,000", or "LKR XXX,000" if no amount given), then a Payment Schedule (default 50% at kickoff, 50% on deployment/delivery; branding may be 50% before, 50% within 7 days of completion).
+- Investment for a RETAINER engagement: do NOT use a Total Investment or 50/50 Payment Schedule at all. The FEES SUMMARY given in the proposal details is authoritative. Instead write a short intro line stating the pricing structure in plain words, then a table with columns "Component | Basis | Amount": one row for the one-time setup/onboarding fee (omit this row if none was given), one row for the recurring retainer (Basis states the billing basis, e.g. "per licence / month"), and one row per third-party pass-through cost if any were given (Basis says "billed separately"; these are not part of the Levata fee). After the table, state the minimum term if one was given. Never invent a 50/50 split for a retainer.
 - Exclusions: ALWAYS include an Exclusions section for web, software, app, booking-engine, photography and video proposals (branding may omit it). List what is NOT covered and would be quoted separately. For a website always include, where applicable: domain registration and hosting fees (billed separately to the client); photography and visual content production (separate scope); payment gateway and booking engine integrations (separate proposal); premium or paid third-party plugins. Adapt the list to the actual service type and brief; never invent exclusions that contradict the stated scope.
 - Keep all tables as valid GitHub-flavoured Markdown tables.
 PROMPT;
@@ -82,13 +83,7 @@ Estimated duration: {{timeline}}.
 ## Investment
 {{investmentIntro}}
 
-| | |
-| --- | --- |
-| **Total Investment** | {{investment}} |
-
-**Payment Schedule**
-- 50% due at project kickoff
-- 50% due upon deployment/delivery
+Write the pricing table and payment terms per the Investment output rule for this engagement's type (one-off Total Investment + 50/50 Payment Schedule, OR retainer Component|Basis|Amount table + minimum term). Use the FEES SUMMARY in the proposal details as the authoritative figures.
 
 ## Exclusions
 List what is not included and would be quoted separately. For a website include, where applicable: domain registration and hosting fees (billed separately to the Client); photography and visual content production (separate scope); payment gateway and booking engine integrations (separate proposal); premium or paid third-party plugins. Adapt to the actual service type. (Branding proposals may omit this section.)
@@ -110,6 +105,25 @@ This proposal is valid until {{validUntil}}. Payments are made by bank transfer 
 TPL;
 }
 
+/**
+ * A short one-line investment summary for display purposes, valid for either a
+ * one-off figure or a retainer (setup fee + recurring billing).
+ */
+function cpInvestmentSummary($input) {
+    if (($input['engagementType'] ?? 'one_off') === 'retainer') {
+        $parts = [];
+        $setup = trim($input['setupFee'] ?? '');
+        if ($setup !== '') $parts[] = $setup . ' setup';
+        $retainer = trim($input['retainerAmount'] ?? '');
+        if ($retainer !== '') {
+            $basis = trim($input['retainerBasis'] ?? '');
+            $parts[] = $retainer . ($basis !== '' ? ' (' . $basis . ')' : '') . ' recurring';
+        }
+        return $parts ? implode(' + ', $parts) : 'LKR XXX,000';
+    }
+    return ($input['investment'] ?? '') ?: 'LKR XXX,000';
+}
+
 /** Fill the cost proposal template placeholders from the form input. */
 function cpFillTemplate($template, $input) {
     $loc = !empty($input['location']) ? ', ' . $input['location'] : '';
@@ -128,7 +142,7 @@ function cpFillTemplate($template, $input) {
         'deliverables'    => sowBulletList($input['deliverables'] ?? []),
         'timeline'        => ($input['timeline'] ?? '') ?: 'to be confirmed at kickoff',
         'investmentIntro' => ($input['investmentIntro'] ?? '') ?: 'This cost covers the full scope as outlined.',
-        'investment'      => ($input['investment'] ?? '') ?: 'LKR XXX,000',
+        'investment'      => cpInvestmentSummary($input),
         'validUntil'      => $validUntil,
         'date'            => date('jS F Y'),
         'year'            => $year,
@@ -141,6 +155,17 @@ function cpFillTemplate($template, $input) {
 /** Build the cost-proposal user prompt: filled template + raw details. */
 function buildCostProposalUserPrompt($template, $input) {
     $filled = cpFillTemplate($template, $input);
+    $engagementType = ($input['engagementType'] ?? 'one_off') === 'retainer' ? 'retainer' : 'one_off';
+    $feesSummary = "Engagement type: " . ($engagementType === 'retainer' ? 'RETAINER (recurring billing, no 50/50 split)' : 'ONE-OFF (single total fee, 50/50 payment schedule)') . "\n";
+    if ($engagementType === 'retainer') {
+        $feesSummary .= "Setup / onboarding fee: " . (($input['setupFee'] ?? '') ?: 'none') . "\n"
+            . "Recurring retainer amount: " . ($input['retainerAmount'] ?? '') . "\n"
+            . "Billing basis: " . (($input['retainerBasis'] ?? '') ?: 'not specified') . "\n"
+            . "Minimum term: " . (($input['retainerTerm'] ?? '') ?: 'not specified') . "\n"
+            . "Third-party pass-through costs: " . (implode('; ', $input['passthroughCosts'] ?? []) ?: 'none') . "\n";
+    } else {
+        $feesSummary .= "Total investment: " . ($input['investment'] ?? '') . "\n";
+    }
     $details = "PROPOSAL DETAILS:\n"
         . "Service type: " . ($input['serviceType'] ?? '') . "\n"
         . "Client: " . ($input['clientName'] ?? '') . "\n"
@@ -149,7 +174,7 @@ function buildCostProposalUserPrompt($template, $input) {
         . "Scope details: " . implode('; ', $input['scopeDetails'] ?? []) . "\n"
         . "Deliverables: " . implode('; ', $input['deliverables'] ?? []) . "\n"
         . "Timeline: " . ($input['timeline'] ?? '') . "\n"
-        . "Investment: " . ($input['investment'] ?? '') . "\n";
+        . "FEES SUMMARY (authoritative for the Investment section, do not deviate from these figures):\n" . $feesSummary;
     return "Fill in and complete the following COST PROPOSAL template using the details. Adapt the optional sections to the service type. Follow every output rule.\n\n"
         . "=== TEMPLATE ===\n" . $filled . "\n\n" . $details;
 }
@@ -175,13 +200,24 @@ function extractCostProposalInput($provider, $apiKey, $transcript) {
 You extract structured project details from a client meeting transcript or notes so they can pre-fill a Cost Proposal form.
 
 Return ONLY a single JSON object (no prose, no code fences) with EXACTLY these keys:
-{ "serviceType": string, "clientName": string, "location": string, "projectId": string, "contactPerson": string, "overview": string, "scopeDetails": string[], "deliverables": string[], "timeline": string, "investment": string }
+{ "serviceType": string, "clientName": string, "location": string, "projectId": string, "contactPerson": string, "overview": string, "scopeDetails": string[], "deliverables": string[], "timeline": string, "engagementType": string, "investment": string, "setupFee": string, "retainerAmount": string, "retainerBasis": string, "retainerTerm": string, "passthroughCosts": string[] }
 
 Rules:
 - Extract only what the transcript supports. If something is not mentioned, use an empty string "" (or [] for list fields). NEVER invent a client name, fee, date, contact, or commitment not in the notes.
 - serviceType: a short label (e.g. "Web Development", "Branding", "Video Production").
+- projectId: a short internal reference CODE only (e.g. "PID: 097"), never a title or description. If the transcript does not state an explicit ID/reference code, leave this "" — do NOT invent one and do NOT reuse the service type or meeting title here.
 - overview: 1 to 3 sentences on what the work covers. This is the only field you may lightly paraphrase.
 - scopeDetails / deliverables: one short string each.
+- engagementType: "retainer" if the pricing discussed is a recurring/ongoing arrangement (a monthly or periodic fee, a subscription, a per-licence or per-seat charge, an ongoing service relationship), otherwise "one_off" for a single fixed-scope project with one total fee. Default to "one_off" if unclear.
+- If engagementType is "one_off": use ONLY the investment field (see its rule below) and leave setupFee, retainerAmount, retainerBasis, retainerTerm, passthroughCosts all "" / [].
+- If engagementType is "retainer": leave investment "" and instead use:
+  - setupFee: a one-time setup, onboarding, customization, or implementation fee, as a currency amount, if one was explicitly discussed. Otherwise "".
+  - retainerAmount: the recurring fee amount, as a currency amount (e.g. "LKR 75,000"). Otherwise "".
+  - retainerBasis: how the recurring fee is charged, in a few words (e.g. "per licence, per month", "flat, monthly", "per seat"). Otherwise "".
+  - retainerTerm: any stated minimum commitment period (e.g. "3 months minimum, then month-to-month"). Otherwise "".
+  - passthroughCosts: separate third-party costs the client pays that are NOT part of Levata's fee (e.g. a named database/subscription/tool cost mentioned as billed separately, with its billing terms if stated). One short string per cost. Otherwise [].
+- investment (one-off only): the total project fee ONLY, as a currency amount (e.g. "LKR 450,000"). Use this field only if the transcript states a specific figure that both sides clearly treat as the agreed or proposed total price for this project. Do NOT use a budget range, a client's stated ceiling ("we can spend up to X"), a competitor's quote, a cost for one deliverable within a larger scope, or any other number that is not the total fee being proposed here — leave "" in all of those cases rather than guess.
+- Never invent a specific number for any fee field. If a fee was discussed only vaguely (e.g. "pricing to be sent later", "proposal to follow"), leave the relevant field(s) "".
 - Do NOT use em dashes. Output must be valid JSON. Use straight double quotes. No trailing commas.
 P;
     $user = "Extract the Cost Proposal form fields from the meeting notes below. Return only the JSON object.\n\n--- MEETING NOTES ---\n$transcript\n--- END ---";
@@ -209,7 +245,13 @@ P;
         'scopeDetails' => $arr($obj['scopeDetails'] ?? []),
         'deliverables' => $arr($obj['deliverables'] ?? []),
         'timeline'     => $str($obj['timeline'] ?? ''),
+        'engagementType' => ($obj['engagementType'] ?? '') === 'retainer' ? 'retainer' : 'one_off',
         'investment'   => $str($obj['investment'] ?? ''),
+        'setupFee'     => $str($obj['setupFee'] ?? ''),
+        'retainerAmount' => $str($obj['retainerAmount'] ?? ''),
+        'retainerBasis'  => $str($obj['retainerBasis'] ?? ''),
+        'retainerTerm'   => $str($obj['retainerTerm'] ?? ''),
+        'passthroughCosts' => $arr($obj['passthroughCosts'] ?? []),
     ];
     return ['success' => true, 'input' => $input];
 }

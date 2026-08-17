@@ -26,3 +26,22 @@ data/documents.json
 data/jobs.json
 data/*.json
 # Keep example/seed files if you add any later (none yet)
+
+# PostgreSQL credentials — local dev password AND production credentials both
+# live in this file. Deploy the real one to cPanel via File Manager, never git.
+# See db.example.php for the template that DOES get committed.
+db.php
+db.production.php
+
+# Deployment zip (build artifact for manual cPanel upload) — regenerate, don't commit.
+levata-deploy.zip
+
+# One-time user migration script — contains real password hashes + device tokens.
+# Run once on the live server, then delete it there too. Never commit.
+migrate-users.php
+
+# Database dumps — contain real password hashes, API keys, device tokens, lead
+# data. Used for local-dev -> production migration only. Delete after import,
+# never commit, never leave sitting on a server after use.
+*.sql
+levata_local_dump.sql

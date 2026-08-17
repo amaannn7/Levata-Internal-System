@@ -30,7 +30,7 @@ On a fresh install the seeded admin is:
 
 **Change this password immediately after first login** — authentication is enforced (token-based via the `X-User-Token` header).
 
-Then go to **Settings** and add your AI keys (Groq / Gemini / Anthropic) and Fireflies key. These are stored in `data/admin.json` on the server (never in the repo).
+Then go to **Settings** and add your AI keys (Groq / Gemini / Anthropic) and ClickUp API token/workspace/list IDs. These are stored in `data/admin.json` on the server (never in the repo).
 
 ## AI providers
 
@@ -52,7 +52,7 @@ php -S localhost:8000
 /
 ├── index.html              # Single-page app (HTML + CSS + JS)
 ├── api.php                 # Backend API (routes; require_once's the modules)
-├── sow.php                 # SOW generation + shared document store + Fireflies + doc numbering
+├── sow.php                 # SOW generation + shared document store + ClickUp + doc numbering
 ├── cp.php                  # Cost Proposal generation
 ├── jobs.php                # Job Registry (shared store)
 ├── levatalogo.png          # Horizontal logo (sidebar, mobile, PDFs)

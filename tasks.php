@@ -13,30 +13,25 @@
  * without needing a name→user lookup.
  */
 
-define('TASKS_FILE', DATA_DIR . '/tasks.json');
-
 /** Read the shared task store. Shape: ['tasks' => [...], 'seq' => n]. */
 function getTasksStore() {
-    if (!file_exists(TASKS_FILE)) {
-        return ['tasks' => [], 'seq' => 0];
-    }
-    $store = json_decode(file_get_contents(TASKS_FILE), true);
-    if (!is_array($store)) $store = [];
+    $store = dbGetBlob('tasks', null);
+    if ($store === null) return ['tasks' => [], 'seq' => 0];
     if (!isset($store['tasks']) || !is_array($store['tasks'])) $store['tasks'] = [];
     $store['seq'] = (int) ($store['seq'] ?? 0);
     return $store;
 }
 
-/** Write the shared task store with an exclusive lock. */
+/** Write the shared task store, plus refresh the reporting projection. */
 function saveTasksStore($store) {
-    $fp = fopen(TASKS_FILE, 'c');
-    if (flock($fp, LOCK_EX)) {
-        ftruncate($fp, 0);
-        fwrite($fp, json_encode($store, JSON_PRETTY_PRINT));
-        fflush($fp);
-        flock($fp, LOCK_UN);
-    }
-    fclose($fp);
+    dbSaveBlob('tasks', $store);
+    dbSyncReportingTable('tasks', $store['tasks'] ?? [], [
+        'status' => fn($t) => $t['status'] ?? 'open',
+        'assignee' => fn($t) => $t['assignee'] ?? '',
+        'due_date' => fn($t) => $t['due_date'] ?? '',
+        'created_at' => fn($t) => $t['created_at'] ?? null,
+        'updated_at' => fn($t) => $t['updated_at'] ?? null,
+    ]);
 }
 
 /** Generate the next task ID: task_0001, task_0002, … */
@@ -46,7 +41,7 @@ function nextTaskId($store) {
 }
 
 /**
- * Extract tasks from a Fireflies meeting transcript via LLM.
+ * Extract tasks from a ClickUp meeting doc transcript via LLM.
  * Returns a plain array of task objects (not saved — caller reviews first).
  */
 function extractTasksFromMinutes($provider, $apiKey, $transcript, $client = '') {
