@@ -133,18 +133,51 @@ function dealsForPartner($partnerId) {
 }
 
 /**
- * The commission owed on a deal, computed live from its CURRENT deal value —
- * never stored as a separate number, so it can't drift out of sync when the
- * deal amount changes.
+ * The commission owed on a deal, computed live from its CURRENT deal
+ * value(s) — never stored as a separate number, so it can't drift out of
+ * sync when a deal value changes.
  * Returns 0 if the deal has no partner attached.
+ *
+ * Always the SUM of each service's own payout (that service's own
+ * estimated_deal_value requisition against its own rate — which falls back
+ * to the deal-level partner_rate_type/value when that service has no entry
+ * in partner_rates_by_service). Falls back to the old flat dealAmount calc
+ * ONLY when the deal has no services at all to sum, so the figure is never
+ * silently 0 just because deal_amount hasn't been separately rolled up —
+ * that used to happen whenever partner_rates_by_service was still empty
+ * (i.e. before any service's rate had ever been overridden), which is
+ * exactly the common case right after a partner is first attached.
  */
 function partnerPayout($lead) {
     if (empty($lead['partner_id'])) return 0.0;
-    $amount = dealMoney($lead['deal_amount'] ?? 0);
-    $rateType = $lead['partner_rate_type'] ?? 'percentage';
-    $rateValue = dealMoney($lead['partner_rate_value'] ?? 0);
-    if ($rateType === 'fixed') return $rateValue;
-    return round($amount * $rateValue / 100, 2);
+    $services = array_unique(array_merge($lead['services'] ?? [], $lead['demo_services'] ?? []));
+    if (empty($services)) {
+        $amount = dealMoney($lead['deal_amount'] ?? 0);
+        $rateType = $lead['partner_rate_type'] ?? 'percentage';
+        $rateValue = dealMoney($lead['partner_rate_value'] ?? 0);
+        if ($rateType === 'fixed') return $rateValue;
+        return round($amount * $rateValue / 100, 2);
+    }
+    $rates = $lead['partner_rates_by_service'] ?? [];
+    $requisitions = $lead['requisitions'] ?? [];
+    // Once the deal has reached Demo (feasibility_by_service has at least
+    // one entry), a service only earns commission once it's actually marked
+    // Feasible — mirrors partnerPayoutTotal() in index.html. Before Demo, no
+    // feasibility decision exists yet for any service, so every service
+    // still counts (nothing has been ruled out).
+    $feasibility = $lead['demo_feasibility_by_service'] ?? [];
+    $feasibilityDecided = !empty($feasibility);
+    $total = 0.0;
+    foreach ($services as $service) {
+        if ($feasibilityDecided && empty($feasibility[$service])) continue;
+        $est = $requisitions["{$service}::estimated_deal_value"] ?? null;
+        $svcAmount = (is_array($est) && isset($est['amount'])) ? dealMoney($est['amount']) : 0.0;
+        $rate = $rates[$service] ?? ['type' => $lead['partner_rate_type'] ?? 'percentage', 'value' => $lead['partner_rate_value'] ?? 0];
+        $rateType = $rate['type'] ?? 'percentage';
+        $rateValue = dealMoney($rate['value'] ?? 0);
+        $total += $rateType === 'fixed' ? $rateValue : round($svcAmount * $rateValue / 100, 2);
+    }
+    return round($total, 2);
 }
 
 /** Trimmed partner reference for embedding in deal/lead payloads. */

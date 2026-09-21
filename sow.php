@@ -20,7 +20,7 @@
  */
 function defaultModelFor($provider) {
     switch ($provider) {
-        case 'groq':      return 'llama-3.3-70b-versatile';
+        case 'groq':      return 'openai/gpt-oss-120b';
         case 'cerebras':  return 'gpt-oss-120b';
         case 'anthropic': return 'claude-opus-4-8';
         case 'gemini':    return 'gemini-3.5-flash';
@@ -36,6 +36,23 @@ function chosenModelFor($provider) {
     $admin = function_exists('getAdmin') ? getAdmin() : [];
     $picked = trim($admin[$provider . '_model'] ?? '');
     return $picked !== '' ? $picked : defaultModelFor($provider);
+}
+
+/**
+ * Which provider to try FIRST for document generation (SOW / Cost Proposal),
+ * independent of the general default_provider setting. Documents are large:
+ * Groq's free-tier TPM cap truncates or 429s them (worse since switching off
+ * Llama to GPT-OSS-120B, which has a tighter cap), so Gemini goes first here
+ * whenever a Gemini key exists — falling back to the general default_provider
+ * only when Gemini isn't configured. llmWithFallback() still retries every
+ * other configured provider after this one if it fails, so this only changes
+ * which provider is tried FIRST, not the safety net.
+ */
+function documentProviderAndKey($admin) {
+    $geminiKey = trim($admin['gemini_key'] ?? '');
+    if ($geminiKey !== '') return ['gemini', $geminiKey];
+    $provider = trim($admin['default_provider'] ?? 'groq');
+    return [$provider, trim($admin[$provider . '_key'] ?? '')];
 }
 
 /* ================= SOW generation ================= */

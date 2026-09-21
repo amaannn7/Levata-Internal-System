@@ -168,7 +168,7 @@ This is **Levata's own internal system**. It was forked from a client build ("Ma
 - **Frontend**: Vanilla JavaScript SPA, CSS3 with design tokens
 - **Backend**: PHP 7.4+ REST API
 - **Storage**: PostgreSQL (see "PostgreSQL storage" section below — this replaced the original JSON file storage)
-- **LLM Providers**: Groq (llama-3.3-70b), Google Gemini, Anthropic Claude
+- **LLM Providers**: Groq (GPT-OSS 120B — Llama 3.3 70B was deprecated by Groq), Google Gemini, Anthropic Claude
 
 ## Project Structure
 

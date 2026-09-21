@@ -121,7 +121,7 @@ $defaultRequisitions = [
 // (the selected service name goes straight into the AI prompt as the thing
 // to ask about). "Other" is handled separately in the UI as a free-text
 // field (services_other on the lead), not a list entry here.
-$defaultServiceOptions = ['Website Development', 'Sales Intelligence System'];
+$defaultServiceOptions = ['Website Development', 'Sales Intelligence System', 'Custom Services'];
 
 // Default ICP configuration
 $defaultIcpConfig = [
@@ -404,6 +404,17 @@ function dealMoney($v) {
     return $clean === '' ? 0.0 : (float) $clean;
 }
 
+/** A commission rate can never be negative; a percentage additionally can
+ * never exceed 100 (a fixed amount has no such ceiling — there's no upper
+ * bound on a flat currency payout). Applied at every write site so a bad
+ * value can never reach storage regardless of which UI control sent it. */
+function clampPartnerRateValue($rateType, $value) {
+    $v = dealMoney($value);
+    if ($v < 0) $v = 0.0;
+    if ($rateType === 'percentage' && $v > 100) $v = 100.0;
+    return $v;
+}
+
 /**
  * Pull a deal amount out of a CP/SOW document's free-text investment field
  * (e.g. "LKR 450,000") — used to keep a linked deal's value in sync with
@@ -528,17 +539,93 @@ function setLeadStage(&$lead, $stage, $reason = '', $actor = null) {
  * original inline behavior in the create path); returns the normalized
  * website value (https:// prepended if missing) for the caller to store.
  */
-function validateLeadContactFields($email, $linkedin, $website) {
+function validateLeadContactFields($email, $linkedin, $website, $phone = null) {
     if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
         respond(['success' => false, 'error' => 'Invalid email format. Please enter a valid email address.'], 400);
     }
     if ($linkedin !== '' && stripos($linkedin, 'linkedin.com') === false) {
         respond(['success' => false, 'error' => 'Invalid LinkedIn URL. Please enter a valid LinkedIn profile URL.'], 400);
     }
+    // Phone: requires a leading "+" country code (no separate country-code
+    // picker UI exists, so this is the simplest way to make sure one is
+    // actually present) followed by 8-15 digits, with the punctuation real
+    // numbers use (spaces, dashes, parens, dots) allowed in between.
+    if ($phone !== null && $phone !== '') {
+        $digitCount = strlen(preg_replace('/\D/', '', $phone));
+        if (!preg_match('/^\+[0-9 ()\-.]+$/', $phone) || $digitCount < 8 || $digitCount > 15) {
+            respond(['success' => false, 'error' => 'Invalid phone number. Include the country code, e.g. +1 555 123 4567.'], 400);
+        }
+    }
     if ($website !== '' && !preg_match('/^https?:\/\/|^www\./i', $website)) {
         $website = 'https://' . $website;
     }
+    // A website must resolve to a real host with a dot (a TLD) once the
+    // scheme is normalized above — catches plain typed garbage ("asdf")
+    // that would otherwise sail through as a "valid" URL once prefixed.
+    if ($website !== '') {
+        $host = parse_url($website, PHP_URL_HOST);
+        if (!$host || strpos($host, '.') === false) {
+            respond(['success' => false, 'error' => 'Invalid website. Please enter a valid website address.'], 400);
+        }
+    }
     return $website;
+}
+
+/**
+ * Fetches a company's homepage and reduces it to plain text worth handing
+ * an LLM — title, meta description, and visible body copy, truncated to a
+ * few thousand characters (a full page HTML dump would blow the prompt
+ * budget and mostly consists of markup/scripts the model doesn't need).
+ * There's no browsing tool wired into callLLM(), so this is the only way
+ * the research briefing sees anything from the actual site rather than
+ * guessing from the company name and industry alone.
+ *
+ * Best-effort: many sites block non-browser requests, time out, or return
+ * something unparseable — any of that just returns '' so the caller falls
+ * back to company+industry only, never surfaces a fetch error to the rep.
+ */
+function fetchWebsiteTextForResearch($url) {
+    if (!$url) return '';
+    if (!preg_match('#^https?://#i', $url)) $url = 'https://' . $url;
+    if (!filter_var($url, FILTER_VALIDATE_URL)) return '';
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS      => 3,
+        CURLOPT_TIMEOUT        => 8,
+        CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_USERAGENT      => 'Mozilla/5.0 (compatible; LevataResearchBot/1.0)',
+        CURLOPT_HTTPHEADER     => ['Accept: text/html'],
+    ]);
+    $html = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if (!$html || $code < 200 || $code >= 300) return '';
+
+    $title = '';
+    if (preg_match('/<title[^>]*>(.*?)<\/title>/is', $html, $m)) $title = trim(html_entity_decode(strip_tags($m[1])));
+    $description = '';
+    if (preg_match('/<meta\s+[^>]*name=["\']description["\'][^>]*content=["\'](.*?)["\']/is', $html, $m)) {
+        $description = trim(html_entity_decode($m[1]));
+    }
+
+    // Strip script/style blocks first so their contents don't leak into the
+    // "visible body copy" — strip_tags() alone would keep JS/CSS text.
+    $body = preg_replace('#<(script|style|noscript)\b[^>]*>.*?</\1>#is', ' ', $html);
+    $body = strip_tags($body);
+    $body = html_entity_decode($body, ENT_QUOTES);
+    $body = preg_replace('/\s+/', ' ', $body);
+    $body = trim($body);
+    $body = mb_substr($body, 0, 3000);
+
+    $parts = [];
+    if ($title) $parts[] = "Page title: {$title}";
+    if ($description) $parts[] = "Meta description: {$description}";
+    if ($body) $parts[] = "Page text: {$body}";
+    return implode("\n", $parts);
 }
 
 /**
@@ -620,7 +707,7 @@ function normalizeLeadForMapping($lead) {
     // retroactively change what's owed on deals already in flight.
     $lead['partner_id'] = $lead['partner_id'] ?? '';
     $lead['partner_rate_type'] = ($lead['partner_rate_type'] ?? 'percentage') === 'fixed' ? 'fixed' : 'percentage';
-    $lead['partner_rate_value'] = dealMoney($lead['partner_rate_value'] ?? 0);
+    $lead['partner_rate_value'] = clampPartnerRateValue($lead['partner_rate_type'], $lead['partner_rate_value'] ?? 0);
     return $lead;
 }
 
@@ -1907,8 +1994,7 @@ case 'generate-sow':
     if ($method !== 'POST') break;
     requireAuth();
     $admin = getAdmin();
-    $provider = $admin['default_provider'] ?? 'groq';
-    $apiKey = $admin[$provider . '_key'] ?? '';
+    [$provider, $apiKey] = documentProviderAndKey($admin);
     if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
 
     $sowInput = $input['input'] ?? [];
@@ -1928,25 +2014,33 @@ case 'generate-cost-proposal':
     if ($method !== 'POST') break;
     requireAuth();
     $admin = getAdmin();
-    $provider = $admin['default_provider'] ?? 'groq';
-    $apiKey = $admin[$provider . '_key'] ?? '';
+    [$provider, $apiKey] = documentProviderAndKey($admin);
     if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
 
     $cpInput = $input['input'] ?? [];
     if (empty($cpInput['serviceType']) && empty($cpInput['clientName'])) {
         respond(['success' => false, 'error' => 'Add at least a service type or client name'], 400);
     }
+    // Proposal ID is auto-generated server-side, never typed by the rep —
+    // see nextProposalId() in cp.php. Overwrites anything the client sent
+    // for this field so a stale/reused value from a copied form can never
+    // slip through.
+    $cpInput['projectId'] = nextProposalId();
     $res = generateCostProposal($provider, $apiKey, $cpInput);
     if (!$res['success']) respond(['success' => false, 'error' => $res['error']], 502);
-    respond(['success' => true, 'markdown' => $res['content']]);
+    // Sent back explicitly rather than relying on the rep to find it in the
+    // generated markdown — the document body deliberately never repeats
+    // cover-page info (see costProposalSystemPrompt()), so the frontend
+    // needs the real value here to show it on the cover and save it with
+    // the document's input.
+    respond(['success' => true, 'markdown' => $res['content'], 'project_id' => $cpInput['projectId']]);
     break;
 
 case 'refine-sow':
     if ($method !== 'POST') break;
     requireAuth();
     $admin = getAdmin();
-    $provider = $admin['default_provider'] ?? 'groq';
-    $apiKey = $admin[$provider . '_key'] ?? '';
+    [$provider, $apiKey] = documentProviderAndKey($admin);
     if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
 
     $markdown = $input['markdown'] ?? '';
@@ -1962,8 +2056,7 @@ case 'refine-cost-proposal':
     if ($method !== 'POST') break;
     requireAuth();
     $admin = getAdmin();
-    $provider = $admin['default_provider'] ?? 'groq';
-    $apiKey = $admin[$provider . '_key'] ?? '';
+    [$provider, $apiKey] = documentProviderAndKey($admin);
     if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
 
     $markdown = $input['markdown'] ?? '';
@@ -2705,20 +2798,61 @@ case 'studio-overview':
     // --- Deals still in play (the user's own pipeline) --------------------
     $userData = getUserData($u['id']);
     $openDeals = []; $openDealValue = [];
+    // Focus Queue: deals that need attention right now, for two different
+    // reasons — merged into one list so a rep has a single "what do I do
+    // today" queue instead of hunting across the pipeline.
+    //   1. FOLLOW-UP DUE — the deal's CURRENT stage has its own follow-up
+    //      date (see Profile's Follow-ups list, index.html) that's today,
+    //      overdue, or coming up within 14 days. A rep set this deliberately,
+    //      so it's the most concrete kind of "due".
+    //   2. STALE — no follow-up date was ever set for the current stage, but
+    //      the deal has sat there past that stage's normal SLA window (see
+    //      calculateSLAStatus() — max_days per stage) with no communication
+    //      logged. Catches deals nobody scheduled a follow-up for at all, so
+    //      nothing silently falls through the cracks. A deal with an
+    //      explicit follow-up date is never ALSO flagged stale — the rep
+    //      already has a plan for it, even if that plan is now overdue
+    //      (reason 1 already covers the "it's late" signal for those).
+    $focusQueue = [];
+    $followupWindow = date('Y-m-d', strtotime('+14 days'));
     foreach ($userData['leads'] ?? [] as $l) {
         if (!empty($l['deleted_at'])) continue;
         $stage = getLeadStage($l);
         if (in_array($stage, ['won', 'lost'], true)) continue;
         $amt = dealMoney($l['deal_amount'] ?? 0);
         addToCurrencyBucket($openDealValue, $l['deal_currency'] ?? '', $amt);
+        $name = trim(($l['first_name'] ?? '') . ' ' . ($l['last_name'] ?? ''));
         $openDeals[] = [
-            'id' => $l['id'] ?? '', 'name' => trim(($l['first_name'] ?? '') . ' ' . ($l['last_name'] ?? '')),
+            'id' => $l['id'] ?? '', 'name' => $name,
             'company' => $l['company'] ?? '', 'stage' => $stage, 'amount' => $amt,
             'currency' => normalizeCurrency($l['deal_currency'] ?? ''),
         ];
+        $fu = ($l['followups'] ?? [])[$stage] ?? null;
+        $fuDate = trim($fu['date'] ?? '');
+        if ($fuDate !== '' && $fuDate <= $followupWindow) {
+            $focusQueue[] = [
+                'lead_id' => $l['id'] ?? '', 'name' => $name, 'company' => $l['company'] ?? '',
+                'stage' => $stage, 'reason' => 'followup',
+                'date' => $fuDate, 'notes' => trim($fu['notes'] ?? ''),
+                'overdue' => $fuDate < $today, 'days_in_stage' => null,
+            ];
+        } else {
+            $sla = calculateSLAStatus($l);
+            if (!empty($sla['is_overdue'])) {
+                $focusQueue[] = [
+                    'lead_id' => $l['id'] ?? '', 'name' => $name, 'company' => $l['company'] ?? '',
+                    'stage' => $stage, 'reason' => 'stale',
+                    'date' => null, 'notes' => $sla['next_action'] ?? '',
+                    'overdue' => true, 'days_in_stage' => $sla['days_in_stage'] ?? null,
+                ];
+            }
+        }
     }
     // Closest to signature first.
     usort($openDeals, fn($a, $b) => stageOrder($b['stage']) <=> stageOrder($a['stage']) ?: $b['amount'] <=> $a['amount']);
+    // Overdue first (needs chasing most), then soonest-due; stale entries
+    // (no date) sort after any dated ones within the same overdue bucket.
+    usort($focusQueue, fn($a, $b) => $b['overdue'] <=> $a['overdue'] ?: strcmp($a['date'] ?? '9999-99-99', $b['date'] ?? '9999-99-99'));
 
     $clients = getClientsStore()['clients'];
     // LKR-converted headline totals — additional, clearly-labelled
@@ -2737,6 +2871,7 @@ case 'studio-overview':
             'open_tasks' => count($openTasks),
             'overdue_tasks' => $overdueTaskCount,
             'pending_docs' => count($pendingDocs),
+            'focus_queue' => count($focusQueue),
         ],
         'headline_lkr' => [
             'outstanding' => fxConvertMapToLkr($outstanding, $fx['rates']),
@@ -2752,6 +2887,7 @@ case 'studio-overview':
         'tasks' => array_slice($taskRows, 0, 8),
         'pending_docs' => array_slice($pendingDocs, 0, 6),
         'deals' => array_slice($openDeals, 0, 6),
+        'focus_queue' => array_slice($focusQueue, 0, 8),
         'default_currency' => defaultCurrency(),
     ]]);
     break;
@@ -3014,31 +3150,97 @@ case 'link-deal-document':
 
     $lead = $leadsStore['leads'][$targetIdx];
     $type = $doc['type'] ?? 'sow';
-    // Linking a document also advances the deal to the matching stage, which is
-    // the whole point of connecting the pipeline to the document studio.
+    // Linking a document normally also advances the deal to the matching
+    // stage — the whole point of connecting the pipeline to the document
+    // studio. The one exception: a Cost Proposal created from the Demo
+    // stage's per-service Feasibility Check (advance_stage:false) links
+    // without advancing, since a deal there can have several services in
+    // flight and the "Deal Sent" button is what actually moves the stage,
+    // only once every service has been resolved (feasible or disqualified
+    // with a reason).
+    $advanceStage = !array_key_exists('advance_stage', $input) || !empty($input['advance_stage']);
+    $service = ''; // only ever set below for a CP link — stays empty for SOW links
     if (in_array($type, ['cp', 'cost-proposal', 'cost_proposal'], true)) {
-        // Advancing OUT of Demo specifically (not just linking a CP at some
-        // later stage) requires the Demo checklist to be complete — mirrors
-        // the rail lock in index.html.
-        if (getLeadStage($lead) === 'demo' && !leadDemoChecklistDone($lead)) {
-            respond(['success' => false, 'error' => 'Complete the requirement checklist, transcript and feasibility check before creating a cost proposal'], 400);
-        }
         $lead['cost_proposal_id'] = $doc['id'];
-        if (stageOrder(getLeadStage($lead)) < stageOrder('cost_proposal')) {
+        // A Demo-stage deal can have several services each generating their
+        // OWN Cost Proposal from the Feasibility Check row — cost_proposal_id
+        // above only ever holds the latest one, so also keep a per-service
+        // map (service => doc id) so each row can show/link back to its own
+        // CP specifically, not whichever was linked most recently overall.
+        $service = trim($input['service'] ?? '');
+        if ($service !== '') {
+            $byService = $lead['cost_proposal_by_service'] ?? [];
+            $byService[$service] = $doc['id'];
+            $lead['cost_proposal_by_service'] = $byService;
+            // Every CP version ever generated for this specific service
+            // (not just the latest) — cost_proposal_by_service above only
+            // ever holds the current one, but a service can go through
+            // several negotiation rounds each with its own regenerated CP;
+            // this is what the Cost Proposal stage's per-service row lists
+            // under "Previous cost proposals". Append-only, newest last.
+            $historyByService = $lead['cp_documents_by_service'] ?? [];
+            $svcHistory = $historyByService[$service] ?? [];
+            if (!in_array($doc['id'], $svcHistory, true)) $svcHistory[] = $doc['id'];
+            $historyByService[$service] = $svcHistory;
+            $lead['cp_documents_by_service'] = $historyByService;
+            // This service's Deal Value on the Demo-stage Feasibility Check
+            // row (requisitions["{service}::estimated_deal_value"]) now
+            // comes from what was actually quoted in its Cost Proposal,
+            // rather than staying pinned to whatever was estimated back at
+            // Lead-stage qualification — the CP figure is the real number
+            // once it exists. Same {amount, currency} shape
+            // saveDemoFeasibilityDealValue() (index.html) writes.
+            $svcAmt = extractDocumentInvestmentAmount($doc['input'] ?? []);
+            if ($svcAmt !== null) {
+                $requisitions = $lead['requisitions'] ?? [];
+                $requisitions["{$service}::estimated_deal_value"] = ['amount' => (string) $svcAmt, 'currency' => $lead['deal_currency'] ?? defaultCurrency()];
+                $lead['requisitions'] = $requisitions;
+            }
+        }
+        if ($advanceStage && stageOrder(getLeadStage($lead)) < stageOrder('cost_proposal')) {
             setLeadStage($lead, 'cost_proposal', 'cost_proposal_linked:' . ($doc['doc_no'] ?? ''), $u['id'] ?? null);
         }
     } else {
         $lead['sow_id'] = $doc['id'];
-        if (stageOrder(getLeadStage($lead)) < stageOrder('sow')) {
+        // Same per-service tracking as cost_proposal_by_service above — a
+        // Cost-Proposal-stage deal can have several services each Won
+        // independently, each generating its OWN SOW from that service's
+        // negotiation row (see openSowPopupForService() in index.html).
+        // sow_id only ever holds the latest one overall; this is what lets
+        // each row show/link back to its own SOW specifically.
+        $service = trim($input['service'] ?? '');
+        if ($service !== '') {
+            $byService = $lead['sow_by_service'] ?? [];
+            $byService[$service] = $doc['id'];
+            $lead['sow_by_service'] = $byService;
+            // Every SOW version ever generated for this specific service —
+            // same append-only history as cp_documents_by_service, so the
+            // SOW stage's per-service card can list "Previous SOWs" the
+            // same way Cost Proposal lists "Previous cost proposals".
+            $sowHistoryByService = $lead['sow_documents_by_service'] ?? [];
+            $svcSowHistory = $sowHistoryByService[$service] ?? [];
+            if (!in_array($doc['id'], $svcSowHistory, true)) $svcSowHistory[] = $doc['id'];
+            $sowHistoryByService[$service] = $svcSowHistory;
+            $lead['sow_documents_by_service'] = $sowHistoryByService;
+        }
+        if ($advanceStage && stageOrder(getLeadStage($lead)) < stageOrder('sow')) {
             setLeadStage($lead, 'sow', 'sow_linked:' . ($doc['doc_no'] ?? ''), $u['id'] ?? null);
         }
     }
     // Sync the deal's amount to whatever figure is on the document being
     // linked — the CP/SOW is the real quote, so linking one should make the
     // deal's value match it rather than leaving a stale/zero amount sitting
-    // on the deal independently of what was actually proposed.
-    $linkAmt = extractDocumentInvestmentAmount($doc['input'] ?? []);
-    if ($linkAmt !== null) setDealAmount($lead, $linkAmt, '', $u['id'] ?? null);
+    // on the deal independently of what was actually proposed. Skipped for a
+    // per-service Demo Feasibility Check CP ($service set above): that
+    // service's own figure was already folded into requisitions just above,
+    // and the deal-level total for a multi-service deal must stay the SUM
+    // across every feasible service (see sumServiceEstimatedDealValues() in
+    // index.html) — overwriting it here with just this one CP's amount would
+    // silently wipe out every other service's contribution to the total.
+    if ($service === '') {
+        $linkAmt = extractDocumentInvestmentAmount($doc['input'] ?? []);
+        if ($linkAmt !== null) setDealAmount($lead, $linkAmt, '', $u['id'] ?? null);
+    }
     $leadsStore['leads'][$targetIdx] = $lead;
     saveLeadsStore($leadsStore);
     respond(['success' => true, 'lead' => $lead, 'doc_no' => $doc['doc_no'] ?? '']);
@@ -3285,10 +3487,41 @@ case 'set-deal-partner':
                 // rate); falls back to the partner's default.
                 $rateType = $input['partner_rate_type'] ?? $partner['default_rate_type'] ?? 'percentage';
                 $lead['partner_rate_type'] = $rateType === 'fixed' ? 'fixed' : 'percentage';
-                $lead['partner_rate_value'] = isset($input['partner_rate_value'])
-                    ? dealMoney($input['partner_rate_value'])
-                    : dealMoney($partner['default_rate_value'] ?? 0);
+                $lead['partner_rate_value'] = clampPartnerRateValue(
+                    $lead['partner_rate_type'],
+                    $input['partner_rate_value'] ?? ($partner['default_rate_value'] ?? 0)
+                );
             }
+            $lead['updated_at'] = date('c');
+            saveLeadsStore($leadsStore);
+            respond(['success' => true, 'lead' => $lead]);
+        }
+    }
+    respond(['success' => false, 'error' => 'Lead not found'], 404);
+    break;
+
+// A deal has one partner (who referred it), but different services on the
+// same deal can carry different commission arrangements — e.g. Website
+// Development at 10% and Branding at a flat LKR 15,000. Stored per-service
+// in partner_rates_by_service, keyed by service name; a service with no
+// entry there falls back to the deal-level partner_rate_type/value (the
+// same default set-deal-partner manages), so existing single-rate deals
+// keep working unchanged until a rep actually overrides one service.
+case 'set-service-partner-rate':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $leadsStore = getLeadsStore();
+    $leadId = trim($input['id'] ?? '');
+    $service = trim($input['service'] ?? '');
+    if ($service === '') respond(['success' => false, 'error' => 'Missing service'], 400);
+
+    foreach ($leadsStore['leads'] as &$lead) {
+        if ($lead['id'] === $leadId) {
+            if (empty($lead['partner_id'])) respond(['success' => false, 'error' => 'No partner on this deal'], 400);
+            $rates = $lead['partner_rates_by_service'] ?? [];
+            $rateType = ($input['rate_type'] ?? 'percentage') === 'fixed' ? 'fixed' : 'percentage';
+            $rates[$service] = ['type' => $rateType, 'value' => clampPartnerRateValue($rateType, $input['rate_value'] ?? 0)];
+            $lead['partner_rates_by_service'] = $rates;
             $lead['updated_at'] = date('c');
             saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
@@ -4334,7 +4567,8 @@ case 'lead':
         $email = trim($input['email'] ?? '');
         $linkedin = trim($input['linkedin'] ?? '');
         $website = trim($input['website'] ?? '');
-        $website = validateLeadContactFields($email, $linkedin, $website);
+        $phone = trim($input['phone'] ?? '');
+        $website = validateLeadContactFields($email, $linkedin, $website, $phone);
 
         $source = normalizeLeadSource($input['source'] ?? 'manual');
         $isWarm = !empty($input['warm']) || (($input['urgency_flag'] ?? '') === 'warm');
@@ -4407,7 +4641,6 @@ case 'lead':
             'created_at' => date('c'),
             'updated_at' => date('c'),
         ];
-        if (!$lead['email']) respond(['success' => false, 'error' => 'Email required'], 400);
         // Channel partner at creation time — same validation/rate-fallback
         // logic as set-deal-partner, so a lead created with a partner
         // behaves identically to one that had a partner attached later.
@@ -4418,9 +4651,10 @@ case 'lead':
                 $lead['partner_id'] = $partnerId;
                 $rateType = $input['partner_rate_type'] ?? $partner['default_rate_type'] ?? 'percentage';
                 $lead['partner_rate_type'] = $rateType === 'fixed' ? 'fixed' : 'percentage';
-                $lead['partner_rate_value'] = isset($input['partner_rate_value'])
-                    ? dealMoney($input['partner_rate_value'])
-                    : dealMoney($partner['default_rate_value'] ?? 0);
+                $lead['partner_rate_value'] = clampPartnerRateValue(
+                    $lead['partner_rate_type'],
+                    $input['partner_rate_value'] ?? ($partner['default_rate_value'] ?? 0)
+                );
             }
         }
         $lead = normalizeLeadForMapping($lead);
@@ -4660,13 +4894,14 @@ case 'update-lead':
     // edit from the Profile tab can't save an invalid value the create form
     // would have rejected. Only runs when one of these fields is actually
     // being changed — untouched fields don't need re-validating.
-    if (isset($input['email']) || isset($input['linkedin']) || isset($input['website'])) {
+    if (isset($input['email']) || isset($input['linkedin']) || isset($input['website']) || isset($input['phone'])) {
         $leadForValidation = null;
         foreach ($leadsStore['leads'] as $lv) { if ($lv['id'] === $leadId) { $leadForValidation = $lv; break; } }
         $emailToCheck = trim($input['email'] ?? ($leadForValidation['email'] ?? ''));
         $linkedinToCheck = trim($input['linkedin'] ?? ($leadForValidation['linkedin'] ?? ''));
         $websiteToCheck = trim($input['website'] ?? ($leadForValidation['website'] ?? ''));
-        $normalizedWebsite = validateLeadContactFields($emailToCheck, $linkedinToCheck, $websiteToCheck);
+        $phoneToCheck = trim($input['phone'] ?? ($leadForValidation['phone'] ?? ''));
+        $normalizedWebsite = validateLeadContactFields($emailToCheck, $linkedinToCheck, $websiteToCheck, $phoneToCheck);
         if (isset($input['website'])) $input['website'] = $normalizedWebsite;
     }
 
@@ -4676,10 +4911,23 @@ case 'update-lead':
             // company fields (first/last name, email, phone, company,
             // title, industry, country, website, linkedin, company_size),
             // validated above when email/linkedin/website change.
-            $allowedFields = ['call_anchor', 'email_skipped', 'followup_date', 'notes', 'source', 'source_detail', 'assigned_to', 'urgency_flag', 'rejection_reason', 'consultation_type', 'services', 'services_other', 'engagement_method', 'engagement_date', 'engagement_status', 'engagement_note', 'meeting_link', 'demo_checklist_answers', 'demo_transcript', 'demo_feasibility', 'first_name', 'last_name', 'email', 'phone', 'company', 'title', 'industry', 'country', 'website', 'linkedin', 'company_size'];
+            $allowedFields = ['call_anchor', 'email_skipped', 'followup_date', 'notes', 'source', 'source_detail', 'assigned_to', 'urgency_flag', 'rejection_reason', 'consultation_type', 'services', 'services_other', 'engagement_method', 'engagement_date', 'engagement_status', 'engagement_note', 'meeting_link', 'demo_checklist_answers', 'demo_transcript', 'demo_feasibility', 'first_name', 'last_name', 'email', 'phone', 'company', 'title', 'industry', 'country', 'website', 'linkedin', 'company_size', 'demo_services', 'demo_request_sent', 'demo_feasibility_by_service', 'demo_disqualified_services', 'sales_materials_link', 'calendly_email_subject', 'calendly_email_body', 'calendly_custom_instructions', 'qualified_research_skipped', 'followups', 'meeting_confirmed_at'];
+            // calendly_email_subject/body are plain multi-line email text —
+            // the frontend already HTML-escapes them at render time (esc())
+            // and reads them back as plain text for mailto/copy, so running
+            // them through sanitizeInput()'s htmlspecialchars() here would
+            // double-encode apostrophes into literal "&#039;" on screen.
+            // Tags are still stripped/trimmed, just not entity-encoded.
+            $plainTextFields = ['calendly_email_subject', 'calendly_email_body'];
             foreach ($allowedFields as $field) {
                 if (isset($input[$field])) {
-                    $lead[$field] = is_string($input[$field]) ? sanitizeInput($input[$field]) : $input[$field];
+                    if (!is_string($input[$field])) {
+                        $lead[$field] = $input[$field];
+                    } elseif (in_array($field, $plainTextFields, true)) {
+                        $lead[$field] = trim(strip_tags($input[$field]));
+                    } else {
+                        $lead[$field] = sanitizeInput($input[$field]);
+                    }
                 }
             }
             // Setting a follow-up date from the Cost Proposal panel also
@@ -4724,23 +4972,44 @@ case 'update-lead':
                 if (getLeadStage($lead) === 'lead' && $targetStage !== 'lost' && $targetStage !== 'lead' && !leadQualifyChecklistDone($lead)) {
                     respond(['success' => false, 'error' => 'Complete the qualification checklist (services, questions, engagement method) before moving this deal forward'], 400);
                 }
-                // Leaving Qualified forward needs a meeting link on file — the
-                // rep books the call elsewhere (Meet/Zoom/Calendly) and pastes
-                // the link here; mirrors the equivalent Lead-stage gate above.
-                if (getLeadStage($lead) === 'qualified' && $targetStage !== 'lost' && $targetStage !== 'qualified' && empty($lead['meeting_link'])) {
-                    respond(['success' => false, 'error' => 'Add a meeting link before moving this deal to Demo'], 400);
+                // Leaving Qualified forward needs the demo/meeting request
+                // marked sent first (Demo/Meeting Request Sent -> Meeting
+                // Confirmed) — mirrors the equivalent Lead-stage gate above.
+                if (getLeadStage($lead) === 'qualified' && $targetStage !== 'lost' && $targetStage !== 'qualified' && empty($lead['demo_request_sent'])) {
+                    respond(['success' => false, 'error' => 'Mark the demo/meeting request as sent before moving this deal to Demo'], 400);
                 }
-                // Leaving Demo forward always goes through link-deal-document
-                // (creating/attaching a cost proposal is what advances the
-                // stage) — this endpoint is not a valid way to skip that, so
-                // block it here even though the UI never offers the path.
-                if (getLeadStage($lead) === 'demo' && $targetStage !== 'lost' && $targetStage !== 'demo') {
-                    respond(['success' => false, 'error' => 'Create and link a cost proposal to advance from Demo'], 400);
+                // Leaving Demo forward is the "Deal Sent" action (see
+                // dealSentFromDemo() in index.html) — it requires at least
+                // one service on the deal, since a reason must be given for
+                // every service not marked feasible before this is called.
+                if (getLeadStage($lead) === 'demo' && $targetStage !== 'lost' && $targetStage !== 'demo' && empty($lead['services']) && empty($lead['demo_services'])) {
+                    respond(['success' => false, 'error' => 'Add at least one service before sending the deal forward'], 400);
                 }
-                // Same rule for Cost Proposal -> SOW: generating/linking the
-                // SOW (link-deal-document) is what advances the stage.
+                // Leaving Cost Proposal forward is the "Move to SOW" action
+                // (see startSowFromCostProposal() in index.html) — every
+                // service must be resolved Won or Lost first (mirrors the
+                // Demo -> Cost Proposal gate above); SOW documents are then
+                // generated per-service, AFTER the deal has already moved to
+                // the SOW stage, not before — so this no longer requires one
+                // to already exist.
                 if (getLeadStage($lead) === 'cost_proposal' && $targetStage !== 'lost' && $targetStage !== 'cost_proposal') {
-                    respond(['success' => false, 'error' => 'Create and link a SOW to advance from Cost Proposal'], 400);
+                    $cpServices = $lead['services'] ?? [];
+                    if (empty($cpServices)) {
+                        respond(['success' => false, 'error' => 'Add at least one service before moving to SOW'], 400);
+                    }
+                    $answers = $lead['requisitions'] ?? [];
+                    $unresolved = array_filter($cpServices, function ($s) use ($answers) {
+                        return ($answers["{$s}::cp_negotiation_status"] ?? 'negotiating') === 'negotiating';
+                    });
+                    if (!empty($unresolved)) {
+                        respond(['success' => false, 'error' => 'Mark every service Won or Lost before moving to SOW'], 400);
+                    }
+                    $wonServices = array_filter($cpServices, function ($s) use ($answers) {
+                        return ($answers["{$s}::cp_negotiation_status"] ?? '') === 'won';
+                    });
+                    if (empty($wonServices)) {
+                        respond(['success' => false, 'error' => 'At least one service needs to be Won before moving to SOW'], 400);
+                    }
                 }
                 // A deal never regresses through this endpoint. The stage
                 // rail lets a rep VIEW an earlier stage's panel (and even
@@ -5093,6 +5362,32 @@ case 'generate-email':
     respond(['success' => false, 'error' => $res['error'] ?? 'Generation failed'], 500);
     break;
 
+case 'generate-calendly-email':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $userData = getUserData($user['id']);
+    $admin = getAdmin();
+    $provider = $admin['default_provider'] ?? 'groq';
+    $apiKey = $admin[$provider . '_key'] ?? '';
+    if (!$apiKey) respond(['success' => false, 'error' => 'AI not configured'], 400);
+
+    $lead = $input['lead'] ?? [];
+    $calendarLink = trim($input['calendar_link'] ?? '');
+    if (!$calendarLink) respond(['success' => false, 'error' => 'Missing calendar link'], 400);
+
+    $res = generateCalendlyEmailContent(
+        $provider,
+        $apiKey,
+        $lead,
+        $calendarLink,
+        $input['custom_instructions'] ?? '',
+        $userData['settings'] ?? []
+    );
+
+    if ($res['success']) respond(['success' => true, 'email' => $res['email']]);
+    respond(['success' => false, 'error' => $res['error'] ?? 'Generation failed'], 500);
+    break;
+
 case 'generate-call-pitch':
     if ($method !== 'POST') break;
     $user = requireAuth();
@@ -5310,35 +5605,117 @@ case 'generate-lead-research':
     if (!empty($lead['services_other']) && !in_array($lead['services_other'], $services)) $services[] = $lead['services_other'];
     if (empty($services)) respond(['success' => false, 'error' => 'This lead has no services selected yet'], 400);
 
-    $serviceList = implode(', ', $services);
-    $company = $lead['company'] ?? 'the prospect';
-    $industry = $lead['industry'] ?? 'unknown industry';
+    // Research is per-service, not one shared briefing blending every
+    // service on the deal — a deal with both Website Development and
+    // Branding needs two different briefings. The rep picks which one from
+    // a dropdown client-side (see qfResearchSelectedService in index.html);
+    // default to the first service only if none was specified, so older
+    // callers (or a deal with just one service) still work with no
+    // required param.
+    $service = trim($input['service'] ?? '');
+    if ($service === '' || !in_array($service, $services, true)) $service = $services[0];
+
+    $company = trim($lead['company'] ?? '');
+
     $answers = $lead['requisitions'] ?? [];
-    $answersText = '';
-    foreach (($lead['generated_questions'] ?? []) as $q) {
-        $v = $answers[$q['id']] ?? null;
-        if (empty($v)) continue;
-        $answersText .= '- ' . $q['title'] . ': ' . (is_array($v) ? implode(', ', $v) : $v) . "\n";
+    // Industry is per-service where the service's own form captures it
+    // ("{service}::industry" — see the industry:true forms in
+    // SERVICE_QUALIFICATION_FORMS), falling back to the deal-level industry
+    // field so older leads or services without their own industry question
+    // still work.
+    $industry = trim($answers[$service . '::industry'] ?? '');
+    if ($industry === '') $industry = trim($lead['industry'] ?? '');
+
+    // Branding/Design/General Custom Requirement are never a top-level
+    // service name — they're only ever picked as the "need" on a Custom
+    // Services instance, so $service here is "Custom Services" / "Custom
+    // Services #2", not "Branding". Resolve to the picked need first,
+    // mirroring the frontend's serviceTabLabel().
+    $resolvedServiceName = $service;
+    if (preg_match('/^Custom Services( #\d+)?$/', $service)) {
+        $need = trim($answers[$service . '::need'] ?? '');
+        if ($need !== '' && $need !== 'Other') $resolvedServiceName = $need;
     }
+
+    // Creative/brief-driven services (Branding, Design/Creative, General
+    // Custom Requirement) don't have "industry best practices" in the same
+    // sense a website or software build does — the briefing for these leans
+    // on the client's own brand/market position and qualification answers
+    // instead of forcing an industry-trends angle that may not exist.
+    $creativeServices = ['Branding', 'Design / Creative', 'General Custom Requirement'];
+    $isCreative = in_array($resolvedServiceName, $creativeServices, true);
+
+    if ($industry === '') {
+        // Non-creative services still have something real to research even
+        // with no company/industry on file — the service itself is a
+        // genuine market/technology topic (e.g. "Sales Intelligence
+        // Platform" trends). Creative services aren't — "Branding" isn't an
+        // industry, so with nothing else to go on there is truly nothing to
+        // research (the frontend shows Skip in this exact case).
+        if ($isCreative && $company === '') {
+            respond(['success' => false, 'error' => 'Add a company name first, or skip research for this service'], 400);
+        }
+        $industry = $resolvedServiceName;
+    }
+
+    $answersText = '';
+    foreach ($answers as $key => $v) {
+        // Only this service's own qualification answers ("{service}::{qid}")
+        // — the same flat requisitions map every other service's questions
+        // also live in, so without this prefix filter a service's briefing
+        // would pull in unrelated answers from every other service too.
+        if (strpos($key, $service . '::') !== 0) continue;
+        if (empty($v)) continue;
+        $qid = substr($key, strlen($service) + 2);
+        $answersText .= '- ' . $qid . ': ' . (is_array($v) ? (isset($v['amount']) ? $v['amount'] . ' ' . ($v['currency'] ?? '') : implode(', ', $v)) : $v) . "\n";
+    }
+
+    $companyOrIndustry = $company !== '' ? "{$company}'s" : "this industry's";
+    $angleNote = $isCreative
+        ? "This is brand/creative work, not a technical build — lean on {$companyOrIndustry} market position, audience and existing brand presence rather than generic industry trend statements. If there isn't much to go on, keep sections short rather than inventing filler."
+        : "Ground everything in the service and industry given, not generic sales advice.";
+
+    // Website is fetched for real (see fetchWebsiteTextForResearch()) so the
+    // briefing can reference what the company's own site actually says
+    // rather than guessing from the name and industry alone. LinkedIn can't
+    // be fetched (blocks non-logged-in requests) so it's passed as a plain
+    // reference the model can reason about, same as company/industry.
+    $websiteContext = '';
+    $website = trim($lead['website'] ?? '');
+    if ($website !== '') {
+        $siteText = fetchWebsiteTextForResearch($website);
+        if ($siteText !== '') $websiteContext = "\nCOMPANY WEBSITE ({$website}):\n{$siteText}\n";
+    }
+    $linkedin = trim($lead['linkedin'] ?? '');
+    $linkedinContext = $linkedin !== '' ? "\nProspect's LinkedIn: {$linkedin}\n" : '';
+
+    // No company name to hang the briefing on — research falls back to the
+    // industry alone (a rep chose to skip past the missing company rather
+    // than skip research outright). Framed as a general industry briefing
+    // instead of naming a company that isn't there.
+    $prospectLine = $company !== ''
+        ? "Prepare a short research briefing for a rep ahead of a demo call with {$company} (industry: {$industry}), who are interested in: {$resolvedServiceName}."
+        : "No company name is available yet, so prepare a general research briefing on the {$industry} industry for a rep ahead of a demo call, focused on prospects interested in: {$resolvedServiceName}.";
 
     $prompt = <<<PROMPT
 You are a sales research assistant for Levata, a design and engineering studio that builds websites, software systems and brand identities.
 
-Prepare a short research briefing for a rep ahead of a demo call with {$company} (industry: {$industry}), who are interested in: {$serviceList}.
-
+{$prospectLine}
+{$websiteContext}{$linkedinContext}
 {$answersText}
 
 Return ONLY a single JSON object (no markdown, no commentary) with this exact shape:
 {
-  "industry_context": "2-3 sentences on what matters in this industry right now, relevant to the service(s) requested",
-  "best_practices": ["short best-practice point relevant to {$serviceList}", "..."],
+  "industry_context": "2-3 sentences on what matters right now, relevant to the service requested",
+  "best_practices": ["short best-practice point relevant to {$resolvedServiceName}", "..."],
   "talking_points": ["a specific, non-generic talking point for this demo", "..."],
   "questions_to_probe": ["a sharp follow-up question the rep should ask on the call", "..."]
 }
 
 Rules:
 - 3 to 5 items in each array.
-- Ground everything in the service(s) and industry given, not generic sales advice.
+- {$angleNote}
+- If the company website text above is provided, ground talking points and industry context in what it actually says (their positioning, products, tone) rather than generic assumptions.
 - If qualification answers were provided above, reference them specifically rather than restating generic industry facts.
 PROMPT;
 
@@ -5362,12 +5739,19 @@ PROMPT;
         'generated_at' => date('c'),
     ];
 
-    $lead['qualified_research'] = $clean;
+    // Keyed by service — see the per-service comment above. Old records
+    // with a single flat qualified_research from before this change are
+    // left as-is (unused going forward, not migrated); the frontend only
+    // ever reads qualified_research_by_service now.
+    if (!isset($lead['qualified_research_by_service']) || !is_array($lead['qualified_research_by_service'])) {
+        $lead['qualified_research_by_service'] = [];
+    }
+    $lead['qualified_research_by_service'][$service] = $clean;
     $lead['updated_at'] = date('c');
     unset($l);
     saveLeadsStore($leadsStore);
 
-    respond(['success' => true, 'research' => $clean, 'lead' => $lead]);
+    respond(['success' => true, 'research' => $clean, 'service' => $service, 'lead' => $lead]);
     break;
 
 case 'generate-demo-checklist':
@@ -8076,4 +8460,82 @@ INSTRUCTIONS:
         'title' => $pitchTitles[$pitchType] ?? 'Call Script',
         'pitch' => $res['content']
     ];
+}
+
+/**
+ * AI-generated version of the Qualified-stage "share the booking link"
+ * email. Was previously a fixed client-side string template (name/company/
+ * link slotted into hardcoded sentences) with no way to steer the wording —
+ * this follows the same custom-instructions pattern as generateEmailContent()/
+ * generateCallPitch() so a rep's specific notes actually change the output,
+ * not just get appended after a rigid template. Deliberately its own,
+ * simpler prompt rather than reusing generateEmailContent(): that one is
+ * tuned for cold outbound (research-driven hooks, "opener" structure) which
+ * reads oddly for someone already warm and qualified who just needs a
+ * booking link.
+ */
+/**
+ * The default (no custom instructions) Calendly email is a FIXED template,
+ * not an AI call — a rep clicking "Generate" with nothing typed must get the
+ * exact same email back every time, not a differently-worded LLM re-roll.
+ * The AI is only invoked once a rep types custom instructions, to adapt
+ * THIS template's content/tone — see generateCalendlyEmailContent() below.
+ */
+function calendlyEmailDefaultTemplate($lead, $calendarLink, $settings) {
+    $firstName = $lead['first_name'] ?? 'there';
+    $company = $lead['company'] ?? '';
+    $senderName = $settings['sender_name'] ?? '';
+    $senderTitle = $settings['sender_title'] ?? '';
+    $senderCompany = $settings['sender_company'] ?? 'Levata';
+
+    $subject = "Scheduling a demo";
+    $signOff = $senderName ?: 'there';
+    if ($senderTitle) $signOff .= "\n{$senderTitle}";
+
+    $body = "Hi {$firstName},\n\n"
+        . "Thank you for taking the time to speak with me and for sharing an overview of your requirements.\n\n"
+        . "Based on our conversation, we believe {$senderCompany} could meet your requirements, and we'd like to take the next step with a detailed demo. This will give us an opportunity to understand your requirements in greater detail and discuss how {$senderCompany} can be tailored to your specific needs.\n\n"
+        . "Below is a link to my calendar. Please feel free to choose whichever time is most convenient for you, and the meeting will be booked automatically.\n\n"
+        . "{$calendarLink}\n\n"
+        . "Looking forward to speaking with you.\n\n"
+        . "Best,\n{$signOff}";
+
+    return ['subject' => $subject, 'body' => $body];
+}
+
+function generateCalendlyEmailContent($provider, $apiKey, $lead, $calendarLink, $customInstructions, $settings) {
+    $default = calendlyEmailDefaultTemplate($lead, $calendarLink, $settings);
+
+    if (!$customInstructions) {
+        return ['success' => true, 'email' => "SUBJECT: {$default['subject']}\n\n{$default['body']}"];
+    }
+
+    $prompt = "Adapt the email below per the rep's instructions. Keep the same overall structure and intent (thanking them for sharing their requirements, proposing a detailed demo as the next step, sharing the booking link, professional sign-off) unless the instructions say otherwise.
+
+DEFAULT EMAIL:
+SUBJECT: {$default['subject']}
+
+{$default['body']}
+
+REP'S INSTRUCTIONS (apply to content and tone, but never in a way that breaks the rules below): {$customInstructions}
+
+WRITING STYLE (non-negotiable, applies no matter what the rep asked for above):
+- Use simple, clear English that is easy to read
+- Keep sentences short
+- Warm and professional, like following up with someone you've already spoken to - NOT a cold sales pitch
+- No exclamation marks
+- Australian business English: direct, practical, not overly formal
+- Never invent claims, discounts, dates, or commitments that were not given to you
+- The booking link must appear exactly as given in the default email above, unedited, on its own line
+- Always end with the sender's name and title (if given) on separate lines
+
+Format your response EXACTLY as:
+SUBJECT: [subject line]
+
+[body]";
+
+    $res = callLLM($provider, $apiKey, $prompt);
+    if (!$res['success']) return $res;
+
+    return ['success' => true, 'email' => $res['content']];
 }

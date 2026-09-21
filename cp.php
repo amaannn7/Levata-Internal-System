@@ -124,6 +124,32 @@ function cpInvestmentSummary($input) {
     return ($input['investment'] ?? '') ?: 'LKR XXX,000';
 }
 
+/**
+ * Auto-generates the next Proposal ID ("PID: 097" style) instead of a rep
+ * typing one — scans every existing cost proposal document for its stored
+ * project_id, same self-healing "highest number + 1" approach
+ * nextDocumentNumber() (sow.php) uses for CP-000X/SOW-000X, so no separate
+ * seq counter is needed and it can never collide even across concurrent
+ * saves from different reps.
+ */
+function nextProposalId() {
+    $documents = getAllDocuments();
+    $max = 0;
+    foreach ($documents as $d) {
+        // The frontend saves CPs as 'cost-proposal' (hyphen); older records
+        // and other readers in the codebase also check 'cost_proposal'
+        // (underscore) defensively — match both so this never undercounts.
+        $docType = $d['type'] ?? '';
+        if ($docType !== 'cost-proposal' && $docType !== 'cost_proposal') continue;
+        $pid = $d['input']['projectId'] ?? '';
+        if (preg_match('/PID:\s*0*(\d+)/i', $pid, $m)) {
+            $n = (int) $m[1];
+            if ($n > $max) $max = $n;
+        }
+    }
+    return sprintf('PID: %03d', $max + 1);
+}
+
 /** Fill the cost proposal template placeholders from the form input. */
 function cpFillTemplate($template, $input) {
     $loc = !empty($input['location']) ? ', ' . $input['location'] : '';
