@@ -460,3 +460,45 @@ Each client gets their OWN isolated deployment of this same code: own URL/subdom
 **Email therefore needs no per-tenant work.** Each client copy is configured (in its own Admin → Settings) with: that client's `resend_key` (their own Resend account), `outreach_from` = `sales@theirdomain.com` (a domain THEY verified in Resend via DNS — required; you can't send as a domain you don't control, Gmail/Outlook check SPF/DKIM/DMARC), plus their `support_from`/`support_email`. The existing `send-email` action works unchanged for every client because the From address is read from that copy's config, not hardcoded.
 
 **The real cost of this model is operational, not code:** N separate cPanel deployments, each with its own domain/SSL/backups, and updates must be redeployed to every client copy (no deploy-once). Fine for a handful of clients; script the deploy/update fan-out once it grows. Upside: bulletproof data isolation — clients' data never coexists.
+
+## "Closing a client support ticket" SOP — enforced in the hub's ticket module (ADDED)
+
+At the hub, tickets tagged with a client/brand (Macktiles, Topway, M&M, ...) — either
+forwarded automatically from a spoke, or logged manually by an admin via the
+**Client / Brand** field on "+ New Ticket" (shown only to admins, and only in hub mode)
+— are now governed by
+a role/checklist workflow, not just the plain open→in_progress→resolved→closed status
+any admin could previously move freely. This models a real process: a **Brand Manager**
+(whoever is assigned to the ticket) is the only one who talks to the client and closes
+it; a **Fixer** (a developer) only logs that a fix shipped. `ticketNeedsClosingChecklist()`
+in `support.php` is the switch — feedback and un-tagged internal tickets are unaffected,
+any admin still handles those exactly as before.
+
+- **Ownership isn't a field on the user record** — this is a small team where everyone
+  is an admin (see "What this system actually is" above), so a ticket's owner is just
+  whoever is `assigned_to` on it. Any admin can claim an unassigned ticket ("Take this
+  ticket") or reassign it (`assign-ticket` action, deliberately not ownership-gated —
+  someone has to be able to hand off a ticket the current owner can't get to). Moving a
+  client ticket's status while unassigned auto-claims it, mirroring "the Brand Manager
+  ... receives the ticket."
+- **Once assigned**, `ticketCanChangeStatus()` restricts status changes and closing-checklist
+  edits to that owner (or a super-admin backstop) — enforced in `update-ticket-status` and
+  `update-ticket-checklist`, both in api.php. Everyone else can still reply and can log a
+  fix, just not move the ticket forward.
+- **The Fixer's step** is `mark-ticket-fix-ready` (version + note, any admin) — appends a
+  `🔧 Fix ready — vX: ...` reply, notifies the assigned owner, and deliberately does NOT
+  touch status. Rendered as the amber panel at the top of a governed ticket's SOP block
+  (`supFixPanel()` in index.html).
+- **The closing checklist** (`ticket.checklist`: `fix_verified`, `root_cause`,
+  `clickup_task`, `changelog_updated`, `recurring_flagged`) is `update-ticket-checklist`,
+  rendered by `supChecklistPanel()`. `ticketChecklistComplete()` in support.php gates the
+  normal close: fix verified + root cause + `fix_version` + linked ClickUp task all
+  present. "Client informed" isn't a separate field — it's the reply thread itself.
+- **The no-response close** bypasses the checklist: `update-ticket-status` accepts a
+  `closing_note`, and closing with one (even an incomplete checklist) succeeds — this is
+  the "5 business days, no reply" path in the SOP. The frontend's "Close — no response"
+  button (`supCloseNoResponse()`) sends the literal note `"closed, no response"`.
+- **Deliberately NOT built yet** (the SOP itself defers this — "Once this SOP has been
+  used for a few weeks..."): automatic ClickUp task creation on ticket open, and automatic
+  2-day/5-day reminder nudges. Nothing here runs on a schedule; every step is a person
+  clicking a button.

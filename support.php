@@ -140,6 +140,54 @@ function applyTicketFields($ticket, $input) {
     return $ticket;
 }
 
+/* =====================================================================
+ * "Closing a client support ticket" SOP
+ *
+ * Governs tickets tagged with a client/brand (Macktiles, Topway, M&M, ...):
+ * forwarded in from a spoke deployment (source === 'client'), or logged
+ * manually at the hub by a Brand Manager who took the request by phone/email
+ * (plain 'client' tag, set at creation in the 'save-ticket' case). Feedback
+ * and un-tagged internal tickets aren't SOP-governed — any admin handles
+ * those as before.
+ *
+ * Roles are NOT a field on the user record (this is a small team where
+ * everyone is an admin) — a ticket's owner ("Brand Manager") is just whoever
+ * is assigned to it (assigned_to / assigned_to_name), set explicitly via
+ * 'assign-ticket' or implicitly by being the first admin to move its status.
+ * Once owned, only that person (or a super-admin, as a backstop) may change
+ * its status or tick its closing checklist — everyone else is "the Fixer":
+ * they can leave a fix note ('mark-ticket-fix-ready') but not close it.
+ * ===================================================================== */
+
+/** Is this ticket governed by the client-ticket closing SOP? */
+function ticketNeedsClosingChecklist($ticket) {
+    return trim($ticket['client'] ?? '') !== '' && ($ticket['type'] ?? 'support') === 'support';
+}
+
+/** May $user change this ticket's status / tick its checklist right now? */
+function ticketCanChangeStatus($ticket, $user) {
+    if (!empty($user['is_super_admin'])) return true;
+    if (!ticketNeedsClosingChecklist($ticket)) return true;
+    $owner = trim($ticket['assigned_to'] ?? '');
+    if ($owner === '') return true; // unassigned: first admin to act picks it up
+    return $owner === ($user['id'] ?? '');
+}
+
+/**
+ * The normal (client-confirmed) closing checklist: fix verified on production,
+ * a one-line root cause, the version/change that shipped, and a linked
+ * ClickUp task. "Client informed" is the reply thread itself, so it isn't a
+ * separate field. Doesn't gate the "no response, closed after 5 business
+ * days" path — that closes on a note instead (see 'update-ticket-status').
+ */
+function ticketChecklistComplete($ticket) {
+    $c = $ticket['checklist'] ?? [];
+    return !empty($c['fix_verified'])
+        && trim($c['root_cause'] ?? '') !== ''
+        && trim($ticket['fix_version'] ?? '') !== ''
+        && trim($c['clickup_task'] ?? '') !== '';
+}
+
 /** Company-wide summary across tickets, for the stat cards. */
 function ticketsSummary($tickets) {
     $open = 0; $inProgress = 0; $resolved = 0; $closed = 0;

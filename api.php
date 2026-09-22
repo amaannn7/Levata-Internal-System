@@ -3779,9 +3779,12 @@ case 'tickets':
     $store = getTicketsStore();
     $tickets = $store['tickets'];
     if ($hubMode && $isAdmin) {
-        // On a hub, admins see the client-forwarded tickets (the whole point).
+        // On a hub, admins see client tickets: forwarded from a spoke
+        // (source === 'client'), or logged manually on a client's behalf via
+        // the Client/Brand field (ticketNeedsClosingChecklist() — same tag
+        // either way, just a plain 'client' field with no 'source').
         $tickets = array_values(array_filter($tickets, function ($t) {
-            return ($t['source'] ?? '') === 'client';
+            return ($t['source'] ?? '') === 'client' || trim($t['client'] ?? '') !== '';
         }));
     } elseif (!$scopeAll) {
         // Otherwise, non-admins (and admins not requesting 'all') see only their own.
@@ -3840,6 +3843,7 @@ case 'save-ticket':
     }
 
     // Create a new ticket.
+    $isAdminCreator = !empty($u['is_admin']) || !empty($u['is_super_admin']);
     $ticket = [
         'id' => 'tkt_' . bin2hex(random_bytes(8)),
         'ticket_no' => nextTicketNo($store),
@@ -3850,6 +3854,11 @@ case 'save-ticket':
         'created_at' => $now,
         'updated_at' => $now,
         'replies' => [],
+        // An admin (a Brand Manager) may tag a manually-logged ticket with the
+        // client/brand it's about — e.g. one the client raised by phone or email
+        // rather than through their own deployment. This is what puts it under
+        // the "Closing a client support ticket" SOP; see ticketNeedsClosingChecklist().
+        'client' => $isAdminCreator ? trim($input['client'] ?? '') : '',
     ];
     $ticket = applyTicketFields($ticket, $input);
     if ($ticket['subject'] === '' || $ticket['message'] === '') {
@@ -4012,10 +4021,15 @@ case 'ticket-reply':
 
 case 'update-ticket-status':
     // Change status/priority. Admins only (triage on the deployed system).
+    // For client-tagged tickets, the "Closing a client support ticket" SOP
+    // restricts WHO can move status (the assigned Brand Manager, or a
+    // super-admin) and requires the closing checklist before Closed — see
+    // ticketCanChangeStatus()/ticketChecklistComplete() in support.php.
     if ($method !== 'POST') break;
-    requireAdmin();
+    $u = requireAdmin();
     global $VALID_TICKET_STATUS, $VALID_TICKET_PRIORITY;
     $ticketId = trim($input['id'] ?? '');
+    $closingNote = trim($input['closing_note'] ?? '');
     $store = getTicketsStore();
     $found = false;
     $statusChanged = false;
@@ -4023,8 +4037,31 @@ case 'update-ticket-status':
     foreach ($store['tickets'] as &$ticket) {
         if (($ticket['id'] ?? '') === $ticketId) {
             if (isset($input['status']) && in_array($input['status'], $VALID_TICKET_STATUS, true)) {
-                $statusChanged = $ticket['status'] !== $input['status'];
-                $ticket['status'] = $input['status'];
+                $newStatus = $input['status'];
+                if ($newStatus !== $ticket['status']) {
+                    if (!ticketCanChangeStatus($ticket, $u)) {
+                        $ownerName = trim($ticket['assigned_to_name'] ?? '') ?: 'the assigned Brand Manager';
+                        respond(['success' => false, 'error' => 'Only ' . $ownerName . ' can change this ticket\'s status'], 403);
+                    }
+                    if ($newStatus === 'closed' && ticketNeedsClosingChecklist($ticket)
+                        && $closingNote === '' && !ticketChecklistComplete($ticket)) {
+                        respond(['success' => false, 'error' => 'Complete the closing checklist first (fix verified, root cause, version, ClickUp task) — or close with a note if there was no client response.'], 400);
+                    }
+                    // Moving status on an unassigned client ticket claims ownership
+                    // of it ("the Brand Manager ... receives the ticket").
+                    if (trim($ticket['assigned_to'] ?? '') === '' && ticketNeedsClosingChecklist($ticket)) {
+                        $ticket['assigned_to'] = $u['id'] ?? '';
+                        $ticket['assigned_to_name'] = $u['name'] ?? '';
+                    }
+                }
+                $statusChanged = $ticket['status'] !== $newStatus;
+                $ticket['status'] = $newStatus;
+                if ($newStatus === 'closed') {
+                    $ticket['closed_at'] = date('c');
+                    $ticket['closed_by'] = $u['id'] ?? '';
+                    $ticket['closed_by_name'] = $u['name'] ?? '';
+                    if ($closingNote !== '') $ticket['closing_note'] = $closingNote;
+                }
             }
             if (isset($input['priority']) && in_array($input['priority'], $VALID_TICKET_PRIORITY, true)) {
                 $ticket['priority'] = $input['priority'];
@@ -4044,6 +4081,133 @@ case 'update-ticket-status':
     if ($statusChanged && ($ticketCopy['source'] ?? '') === 'client') {
         sendStatusToSpoke($ticketCopy);
     }
+    respond(['success' => true]);
+    break;
+
+case 'assign-ticket':
+    // Sets the ticket's owning "Brand Manager" per the ticket-closing SOP.
+    // Any admin may claim/reassign — ownership isn't a fixed role on the user
+    // record, just whoever is on the hook for this ticket right now.
+    if ($method !== 'POST') break;
+    $u = requireAdmin();
+    $ticketId = trim($input['id'] ?? '');
+    $assigneeId = trim($input['assigned_to'] ?? '');
+    $store = getTicketsStore();
+    $found = false;
+    foreach ($store['tickets'] as &$ticket) {
+        if (($ticket['id'] ?? '') === $ticketId) {
+            if ($assigneeId === '') {
+                $ticket['assigned_to'] = '';
+                $ticket['assigned_to_name'] = '';
+            } else {
+                $assignee = null;
+                foreach (getUsers() as $usr) {
+                    if (($usr['id'] ?? '') === $assigneeId) { $assignee = $usr; break; }
+                }
+                if (!$assignee) respond(['success' => false, 'error' => 'User not found'], 404);
+                $ticket['assigned_to'] = $assigneeId;
+                $ticket['assigned_to_name'] = $assignee['name'] ?? '';
+            }
+            $ticket['updated_at'] = date('c');
+            $found = true;
+            break;
+        }
+    }
+    unset($ticket);
+    if (!$found) respond(['success' => false, 'error' => 'Ticket not found'], 404);
+    saveTicketsStore($store);
+    respond(['success' => true]);
+    break;
+
+case 'mark-ticket-fix-ready':
+    // The Fixer's step in the ticket-closing SOP ("Fix done"): log what
+    // changed and the version, deployed and QA'd. Doesn't touch status or
+    // contact the client — verifying and telling the client stays the
+    // assigned Brand Manager's job.
+    if ($method !== 'POST') break;
+    $u = requireAdmin();
+    $ticketId = trim($input['id'] ?? '');
+    $version = trim($input['version'] ?? '');
+    $note = trim($input['note'] ?? '');
+    if ($version === '' || $note === '') {
+        respond(['success' => false, 'error' => 'Version and a note about the change are required'], 400);
+    }
+    $store = getTicketsStore();
+    $found = false;
+    $ticketCopy = null;
+    $reply = null;
+    foreach ($store['tickets'] as &$ticket) {
+        if (($ticket['id'] ?? '') === $ticketId) {
+            $ticket['fix_version'] = $version;
+            $ticket['fix_note'] = $note;
+            $ticket['fix_by'] = $u['id'] ?? '';
+            $ticket['fix_by_name'] = $u['name'] ?? '';
+            $ticket['fix_at'] = date('c');
+            if (!isset($ticket['replies']) || !is_array($ticket['replies'])) $ticket['replies'] = [];
+            $reply = [
+                'id' => 'rep_' . bin2hex(random_bytes(6)),
+                'author_id' => $u['id'] ?? '',
+                'author_name' => $u['name'] ?? '',
+                'is_staff' => true,
+                'is_fix_note' => true,
+                'message' => 'Fix ready — v' . $version . ': ' . $note,
+                'created_at' => date('c'),
+            ];
+            $ticket['replies'][] = $reply;
+            $ticket['updated_at'] = date('c');
+            $ticketCopy = $ticket;
+            $found = true;
+            break;
+        }
+    }
+    unset($ticket);
+    if (!$found) respond(['success' => false, 'error' => 'Ticket not found'], 404);
+    saveTicketsStore($store);
+    // Tell the assigned Brand Manager it's ready to verify on production.
+    $ownerId = trim($ticketCopy['assigned_to'] ?? '');
+    if ($ownerId !== '' && $ownerId !== ($u['id'] ?? '')) {
+        addUserNotification($ownerId, [
+            'notif_key' => 'ticket_fix_ready_' . $ticketId . '_' . $ticketCopy['fix_at'],
+            'type' => 'ticket_reply',
+            'title' => '🔧 Fix ready to verify',
+            'body' => ($u['name'] ?? 'Dev') . ' shipped v' . $version . ' for ' . ($ticketCopy['ticket_no'] ?? 'your ticket'),
+            'ticket_id' => $ticketId,
+        ]);
+    }
+    if (function_exists('pusherTriggerTicket')) pusherTriggerTicket($ticketId, 'new-reply', $reply);
+    respond(['success' => true]);
+    break;
+
+case 'update-ticket-checklist':
+    // The closing checklist from the ticket-closing SOP. Same ownership rule
+    // as status changes — only the assigned Brand Manager (or a super-admin)
+    // may tick it, since ticking "fix verified" is what unlocks Closed.
+    if ($method !== 'POST') break;
+    $u = requireAdmin();
+    $ticketId = trim($input['id'] ?? '');
+    $store = getTicketsStore();
+    $found = false;
+    foreach ($store['tickets'] as &$ticket) {
+        if (($ticket['id'] ?? '') === $ticketId) {
+            if (!ticketCanChangeStatus($ticket, $u)) {
+                $ownerName = trim($ticket['assigned_to_name'] ?? '') ?: 'the assigned Brand Manager';
+                respond(['success' => false, 'error' => 'Only ' . $ownerName . ' can update this ticket\'s checklist'], 403);
+            }
+            $c = $ticket['checklist'] ?? [];
+            if (array_key_exists('fix_verified', $input)) $c['fix_verified'] = (bool) $input['fix_verified'];
+            if (array_key_exists('root_cause', $input)) $c['root_cause'] = trim((string) $input['root_cause']);
+            if (array_key_exists('clickup_task', $input)) $c['clickup_task'] = trim((string) $input['clickup_task']);
+            if (array_key_exists('changelog_updated', $input)) $c['changelog_updated'] = (bool) $input['changelog_updated'];
+            if (array_key_exists('recurring_flagged', $input)) $c['recurring_flagged'] = (bool) $input['recurring_flagged'];
+            $ticket['checklist'] = $c;
+            $ticket['updated_at'] = date('c');
+            $found = true;
+            break;
+        }
+    }
+    unset($ticket);
+    if (!$found) respond(['success' => false, 'error' => 'Ticket not found'], 404);
+    saveTicketsStore($store);
     respond(['success' => true]);
     break;
 

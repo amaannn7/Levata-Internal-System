@@ -311,6 +311,16 @@
         .sup-reply-box { display: flex; gap: 8px; margin-top: 10px; }
         .sup-reply-box input { flex: 1; }
         .sup-empty-convo { font-size: 12.5px; color: var(--text-muted); padding: 2px 0 6px; }
+        /* ---- "Closing a client support ticket" SOP panel ---- */
+        .sup-owner-row { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+        .sup-sop { margin: 0 16px 14px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+        .sup-fix-block { padding: 10px 14px; background: #fffbeb; border-bottom: 1px solid var(--border); }
+        .sup-fix-note { font-size: 12.5px; line-height: 1.5; color: var(--text-primary); }
+        .sup-fix-form { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+        .sup-checklist { padding: 10px 14px; background: #f8fafc; }
+        .sup-checklist-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin-bottom: 8px; }
+        .sup-check-row { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-primary); margin-bottom: 7px; }
+        .sup-check-row input[type=text] { flex: 1; font-size: 12.5px; padding: 6px 9px; }
         /* ---- Task cards ---- */
         .task-card { background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 15px 17px; display: flex; align-items: flex-start; gap: 12px; transition: box-shadow .18s, border-color .18s, transform .18s; }
         .task-card:hover { box-shadow: var(--shadow-md); border-color: #d8dee7; transform: translateY(-1px); }
@@ -3268,6 +3278,10 @@ Phone: +1 234 567 890"></textarea></div>
             <input type="hidden" id="ticket-id">
             <div class="form-row"><div class="form-group"><label class="form-label">Type</label><select class="form-select" id="ticket-type"><option value="support">Support request</option><option value="feedback">Feedback</option></select></div><div class="form-group"><label class="form-label">Category</label><select class="form-select" id="ticket-category"><option value="bug">Bug / something broken</option><option value="how_to">How do I…? / question</option><option value="account">Account / login</option><option value="performance">Slow / not loading</option><option value="other">Other</option></select></div></div>
             <div class="form-group"><label class="form-label">Priority</label><select class="form-select" id="ticket-priority"><option value="low">Low</option><option value="normal" selected>Normal</option><option value="high">High</option></select></div>
+            <!-- Admin-only: tag a ticket logged on a client's behalf (they called/emailed
+                 rather than raising it through their own deployment) with the brand it's
+                 about, so it falls under the "Closing a client support ticket" SOP. -->
+            <div class="form-group" id="ticket-client-group" style="display:none;"><label class="form-label">Client / Brand <span style="font-weight:400;color:#888;">(only if logging this on a client's behalf)</span></label><input type="text" class="form-input" id="ticket-client" list="ticket-client-list" placeholder="e.g. Macktiles"><datalist id="ticket-client-list"></datalist></div>
             <div class="form-group"><label class="form-label">Subject</label><input type="text" class="form-input" id="ticket-subject" required placeholder="Short summary"></div>
             <div class="form-group"><label class="form-label">Message</label><textarea class="form-textarea" id="ticket-message" rows="5" required placeholder="Describe your request or feedback in detail"></textarea></div>
             <button type="submit" class="btn btn-primary" id="ticket-save-btn">Submit ticket</button>
@@ -10093,6 +10107,20 @@ window.jrDeleteInvoice=async function(jobId,invId){
 
 // ===================== Help & Support (feedback + support tickets) =====================
 let _supTickets=[],_supIsAdmin=false,_supHubMode=false,_supShowClosed=false;
+let _supUsers=[],_supUsersLoaded=false;
+// "Closing a client support ticket" SOP: governs tickets tagged with a
+// client/brand (Macktiles, Topway, M&M, ...) — forwarded from a spoke, or
+// logged manually at the hub. Feedback and un-tagged internal tickets aren't
+// SOP-governed; must mirror ticketNeedsClosingChecklist() in support.php.
+function supIsSopGoverned(t){return !!(t.client&&t.type==='support');}
+// Mirrors ticketCanChangeStatus() in support.php, for disabling controls
+// client-side (the backend enforces this regardless).
+function supCanChangeStatus(t){
+    if(user?.is_super_admin)return true;
+    if(!supIsSopGoverned(t))return true;
+    if(!t.assigned_to)return true;
+    return t.assigned_to===user?.id;
+}
 const SUP_STATUS={open:{label:'Open',color:'#6d28d9'},in_progress:{label:'In Progress',color:'#2563eb'},resolved:{label:'Resolved',color:'#10b981'},closed:{label:'Closed',color:'#9ca3af'}};
 const SUP_TYPE={feedback:'Feedback',support:'Support'};
 // Category options per type (value -> label). 'other' is shared.
@@ -10116,11 +10144,14 @@ window.loadSupport=async function(quiet){
     _supIsAdmin=!!r.is_admin;
     _supHubMode=!!r.hub_mode;
     if(typeof pusherSubscribeAllTickets==='function')pusherSubscribeAllTickets(_supTickets.map(t=>t.id));
-    // Hub mode: this system is a central client-ticket inbox. We don't file our own
-    // tickets here — hide "+ New Ticket" and the my/all scope switch; the list is
-    // already just the client-forwarded tickets.
-    document.getElementById('sup-new-ticket-btn').style.display=_supHubMode?'none':'';
+    // Hub mode: this system is a central client-ticket inbox. The my/all scope
+    // switch is moot (the list is already just client-forwarded tickets), but
+    // "+ New Ticket" stays available for admins to log a ticket a client raised
+    // by phone/email rather than through their own deployment (see the
+    // Client/Brand field in the ticket modal).
+    document.getElementById('sup-new-ticket-btn').style.display=(_supHubMode&&!_supIsAdmin)?'none':'';
     document.getElementById('sup-scope').style.display=(_supIsAdmin&&!_supHubMode)?'':'none';
+    if(_supIsAdmin&&!_supUsersLoaded){_supUsersLoaded=true;api('users').then(ur=>{if(ur.success){_supUsers=ur.users||[];supRenderList();}});}
     // Update the page subtitle to reflect the mode.
     const sub=document.getElementById('sup-subtitle');
     if(sub)sub.textContent=_supHubMode?'Client support tickets forwarded from connected systems. Reply to respond directly in their app.':'Raise a support request or send feedback. Track its status and replies here.';
@@ -10206,15 +10237,20 @@ function supTicketCard(t){
     const st=SUP_STATUS[t.status]||SUP_STATUS.open;
     const isFeedback=t.type==='feedback';
     const typeBadge=`<span class="sup-badge type-${isFeedback?'feedback':'support'}">${isFeedback?'Feedback':'Support'}</span>`;
-    // Client tag shown to admins when the ticket was forwarded from a client (spoke).
+    // Client tag shown to admins when the ticket was forwarded from a client (spoke)
+    // or logged manually on their behalf; also what puts it under the SOP.
     const clientBadge=t.client?`<span class="sup-badge client">${supEsc(t.client)}</span>`:'';
     const pri=(t.priority||'normal').toLowerCase();
     const priLabel=pri.charAt(0).toUpperCase()+pri.slice(1);
     const priPill=`<span class="sup-pri ${pri}">${priLabel}</span>`;
     const replyCount=(t.replies||[]).length;
     const replies=(t.replies||[]).map(supReplyRow).join('')||'<div class="sup-empty-convo">No replies yet. Be the first to respond.</div>';
-    // Admin: status dropdown; others: read-only pill.
-    const statusControl=_supIsAdmin
+    const governed=supIsSopGoverned(t);
+    const canChange=supCanChangeStatus(t);
+    // Admin who may act: status dropdown; admin who isn't the ticket's owner, or
+    // anyone else: read-only pill (per the SOP, only the assigned Brand Manager,
+    // or a super-admin, closes a client ticket).
+    const statusControl=(_supIsAdmin&&canChange)
         ?`<select class="sup-status-select" onchange="supSetStatus('${t.id}',this.value)">${Object.keys(SUP_STATUS).map(k=>`<option value="${k}" ${t.status===k?'selected':''}>${SUP_STATUS[k].label}</option>`).join('')}</select>`
         :`<span class="sup-status-pill" style="background:${st.color};">${st.label}</span>`;
     return `<div class="sup-card">
@@ -10228,6 +10264,7 @@ function supTicketCard(t){
                     ${t.created_by_name?'<span class="dot"></span><span>'+supEsc(t.created_by_name)+'</span>':''}
                     ${t.created_at?'<span class="dot"></span><span>'+supTimeAgo(t.created_at)+'</span>':''}
                 </div>
+                ${governed?`<div class="sup-owner-row">${supOwnerControl(t)}</div>`:''}
             </div>
             <div class="sup-card-side">
                 ${statusControl}
@@ -10235,6 +10272,7 @@ function supTicketCard(t){
             </div>
         </div>
         <div class="sup-msg">${supEsc(t.message||'')}</div>
+        ${governed?`<div class="sup-sop">${supFixPanel(t)}${supChecklistPanel(t)}</div>`:''}
         <div class="sup-convo">
             <div class="sup-convo-title">Conversation${replyCount?' · '+replyCount:''}</div>
             ${replies}
@@ -10243,6 +10281,51 @@ function supTicketCard(t){
                 <button type="button" class="btn btn-primary btn-sm" onclick="supSendReply('${t.id}')">Send</button>
             </div>
         </div>
+    </div>`;
+}
+// Ownership row: who's the ticket's "Brand Manager" (the SOP's ticket owner).
+// Any admin may claim an unassigned ticket or hand it to someone else — see
+// assign-ticket in api.php, which deliberately isn't restricted to the current
+// owner (someone has to be able to reassign if the owner is unavailable).
+function supOwnerControl(t){
+    if(!_supIsAdmin)return t.assigned_to_name?`Owner: ${supEsc(t.assigned_to_name)}`:'Unassigned';
+    if(!t.assigned_to)return `Unassigned · <button type="button" class="btn btn-secondary btn-sm" style="padding:2px 9px;" onclick="supAssignTicket('${t.id}','${user?.id||''}')">Take this ticket</button>`;
+    const managers=(_supUsers.length?_supUsers:[{id:t.assigned_to,name:t.assigned_to_name}]).filter(u=>u.is_admin||u.is_super_admin||u.id===t.assigned_to);
+    const options=managers.map(u=>`<option value="${u.id}" ${u.id===t.assigned_to?'selected':''}>${supEsc(u.name)}</option>`).join('');
+    return `Owner: <select class="sup-status-select" style="padding:2px 6px;font-size:11px;" onchange="supAssignTicket('${t.id}',this.value)">${options}</select>`;
+}
+// The Fixer's step: log what shipped (version + note) without touching status
+// or the client — verifying and telling the client stays the owner's job.
+function supFixPanel(t){
+    const hasFix=!!t.fix_note;
+    const latest=hasFix?`<div class="sup-fix-note"><strong>🔧 Fix ready — v${supEsc(t.fix_version||'')}:</strong> ${supEsc(t.fix_note)}<div class="sup-meta" style="margin-top:3px;">${supEsc(t.fix_by_name||'')}${t.fix_at?' · '+supTimeAgo(t.fix_at):''}</div></div>`:'<div class="sup-fix-note" style="color:var(--text-muted);">No fix logged yet.</div>';
+    if(!_supIsAdmin)return `<div class="sup-fix-block">${latest}</div>`;
+    return `<div class="sup-fix-block">
+        ${latest}
+        <div class="sup-fix-form" id="sup-fix-form-${t.id}" style="display:none;">
+            <input type="text" class="form-input" id="sup-fix-version-${t.id}" placeholder="Version, e.g. 1.4.2">
+            <textarea class="form-textarea" id="sup-fix-note-${t.id}" rows="2" placeholder="What changed"></textarea>
+            <button type="button" class="btn btn-primary btn-sm" onclick="supMarkFixReady('${t.id}')">Save fix note</button>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick="supToggleFixForm('${t.id}')">${hasFix?'Log another fix':'Mark fix ready'}</button>
+    </div>`;
+}
+// The closing checklist from the SOP. Inputs stay editable in the DOM for
+// everyone so the values are visible, but non-owners get them disabled —
+// the backend enforces the same rule regardless.
+function supChecklistPanel(t){
+    const canEdit=_supIsAdmin&&supCanChangeStatus(t);
+    const dis=canEdit?'':'disabled';
+    const c=t.checklist||{};
+    return `<div class="sup-checklist">
+        <div class="sup-checklist-title">Closing checklist</div>
+        <label class="sup-check-row"><input type="checkbox" ${c.fix_verified?'checked':''} ${dis} onchange="supUpdateChecklist('${t.id}',{fix_verified:this.checked})"> Fix verified on production</label>
+        <div class="sup-check-row"><input type="text" class="form-input" ${dis} value="${supEsc(c.root_cause||'')}" placeholder="One-line root cause" onblur="supUpdateChecklist('${t.id}',{root_cause:this.value})"></div>
+        <div class="sup-check-row"><input type="text" class="form-input" ${dis} value="${supEsc(c.clickup_task||'')}" placeholder="Linked ClickUp task (URL)" onblur="supUpdateChecklist('${t.id}',{clickup_task:this.value})"></div>
+        <label class="sup-check-row"><input type="checkbox" ${c.changelog_updated?'checked':''} ${dis} onchange="supUpdateChecklist('${t.id}',{changelog_updated:this.checked})"> Version / change log updated${t.fix_version?' (v'+supEsc(t.fix_version)+')':''}</label>
+        <label class="sup-check-row"><input type="checkbox" ${c.recurring_flagged?'checked':''} ${dis} onchange="supUpdateChecklist('${t.id}',{recurring_flagged:this.checked})"> Keeps recurring — improvement task created</label>
+        ${t.closing_note?`<div class="sup-meta" style="margin-top:2px;">Closing note: ${supEsc(t.closing_note)}</div>`:''}
+        ${(canEdit&&t.status!=='closed')?`<button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="supCloseNoResponse('${t.id}')">Close — no response</button>`:''}
     </div>`;
 }
 function supReplyRow(rep){
@@ -10262,6 +10345,11 @@ window.supOpenTicketModal=function(){
     document.getElementById('ticket-priority').value='normal';
     supSyncCategories();
     document.getElementById('ticket-modal-title').textContent='New Ticket';
+    // Admins can tag a ticket they're logging on a client's behalf with the
+    // brand it's about; non-admins never raise tickets for someone else.
+    document.getElementById('ticket-client-group').style.display=(_supIsAdmin&&_supHubMode)?'':'none';
+    const knownClients=[...new Set(_supTickets.map(t=>t.client).filter(Boolean))].sort();
+    document.getElementById('ticket-client-list').innerHTML=knownClients.map(c=>`<option value="${supEsc(c)}">`).join('');
     openModal('ticket-modal');
 };
 // Repopulate the Category dropdown to match the selected Type.
@@ -10284,6 +10372,7 @@ document.getElementById('ticket-form').addEventListener('submit',async e=>{
         priority:document.getElementById('ticket-priority').value,
         subject:document.getElementById('ticket-subject').value,
         message:document.getElementById('ticket-message').value,
+        client:document.getElementById('ticket-client').value,
     };
     const r=await api('save-ticket','POST',payload);
     btn.disabled=false;
@@ -10312,6 +10401,31 @@ window.supSendReply=async function(ticketId){
 window.supSetStatus=async function(id,status){
     const r=await api('update-ticket-status','POST',{id,status});
     if(r.success){toast('Status updated','success');loadSupport();}else toast(r.error||'Update failed','error');
+};
+// ---- "Closing a client support ticket" SOP actions ----
+window.supAssignTicket=async function(id,assignedTo){
+    const r=await api('assign-ticket','POST',{id,assigned_to:assignedTo});
+    if(r.success)loadSupport();else toast(r.error||'Assign failed','error');
+};
+window.supToggleFixForm=function(id){
+    const f=document.getElementById('sup-fix-form-'+id);
+    if(f)f.style.display=f.style.display==='none'?'':'none';
+};
+window.supMarkFixReady=async function(id){
+    const version=(document.getElementById('sup-fix-version-'+id)?.value||'').trim();
+    const note=(document.getElementById('sup-fix-note-'+id)?.value||'').trim();
+    if(!version||!note){toast('Version and a note about the change are required','error');return;}
+    const r=await api('mark-ticket-fix-ready','POST',{id,version,note});
+    if(r.success){toast('Fix logged','success');loadSupport();}else toast(r.error||'Save failed','error');
+};
+window.supUpdateChecklist=async function(id,patch){
+    const r=await api('update-ticket-checklist','POST',Object.assign({id},patch));
+    if(r.success)loadSupport();else toast(r.error||'Update failed','error');
+};
+window.supCloseNoResponse=async function(id){
+    if(!await customConfirm('Close this ticket with "closed, no response"? Only use this after the 2-day reminder, with 5 business days total of no reply.','Close — No Response',{confirmText:'Close'}))return;
+    const r=await api('update-ticket-status','POST',{id,status:'closed',closing_note:'closed, no response'});
+    if(r.success){toast('Ticket closed','success');loadSupport();}else toast(r.error||'Close failed','error');
 };
 window.supDeleteTicket=async function(id){
     if(!await customConfirm('Delete this ticket? This cannot be undone.','Delete Ticket',{danger:true,confirmText:'Delete'}))return;
