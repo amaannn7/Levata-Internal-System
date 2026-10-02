@@ -673,7 +673,7 @@ function nextDocumentNumber($documents, $type) {
 
 /** Read the shared documents store. Shape: ['documents' => [...]]. */
 function getDocsStore() {
-    $store = dbGetBlob('documents', null);
+    $store = memoGetBlob('documents');
     if ($store === null) {
         // One-time migration: gather any documents that still live in legacy user_*.json files, if any exist on disk.
         $store = migrateDocsFromUsers();
@@ -686,7 +686,7 @@ function getDocsStore() {
 
 /** Write the shared documents store (mirrors saveJobsStore), plus refresh the reporting projection. */
 function saveDocsStore($store) {
-    dbSaveBlob('documents', $store);
+    memoSaveBlob('documents', $store);
     dbSyncReportingTable('documents', $store['documents'] ?? [], [
         'doc_no' => 'doc_no',
         'type' => 'type',

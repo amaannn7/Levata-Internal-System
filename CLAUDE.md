@@ -42,34 +42,105 @@ The **Levata Internal System** is a monolithic PHP + vanilla JavaScript app with
      The amount field displays a grouped number ("1,850,000"); `dealMoney()`
      server-side strips separators, and the field re-formats from the saved value.
    - **Documents → pipeline.** `link-deal-document` attaches a saved CP or SOW to a deal (`cost_proposal_id` / `sow_id`) and advances the deal to the matching stage if it is behind. Surfaced as "Link Document" on the lead modal's Profile tab; the linked CP/SOW/job/client appear as buttons at the top of the lead modal.
-   - **Channel Partners (ADDED July 2026).** A deal either came to us directly, or
-     was referred by a channel partner in exchange for a commission. New module
-     `partners.php` (shared `partners` store_blobs row, same pattern as
-     `clients.php` — no reporting-table projection, since the list is short).
-     Nav → **Channel Partners** page (`#page-partners`, `loadPartnersPage()`) is a
-     simple directory: name, contact, default commission (`default_rate_type`
-     percentage/fixed + `default_rate_value`), reused via `save-partner` /
-     `delete-partner`. A deal carries `partner_id` + its own
-     `partner_rate_type`/`partner_rate_value` — a **snapshot** taken from the
-     partner's default at the moment they're attached (`set-deal-partner`), so a
-     later change to the partner's default rate does NOT retroactively change
-     what's owed on deals already in flight; each deal can also override the rate
-     at attach time. **The payout is never stored** — `partnerPayout($lead)`
-     (api.php) / `calcPartnerPayout()` (index.html, kept numerically identical)
-     always compute it live from the deal's *current* `deal_amount`, so editing
-     the deal value keeps the payout correct with nothing to fall out of sync.
-     Deleting a partner does not touch deals that reference them — they keep
-     their name/rate snapshot and render as "(deleted partner)" via
-     `partnerRefFor()` / the frontend's `partnerBadge()`.
-     Surfaced on the deal modal (`.deal-partner-block` next to the deal-value
-     block — same header level, so "what it's worth" and "who sent it" read as
-     peers) and as a gold `.partner-badge` pill on the Pipeline table row
-     (`partnerBadge()`), empty for direct deals. **The Pipeline filter** —
-     `#source-type-filter` (All Deals / Direct / Partner) — is a `source_type`
-     query param honoured by both `leads` and `stats` (so the stage strip and
-     the table stay in sync); Direct = `partner_id` empty, Partner = set. The
-     `leads` list response also carries the full `partners` array so the
-     frontend never needs a second round trip to render names/badges.
+   - **Channel Partners (REWORKED Oct 2026 — now a login tier, not a directory).**
+     A deal either came to us directly, or was referred by a channel partner. A
+     partner is created from **Users → + User → Role: Channel Partner**
+     (`create-user` with `is_channel_partner:true`): that makes the login *and* a
+     record in the shared `partners` store (`partners.php`), linked both ways
+     (`user.partner_id` ↔ `partner.user_id`). Deals still point at the **partner
+     record** (`lead.partner_id`), so all the payout code is unchanged. The
+     **Channel Partners** nav page (`#page-partners`) is a list of those records —
+     name, status, contact, deals / open deals and **commission earned / in
+     pipeline** — with row-click edit (name, status, contact, notes) via
+     `save-partner`. There is no "+ New Partner" (partners come from Users; there is
+     no `delete-partner` — remove the login instead, which archives the record) and
+     no commission field on the partner: **commission is set on the deal in the
+     pipeline** (per service, `set-service-partner-rate`; `set-deal-partner` starts a
+     deal at rate 0) and the `partners` endpoint rolls it up per partner from each
+     deal's live `partnerPayout()`, grouped by currency, never converted (won =
+     earned, open = pipeline, lost excluded). **Jobs and tasks are tied to partners too,
+     by derivation, nothing stored:** `partnerJobMap()` (partners.php) maps each job to
+     the partner of the deal it was registered from (`job.lead_id` / `lead.job_ids`),
+     and a task to the partner of its `job_id`; `jobs` and `tasks` stamp
+     `partner_id`/`partner_name` on every row (`partnerStamp()`). The team's Jobs and
+     Tasks pages show a gold partner badge and an All / Direct / partner filter
+     (`partnerFilterOptions()` / `partnerFilterRows()`), and each Channel Partners row
+     shows its Jobs and Tasks counts. `partnerPayout($lead)` / `calcPartnerPayout()` still compute
+     the payout live from the deal's current value; nothing is stored.
+     Deleting a partner login **archives** its record (`status:'archived'`) so
+     past deals keep the name; archived partners drop out of the deal pickers.
+     Renaming the login renames the record. Legacy partner records with no login
+     still work and stay selectable. `team-members` excludes partners.
+     **Four account tiers now:** Super Admin > Admin > Manager, plus **Channel
+     Partner** (`is_channel_partner:true`, `is_admin:false`). A partner can never be
+     promoted (`update-user` refuses `is_admin`/`is_super_admin` on one).
+     **A channel partner works like an admin, on their own records only, with a
+     limited interface (decided Oct 2026 — NOT view-only).** Pages they get:
+     Dashboard, Pipeline (add leads, the full deal modal, edit, delete/restore, win
+     deals), Cost Proposals, SOWs, Saved Documents, Jobs, Tasks, plus the bell. Enforced
+     server-side by a gate in api.php just before the `switch`:
+     `partnerMayCall($user,$action,$method,$input)` (partners.php) is an allowlist
+     (action + method) where each entry lists the records it names (`lead_id`/`id`/`ids`,
+     `document_id`, `job_id`, task `id`) and every one must belong to the partner; an
+     action not on the list is a 403, so a new endpoint is closed to partners by default.
+     Two allowlisted reads are narrowed for partners rather than refused: `command-center` (the
+     dashboard's pipeline funnel, built from their own deals via `partnerOwnLeads()`) and
+     `team-members` (returns only themselves, so their owner/assignee pickers work without
+     listing the team). Ownership: deals = leads with their `partner_id` (`partnerOwnLeads()`); jobs = jobs
+     from those deals (`job.lead_id`/`lead.job_ids`) **or created by them**
+     (`partnerOwnJobs()`); tasks = tasks on those jobs or created by them
+     (`partnerOwnTasks()`); documents = docs whose `lead_id` is one of their deals or whose
+     `owner_id` is them (`partnerOwnDocs()`). The list endpoints (`leads`, `stats`,
+     `jobs`, `tasks`, `list-documents`, `studio-overview`) filter their own output the
+     same way. What a partner creates is pinned to them: a new lead gets their
+     `partner_id` and `owner_id` (any client-sent values ignored), and `update-lead`
+     ignores `owner_id` from a partner. **The only deliberate gaps:** `set-deal-partner`
+     (who a deal belongs to — changing it would drop it out of their own scope), and
+     everything outside those pages — clients, users, settings, partners directory,
+     outbound email/export/import, ClickUp meeting pulls (company-wide, not scoped),
+     team-members, chat/support/minutes/NDA/ad-reports. `deal-win-preview` hides an
+     existing client's contacts from a partner. Team side: a partner's new deal lands in
+     the shared leads store, so the team's Pipeline shows it with the partner badge;
+     every non-partner user gets a `partner_deal` notification; `studio-overview` adds
+     partner-owned deals to each team member's open deals (their owner is a partner
+     login, not a team member). **Admins see what a partner does:** every partner write
+     (anything but the session ping, their own bell, and lead create) is stashed by the gate
+     (`$GLOBALS['__partnerAction']`) and, once the request succeeds, `respond()` calls
+     `notifyAdminsOfPartnerAction()` (partners.php): one `partner_activity` notification
+     per Admin/Super Admin (Managers are not told) like "Chandan changed a deal value —
+     Acme", with the record name, linking to the deal or its page; repeats of the same
+     action on the same record within 15 minutes collapse. A new partner deal sends
+     `partner_deal` to Admins/Super Admins the same way. Refused calls notify nobody.
+     Users → Session Activity labels partners "Channel Partner". **Owner name:** a partner
+     deal's `owner_id` is the partner's login, which `team-members` deliberately excludes, so
+     the `leads` response carries `owner_names` (partner login id → "Name (Channel Partner)";
+     a partner only gets their own) and the frontend's `ownerName()` falls back to it
+     (`_ownerExtra`) — that's what fills the Owner column/deal modal for the team.
+     **Performance:** whole-store blobs (leads, jobs, tasks, documents, partners) and
+     `getUsers()` are memoised for the length of one request (`memoGetBlob()` /
+     `memoSaveBlob()` in api.php; any save drops the entry) because the auth gate, the
+     scoping helpers and the list endpoints used to re-read and re-parse the same blob
+     several times per request. Don't call `dbGetBlob()` directly for those stores. The
+     partner app also starts the bell 3s after first paint and polls every 20s (team: 8s).
+     **Bell:** fed as the team works on the partner's records
+     (never by `generate-notifications`); events are queued with `partnerNotifyLead()` /
+     `partnerNotifyJobId()` / `partnerNotifyQueue()` and flushed from `respond()` on
+     success by `flushPartnerNotifications()`, skipping the acting user (no
+     self-notifications); hooked into stage change (`setLeadStage`), deal value
+     (`setDealAmount`), referral credited, job created (`win-deal`), job status,
+     invoice paid, task added/status. Notifications carry `type:'partner_update'` and a
+     `page` a click navigates to; title/body are HTML-escaped at write time. Jobs and
+     tasks are tied to partners by derivation (`partnerJobMap()` / `partnerStamp()`:
+     deal's partner, or the partner login that created it) — the team's Jobs/Tasks pages
+     show the badge + filter and each Channel Partners row shows Jobs/Tasks counts.
+     **Login OTP applies to partners like everyone else** (briefly exempted, then put back
+     on request): with `otp_enabled` on, a partner gets the email code at sign-in too.
+     Frontend: `showPartnerApp()` + `body.is-partner` CSS trims nav to the pages above
+     and hides export/import, Owner column, partner picker, source filter and ClickUp
+     panels — cosmetic only; the server is the wall.
+     Other deal UI is unchanged: the Pipeline `#source-type-filter`
+     (All / Direct / Partner), the gold `.partner-badge` pill, and the
+     `.deal-partner-block` on the deal modal.
    - **Removed:** the admin-only "Team Activity" nav item and its dashboard page-title variant (the per-rep card on the Admin Dashboard and Session Activity remain).
 
 ### What this system actually is (decided July 2026 — read before adding features)
@@ -93,11 +164,52 @@ SOW → job → invoices → tasks. Design every new feature for that, not for o
   (`enrich-lead`, `generate-email`, `generate-call-pitch`, `send-email`, import,
   Zoho export) still exist and still work** — flipping the flag to `true` brings
   the whole UI back. Do not delete those endpoints without asking.
-- **No rep/manager split.** Everyone is an admin and sees every nav item;
+- **No rep/manager split** on navigation — everyone sees every nav item;
   `applyRoleNavigation()` no longer hides anything by role. The duplicate
   rep-nav/manager-nav pairs and the two dashboard variants were collapsed into
-  one. Only genuinely dangerous surfaces (Users, API keys) stay super-admin
-  gated. `defaultLandingPage()` is always `dashboard`.
+  one. `defaultLandingPage()` is always `dashboard`.
+  - **Account tier is a separate axis: three tiers, mapped onto the existing
+    `is_admin`/`is_super_admin` booleans — no new DB field.** *Super Admin*
+    (`is_super_admin:true`) > *Admin* (`is_admin:true`, not super) > *Manager*
+    (`is_admin:false` — this is the renamed old "User"/"Member" tier, same
+    account shape, just a clearer label for this org, rendered with the same
+    `.badge`/`.badge-secondary` pill styling as the Admin/Super Admin badges
+    so all three tiers look like one consistent system in the Role column).
+    Any Admin or Super Admin can reach the Users page and create accounts,
+    and can promote/demote Manager↔Admin on anyone (`toggleAdmin()` in
+    index.html → `update-user`'s plain `is_admin` branch, no extra gate).
+    Only a Super Admin can grant or revoke Super Admin status
+    (`toggleSuperAdmin()` → `update-user`'s `is_super_admin` branch,
+    `requireSuperAdmin()`-gated), touch an account that is *already* Super
+    Admin at all, even just its title (`update-user` rejects with "Cannot
+    edit a Super Admin" unless the caller is themselves super-admin), or
+    **delete an Admin-tier account or above** — `delete-user` requires
+    `requireSuperAdmin()` to remove anyone with `is_admin:true`, so a plain
+    Admin can only delete a Manager, never another Admin or a Super Admin
+    (deliberately asymmetric with edit: any Admin can still edit another
+    Admin's title, just not delete the account — deleting is the more
+    destructive, rarer action). A Super Admin can't remove their own Super
+    Admin status via the UI (button disabled on self) so they can't lock
+    themselves out of the page they're looking at. Enforced in
+    `create-user`/`update-user`/`delete-user` in api.php: baseline
+    `requireAdmin()`, with `requireSuperAdmin()` sub-gates on the three
+    sensitive edges above. The Users nav item and page stay `admin-only`
+    (any Admin/Super Admin can open it); controls scoped to Super Admin use
+    the `.super-admin-only` CSS class (`.is-super-admin .super-admin-only`).
+    The `users` GET action is also `requireAdmin()`, and deliberately does
+    NOT filter by viewer tier — any Admin/Super Admin sees the full roster,
+    including other Super Admin accounts (so everyone can see who's actually
+    in the system); it's only *mutating* a Super Admin account that stays
+    restricted, in create-user/update-user/delete-user, not visibility in
+    the list. `impersonate`/`reset-user-data` stay `requireSuperAdmin()`.
+  - **This is completely independent of `ticket_role`** (developer/
+    brand_manager, the "Closing a client support ticket" SOP's two roles —
+    see below). A Manager or Admin can be a ticket `developer`; a Super Admin
+    can be a ticket `brand_manager`. Neither system reads the other's field.
+  - **API keys (`admin-settings`) still uses plain `requireAdmin()`** — same
+    gap pattern Users used to have, not yet fixed; flagged but deliberately
+    left alone pending a decision (changing who can see/edit LLM provider
+    keys is a separate, more consequential call than the Users tiering).
 - **Internal-only, no client portal** — clients never log in (see the Clients
   section above). Everything here is for the Levata team.
 - **Deleted in the July 2026 UI audit** (dead since outbound was hidden — all
@@ -154,10 +266,11 @@ SOW → job → invoices → tasks. Design every new feature for that, not for o
     `dealMoneyShort()` (`LKR 2.4M`) with the exact figure in the `title`
     attribute. `.cc-metrics-row` is `auto-fit`, not a fixed column count.
 2. **Documents** — **Cost Proposals** (full AI generator, see `cp.php`) and **Statements of Work** (Document Studio / SOW generator, see `sow.php`), plus a shared **Saved Documents** library (grouped by client). Each doc can be exported to PDF or DOCX, or a hand-edited revised file (e.g. a Figma-designed PDF) can be re-uploaded to supersede the generated draft.
+   **Saved Documents lists each client's documents newest first** (by `created_at`, doc number as tie-break, so editing an old document doesn't hop it to the top).
 3. **Clients** (BUILT — Flozy-style hub, Phase 1) — a shared, company-wide client registry that everything else hangs off. Lives in `clients.php` (module, `require_once`d by api.php after tasks.php) + shared store (the `clients` row in `store_blobs`, shape `['clients'=>[...], 'seq'=>n]`, client# `CLI-0001`) + a `clients` reporting projection table. Jobs, tasks and documents each carry a `client_id`, stamped at save time by `resolveClientId($name)` (case-insensitive name match against the registry — legacy records with only a typed name still aggregate via the name fallback in `clientOwnsRecord()`). Actions: `clients` (GET list + rollups + summary; auto-backfills the registry from existing job/doc/task client names when the store is empty), `client-workspace` (GET one client + their jobs/invoices/documents/tasks), `save-client` (create/update; 409 on duplicate name unless `if_exists:'use'`; renames propagate to all linked records via `propagateClientRename()`), `delete-client` (registry record only — linked records keep their name), `backfill-clients` (manual "Sync from existing data"). Frontend: nav `data-page="clients"`, `#page-clients` (list view `#cl-list-view` + per-client workspace `#cl-detail-view` with Overview/Jobs/Documents/Tasks/Invoices tabs), `#client-modal`, `window.loadClients`, and a shared `#client-datalist` feeding the job/task client inputs. Leads have a "Convert to Client" button (`convertLeadToClient()`, lead modal Profile tab).
    **Phase 2 (BUILT — the connected workflow chain):** (a) *Document approval* — docs carry `status` (`draft`/`approved`, plus `approved_at`/`approved_by`), set via the `set-document-status` action; Saved Documents shows an Approve button on CPs (`docToggleApproval()` in index.html) and approving offers to register the job via the existing `docCreateJob()` prefill (which now also auto-links the SOW whose `linked_cost_proposal` matches the CP). (b) *Tasks ↔ jobs* — tasks carry optional `job_id`/`job_no` (resolved server-side via `jobRefById()` in jobs.php); the task modal has a Job dropdown (`#task-edit-job`, `_populateTaskJobSelect()`) that auto-fills the client; `save-job` accepts `starter_tasks: true` on create to spawn a linked starter task set (4 tasks for one-off, 2 for retainer; checkbox `#job-starter-tasks`, create-only). (c) *Client files* — arbitrary shared files on a client record (`files` array on the client, stored in `data/uploads/`), actions `upload-client-file` / `download-client-file` (`?token=` query fallback used for the download link) / `delete-client-file`, surfaced as the Files tab in the client workspace (`clTabFiles()`, hidden input `#client-file-input`); files are unlinked from disk on client delete. **Internal-only by decision:** there will be NO client-facing portal/login — clients never access this system; it is purely an internal team tool (decided July 2026). Possible future additions (not built, internal-facing only): Stripe payment links on invoices, per-client team notes/activity feed.
 
-4. **Job Registry** (BUILT) — a shared, company-wide database tracking each client *job* through its lifecycle: approved cost proposal (CP-xxxx) → linked SOW (SOW-xxxx) → invoices (advance + final, or one per month for retainers), with open/in-progress/awaiting-payment/completed/cancelled status and finance roll-ups (pipeline value, paid, outstanding). A client can have many jobs. Lives in `jobs.php` (module, `require_once`d by api.php) + shared store (the `jobs` row in the `store_blobs` Postgres table — NOT per-user, it's a team-wide finance view; see "PostgreSQL storage" below). Actions: `jobs` (GET list+summary), `save-job` (create/update; create auto-generates the invoice schedule), `delete-job`, `save-invoice` (add/update; toggle paid), `delete-invoice`. Job# `JOB-0001`, invoice# `INV-0001` (sequential, stored in the blob's `seq`). Frontend: `#page-job-registry`, `window.loadJobRegistry`, `#job-modal`/`#invoice-modal`, jobs grouped by client. Jobs are created manually for now; when the Cost Proposal system exists, wire approval → auto-create job.
+4. **Job Registry** (BUILT) — a shared, company-wide database tracking each client *job* through its lifecycle: approved cost proposal (CP-xxxx) → linked SOW (SOW-xxxx) → invoices (advance + final, or one per month for retainers), with open/in-progress/awaiting-payment/completed/cancelled status and finance roll-ups (pipeline value, paid, outstanding). A client can have many jobs. Lives in `jobs.php` (module, `require_once`d by api.php) + shared store (the `jobs` row in the `store_blobs` Postgres table — NOT per-user, it's a team-wide finance view; see "PostgreSQL storage" below). Actions: `jobs` (GET list+summary), `save-job` (create/update; create auto-generates the invoice schedule), `delete-job`, `save-invoice` (add/update; toggle paid), `delete-invoice`. Job# `JOB-0001`, invoice# `INV-0001` (sequential, stored in the blob's `seq`). **Job number is the primary identifier; an invoice exists only against a job.** `nextJobNo()` never reissues a number a job already holds; `ensureJobNumbers()` (run by `getJobsStore()`, persisted once) fills any missing/duplicate `job_no`, lifts the counters past the highest number in use, and stamps every invoice with its job's `job_id`/`job_no`. `makeInvoice($store, $job, ...)` stamps at creation; `INV-xxxx` stays one company-wide sequence. `save-invoice` refuses a missing/unknown job (400/404). Job numbers are immutable (`applyJobFields()` never touches `job_no`). In the UI the `JOB-xxxx` badge (`.jr-job-no`) leads each job row and the invoice modal shows which job it's raised against. Any new code that creates jobs must use `nextJobNo()`, and invoices only via `makeInvoice()`. Frontend: `#page-job-registry`, `window.loadJobRegistry`, `#job-modal`/`#invoice-modal`, jobs grouped by client. Jobs are created manually for now; when the Cost Proposal system exists, wire approval → auto-create job.
 
 Documents (Cost Proposals + SOWs) persist in a **shared, company-wide store** (the `documents` row in `store_blobs`, shape `['documents' => [...]]`), accessed via `getDocsStore()` / `saveDocsStore()` / `getAllDocuments()` in `sow.php` — the whole team sees every document, the same way the jobs store is shared. Each doc carries a human-readable, per-type sequential `doc_no` (`SOW-0001`, `CP-0001`, `INV-0001`) generated by `nextDocumentNumber()` — global across the company so numbers never collide between users — plus an optional `linked_cost_proposal` field so a SOW can reference the approved CP it was built from, and `owner`/`owner_id`. The doc endpoints (`list-documents`, `all-documents` (alias), `get-document`, `save-document`, `delete-document`, `upload-document-file`, `download-document-file`) all read/write the shared store. Nav pages: `cost-proposals`, `sow`, `job-registry`; JS hooks `window.loadJobRegistry` (stub) and `window.sowOnEnter`.
 
@@ -463,42 +576,100 @@ Each client gets their OWN isolated deployment of this same code: own URL/subdom
 
 ## "Closing a client support ticket" SOP — enforced in the hub's ticket module (ADDED)
 
-At the hub, tickets tagged with a client/brand (Macktiles, Topway, M&M, ...) — either
-forwarded automatically from a spoke, or logged manually by an admin via the
-**Client / Brand** field on "+ New Ticket" (shown only to admins, and only in hub mode)
-— are now governed by
-a role/checklist workflow, not just the plain open→in_progress→resolved→closed status
-any admin could previously move freely. This models a real process: a **Brand Manager**
-(whoever is assigned to the ticket) is the only one who talks to the client and closes
-it; a **Fixer** (a developer) only logs that a fix shipped. `ticketNeedsClosingChecklist()`
-in `support.php` is the switch — feedback and un-tagged internal tickets are unaffected,
-any admin still handles those exactly as before.
+At the hub, tickets tagged with a client/brand (Macktiles, Topway, M&M, ...) — only ever
+forwarded automatically from a spoke, no manual-tagging path — are governed by a
+role/checklist workflow, not just the plain open→in_progress→resolved→closed status any
+admin could previously move freely. This models a real process: a **Brand Manager** owns
+the ticket, talks to the client, and closes it; a **Fixer** (a developer) only logs that a
+fix shipped. `ticketNeedsClosingChecklist()` in `support.php` is the switch — feedback and
+un-tagged internal tickets are unaffected, any admin still handles those exactly as before.
 
-- **Ownership isn't a field on the user record** — this is a small team where everyone
-  is an admin (see "What this system actually is" above), so a ticket's owner is just
-  whoever is `assigned_to` on it. Any admin can claim an unassigned ticket ("Take this
-  ticket") or reassign it (`assign-ticket` action, deliberately not ownership-gated —
-  someone has to be able to hand off a ticket the current owner can't get to). Moving a
-  client ticket's status while unassigned auto-claims it, mirroring "the Brand Manager
-  ... receives the ticket."
-- **Once assigned**, `ticketCanChangeStatus()` restricts status changes and closing-checklist
-  edits to that owner (or a super-admin backstop) — enforced in `update-ticket-status` and
-  `update-ticket-checklist`, both in api.php. Everyone else can still reply and can log a
-  fix, just not move the ticket forward.
-- **The Fixer's step** is `mark-ticket-fix-ready` (version + note, any admin) — appends a
-  `🔧 Fix ready — vX: ...` reply, notifies the assigned owner, and deliberately does NOT
-  touch status. Rendered as the amber panel at the top of a governed ticket's SOP block
-  (`supFixPanel()` in index.html).
+**Roles are a real field now — `ticket_role` (ADDED, revision 2).** Each user carries
+`ticket_role`: `'developer'` or `'brand_manager'` (default), stored in the `users` table's
+JSONB `data` column (no migration needed — same pattern as `title`), editable per-user on
+the Users page (`saveUserTicketRole()`). This is a **separate, orthogonal dimension** from
+`is_admin`/`is_super_admin`:
+- `is_admin`/`is_super_admin` — app-wide surfaces only (Users, API keys, admin settings,
+  impersonation). Nothing to do with tickets.
+- `ticket_role` — the sole authority for who may act on a client ticket, checked
+  independently of admin tier.
+Only Amaan is `developer`; everyone else defaults to `brand_manager`.
+
+- **A Developer can never own, reassign-to-self, move status on, or edit the checklist of
+  a client ticket — not even as a super-admin.** `assign-ticket` rejects assigning a
+  developer-role user as owner outright. `ticketCanChangeStatus()` (support.php) checks
+  `ticket_role === 'developer'` and returns `false` **before** its super-admin backstop
+  check — that ordering is load-bearing: Amaan is super-admin (see below), and if the
+  super-admin check ran first it would silently undo the whole separation of duties. The
+  frontend's `supCanChangeStatus()` mirrors the identical order. The super-admin backstop
+  that remains is narrower than it looks: it only resolves ownership disputes/unavailability
+  **among Brand Managers** (a super-admin Brand Manager can act on any client ticket, not
+  just their own) — it never reaches a developer, because that branch already returned.
+- **`mark-ticket-fix-ready` is the mirror restriction** — strictly `ticket_role ===
+  'developer'`, deliberately with **no** super-admin bypass either (an app-wide super-admin
+  who isn't the Fixer still can't log a fix). Appends a `🔧 Fix ready — vX: ...` reply,
+  notifies the assigned owner, and does NOT touch status.
+- **Amaan is super-admin** (bootstrapped directly in the DB, since no super-admin existed
+  yet to grant the first one through `update-user`'s normal `requireSuperAdmin()` gate) —
+  he needs full app access to maintain/deploy this system. This is safe specifically
+  *because* of the ordering above: super-admin unlocks Users/API keys/settings, never
+  ticket ownership or closing.
+- **Owner-assignment and the "Mark fix ready" UI both filter by `ticket_role`** too
+  (`supOwnerControl()` only offers brand-manager-role users; the fix-ready button only
+  renders for the current user if they're `developer`) — client-side mirrors of the same
+  backend rule, not the source of truth.
+
+**Ticket card UI (redesigned, revision 2)** — `supResolutionPanel()` in index.html replaced
+two separately-colored boxes (an amber fix note + a grey checklist, each with their own
+header and a checkbox that just repeated the fix note's own version number) with **one**
+card, one background, two numbered steps: "1 Fix" then "2 Verify & close". Delete is a
+small icon button now, not a competing full-width red button in the header.
+
+- **Once assigned**, status changes, checklist edits, and replies are all restricted to
+  that owner (or the Brand-Manager-only super-admin backstop above) — enforced in
+  `update-ticket-status`, `update-ticket-checklist`, and `ticket-reply`, all in api.php,
+  all via the same `ticketCanChangeStatus()` check. **`ticket-reply` is the one that
+  matters most for this**: a staff reply on a client-sourced ticket is what actually
+  reaches the client (`sendReplyToSpoke()` fires right after), so this is the rule that
+  stops a Developer from ever messaging a client (their only channel stays
+  `mark-ticket-fix-ready`, which never calls `sendReplyToSpoke()`) and stops any Brand
+  Manager other than the assigned owner from replying once someone owns it — not just
+  "any admin," which is what it used to allow. Moving status OR replying on an unassigned
+  client ticket both auto-claim it, mirroring "the Brand Manager ... receives the ticket" —
+  whoever engages first becomes the owner, so there's one consistent answer to "who's
+  handling this" everywhere in the SOP, not a different rule per action.
 - **The closing checklist** (`ticket.checklist`: `fix_verified`, `root_cause`,
-  `clickup_task`, `changelog_updated`, `recurring_flagged`) is `update-ticket-checklist`,
-  rendered by `supChecklistPanel()`. `ticketChecklistComplete()` in support.php gates the
-  normal close: fix verified + root cause + `fix_version` + linked ClickUp task all
-  present. "Client informed" isn't a separate field — it's the reply thread itself.
+  `clickup_task`, `changelog_updated`, `recurring_flagged`) — `ticketChecklistComplete()`
+  in support.php gates the normal close: fix verified + root cause + `fix_version` + linked
+  ClickUp task all present. "Client informed" isn't a separate field — it's the reply
+  thread itself. **`clickup_task` is a manually-typed URL, self-attested like every other
+  box in this checklist** — the field just has to be non-empty (labelled "Linked ClickUp
+  task (closed)" so the person filling it in knows the task should actually be closed, not
+  just exist), there is no live ClickUp API call to create the task or verify its status.
+  `clickupCreateTask()` exists in sow.php but is only wired into lead follow-ups and task
+  creation, never into this checklist — creating the ClickUp task itself still happens
+  outside the app.
 - **The no-response close** bypasses the checklist: `update-ticket-status` accepts a
   `closing_note`, and closing with one (even an incomplete checklist) succeeds — this is
   the "5 business days, no reply" path in the SOP. The frontend's "Close — no response"
-  button (`supCloseNoResponse()`) sends the literal note `"closed, no response"`.
-- **Deliberately NOT built yet** (the SOP itself defers this — "Once this SOP has been
-  used for a few weeks..."): automatic ClickUp task creation on ticket open, and automatic
-  2-day/5-day reminder nudges. Nothing here runs on a schedule; every step is a person
-  clicking a button.
+  button (`supCloseNoResponse()`) sends the literal note `"closed, no response"`, exactly
+  what `processTicketReminders()` (below) writes automatically.
+- **The 2-day/5-day reminder nudges ARE now built** (`processTicketReminders()` +
+  `businessDaysBetween()`, both in support.php) — no longer "every step is a person
+  clicking a button" for this leg specifically. It scans open/in-progress governed
+  tickets whose LAST reply is from staff (i.e. we're waiting on the client, not the other
+  way round — a ticket where the client replied last, or that staff never touched, is
+  left alone): at 2 business days it posts one system reminder reply (pushed to the spoke
+  via `sendReplyToSpoke()` same as any staff reply, `reminder_sent_for` stops it repeating
+  for the same silence), at 5 it auto-closes with the literal note `"closed, no response"`
+  (`closed_by_name: 'Automatic (no response)'`), identical to a human doing it manually.
+  **There is no cron/scheduler on this stack** (shared cPanel hosting, no guaranteed
+  background job), so it piggybacks on the `tickets` GET action instead — whichever admin
+  next opens Help & Support triggers a scan, rate-limited to once per 4 hours via
+  `admin_config.ticket_reminders_last_run` so it isn't rescanning on every request. This
+  means it only fires when someone actually opens the app; if guaranteed even-when-nobody's-
+  looking execution is ever needed, the same `processTicketReminders()` call could be
+  exposed behind a secret-guarded endpoint for a real cPanel Cron Job to hit — not built,
+  since the lazy trigger covers a team that checks the queue daily.
+  Automatic ClickUp task creation on ticket open is still not built (the SOP defers that
+  itself — "Once this SOP has been used for a few weeks...").

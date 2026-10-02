@@ -10,24 +10,83 @@
  *   - its value and status (open / in_progress / awaiting_payment / completed / cancelled)
  *   - its invoices (advance + final for one-off jobs, or one per month for retainers)
  *
- * Job number format: JOB-0001 (sequential, per registry).
- * Invoice number format: INV-0001 (sequential across all invoices in the registry).
+ * Job number format: JOB-0001 (sequential, per registry). The job is the primary record:
+ * it gets its number the moment it is created, and nothing is numbered without one.
+ * Invoice number format: INV-0001 (sequential across all invoices in the registry). An invoice
+ * can only be created against an existing job and carries that job's id + JOB-xxxx.
  */
 
 /** Read the shared registry. Shape: ['jobs' => [...], 'seq' => ['job'=>n,'invoice'=>n]]. */
 function getJobsStore() {
-    $store = dbGetBlob('jobs', null);
+    $store = memoGetBlob('jobs');
     if ($store === null) return ['jobs' => [], 'seq' => ['job' => 0, 'invoice' => 0]];
     if (!isset($store['jobs']) || !is_array($store['jobs'])) $store['jobs'] = [];
     if (!isset($store['seq']) || !is_array($store['seq'])) $store['seq'] = ['job' => 0, 'invoice' => 0];
     $store['seq']['job'] = (int) ($store['seq']['job'] ?? 0);
     $store['seq']['invoice'] = (int) ($store['seq']['invoice'] ?? 0);
+    // Self-healing: a job with no number, or an invoice not stamped with its job,
+    // is repaired once and persisted so the numbers are stable from then on.
+    if (ensureJobNumbers($store)) saveJobsStore($store);
     return $store;
+}
+
+/** The numeric part of a JOB-0007 / INV-0007 style number, or 0 if it isn't one. */
+function registryNumberPart($no) {
+    return preg_match('/(\d+)\s*$/', (string) $no, $m) ? (int) $m[1] : 0;
+}
+
+/**
+ * Make sure every job carries a unique JOB-xxxx and every invoice is stamped
+ * with the job it belongs to (`job_id` / `job_no`). Existing numbers are never
+ * changed; only gaps are filled, oldest job first so the numbering follows the
+ * order work was registered. Also lifts the counters to at least the highest
+ * number already in use, so a restored or hand-edited store can't hand out a
+ * duplicate. Returns true if anything was changed.
+ */
+function ensureJobNumbers(&$store) {
+    $changed = false;
+    $maxJob = $store['seq']['job'];
+    $maxInv = $store['seq']['invoice'];
+    $taken = [];
+    foreach ($store['jobs'] as $j) {
+        $no = trim((string) ($j['job_no'] ?? ''));
+        if ($no !== '') { $taken[$no] = true; $maxJob = max($maxJob, registryNumberPart($no)); }
+        foreach (($j['invoices'] ?? []) as $inv) $maxInv = max($maxInv, registryNumberPart($inv['invoice_no'] ?? ''));
+    }
+    if ($maxJob > $store['seq']['job']) { $store['seq']['job'] = $maxJob; $changed = true; }
+    if ($maxInv > $store['seq']['invoice']) { $store['seq']['invoice'] = $maxInv; $changed = true; }
+
+    // Jobs missing a number, or sharing one with an earlier job, get the next free one.
+    $order = array_keys($store['jobs']);
+    usort($order, fn($a, $b) => strcmp($store['jobs'][$a]['created_at'] ?? '', $store['jobs'][$b]['created_at'] ?? '') ?: $a <=> $b);
+    $seen = [];
+    foreach ($order as $i) {
+        $no = trim((string) ($store['jobs'][$i]['job_no'] ?? ''));
+        if ($no === '' || isset($seen[$no])) {
+            $store['jobs'][$i]['job_no'] = nextJobNo($store);
+            $changed = true;
+        }
+        $seen[$store['jobs'][$i]['job_no']] = true;
+    }
+
+    foreach ($store['jobs'] as &$j) {
+        if (!isset($j['invoices']) || !is_array($j['invoices'])) continue;
+        foreach ($j['invoices'] as &$inv) {
+            if (($inv['job_id'] ?? '') !== ($j['id'] ?? '') || ($inv['job_no'] ?? '') !== ($j['job_no'] ?? '')) {
+                $inv['job_id'] = $j['id'] ?? '';
+                $inv['job_no'] = $j['job_no'] ?? '';
+                $changed = true;
+            }
+        }
+        unset($inv);
+    }
+    unset($j);
+    return $changed;
 }
 
 /** Write the shared registry (mirrors saveUserData), plus refresh the reporting projection. */
 function saveJobsStore($store) {
-    dbSaveBlob('jobs', $store);
+    memoSaveBlob('jobs', $store);
     dbSyncReportingTable('jobs', $store['jobs'] ?? [], [
         'client' => 'client',
         'status' => 'status',
@@ -37,8 +96,14 @@ function saveJobsStore($store) {
 }
 
 function nextJobNo(&$store) {
-    $store['seq']['job']++;
-    return sprintf('JOB-%04d', $store['seq']['job']);
+    // Never hand out a number a job already holds, even if the counter has drifted behind.
+    $used = [];
+    foreach ($store['jobs'] ?? [] as $j) $used[$j['job_no'] ?? ''] = true;
+    do {
+        $store['seq']['job']++;
+        $no = sprintf('JOB-%04d', $store['seq']['job']);
+    } while (isset($used[$no]));
+    return $no;
 }
 function nextInvoiceNo(&$store) {
     $store['seq']['invoice']++;
@@ -52,11 +117,17 @@ function jobMoney($v) {
     return $clean === '' ? 0.0 : (float) $clean;
 }
 
-/** Build a single invoice record. */
-function makeInvoice(&$store, $label, $amount, $dueDate = '', $status = 'unpaid') {
+/**
+ * Build a single invoice record. An invoice only ever exists against a job, so
+ * it is stamped with that job's id and JOB-xxxx at creation (its own INV-xxxx
+ * stays a single company-wide sequence, so invoice numbers never repeat).
+ */
+function makeInvoice(&$store, $job, $label, $amount, $dueDate = '', $status = 'unpaid') {
     return [
         'id' => 'inv_' . bin2hex(random_bytes(6)),
         'invoice_no' => nextInvoiceNo($store),
+        'job_id' => $job['id'] ?? '',
+        'job_no' => $job['job_no'] ?? '',
         'label' => $label,
         'amount' => jobMoney($amount),
         'due_date' => $dueDate,
@@ -83,7 +154,7 @@ function buildJobInvoices(&$store, $job, $input) {
                 $ts = strtotime($start . ' +' . $i . ' month');
                 if ($ts) $due = date('Y-m-d', $ts);
             }
-            $invoices[] = makeInvoice($store, 'Month ' . ($i + 1), $monthly, $due);
+            $invoices[] = makeInvoice($store, $job, 'Month ' . ($i + 1), $monthly, $due);
         }
     } else {
         $total = jobMoney($job['value'] ?? 0);
@@ -91,8 +162,8 @@ function buildJobInvoices(&$store, $job, $input) {
             $advancePct = isset($input['advance_pct']) ? max(0, min(100, (int) $input['advance_pct'])) : 50;
             $advance = round($total * $advancePct / 100, 2);
             $final = round($total - $advance, 2);
-            $invoices[] = makeInvoice($store, 'Advance (' . $advancePct . '%)', $advance);
-            $invoices[] = makeInvoice($store, 'Final payment', $final);
+            $invoices[] = makeInvoice($store, $job, 'Advance (' . $advancePct . '%)', $advance);
+            $invoices[] = makeInvoice($store, $job, 'Final payment', $final);
         }
     }
     return $invoices;

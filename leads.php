@@ -16,7 +16,7 @@
 
 /** Read the shared leads store. Shape: ['leads' => [...]]. */
 function getLeadsStore() {
-    $store = dbGetBlob('leads', null);
+    $store = memoGetBlob('leads');
     if ($store === null) return ['leads' => []];
     if (!isset($store['leads']) || !is_array($store['leads'])) $store['leads'] = [];
     return $store;
@@ -24,7 +24,7 @@ function getLeadsStore() {
 
 /** Write the shared leads store, plus refresh the reporting projection. */
 function saveLeadsStore($store) {
-    dbSaveBlob('leads', $store);
+    memoSaveBlob('leads', $store);
     dbSyncReportingTable('leads', $store['leads'] ?? [], [
         'owner_id' => 'owner_id',
         'stage' => 'stage',

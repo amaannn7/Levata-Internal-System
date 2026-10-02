@@ -143,12 +143,13 @@ function applyTicketFields($ticket, $input) {
 /* =====================================================================
  * "Closing a client support ticket" SOP
  *
- * Governs tickets tagged with a client/brand (Macktiles, Topway, M&M, ...):
- * forwarded in from a spoke deployment (source === 'client'), or logged
- * manually at the hub by a Brand Manager who took the request by phone/email
- * (plain 'client' tag, set at creation in the 'save-ticket' case). Feedback
- * and un-tagged internal tickets aren't SOP-governed — any admin handles
- * those as before.
+ * Governs tickets tagged with a client/brand (Macktiles, Topway, M&M, ...) —
+ * only ever forwarded in from a spoke deployment (source === 'client', via
+ * ingestForwardedTicket()). There is no manual-tagging path at the hub — one
+ * was tried and removed: an admin-created ticket left untagged silently
+ * vanished from the hub's own queue (it only shows client-tagged tickets),
+ * which was worse than not having the option. Feedback and un-tagged
+ * internal tickets aren't SOP-governed — any admin handles those as before.
  *
  * Roles are NOT a field on the user record (this is a small team where
  * everyone is an admin) — a ticket's owner ("Brand Manager") is just whoever
@@ -166,10 +167,23 @@ function ticketNeedsClosingChecklist($ticket) {
 
 /** May $user change this ticket's status / tick its checklist right now? */
 function ticketCanChangeStatus($ticket, $user) {
-    if (!empty($user['is_super_admin'])) return true;
     if (!ticketNeedsClosingChecklist($ticket)) return true;
+    // "Amaan does not contact clients or close tickets" — a Developer never
+    // moves status on a client ticket, not even to pick up an unassigned one,
+    // and being a super-admin doesn't override that: is_admin/is_super_admin
+    // governs app-wide surfaces (Users, API keys, ...), ticket_role is the
+    // sole authority for who acts on a client ticket. The developer check
+    // MUST run before the super-admin check below, or a developer who is
+    // also super-admin (e.g. Amaan, who needs full app access to maintain
+    // this system) would silently bypass the whole separation of duties.
+    // Their only action here is mark-ticket-fix-ready.
+    if (($user['ticket_role'] ?? 'brand_manager') === 'developer') return false;
+    // Backstop for resolving ownership disputes/unavailability AMONG Brand
+    // Managers only — a super-admin Brand Manager can act on any client
+    // ticket, not just their own. Never reaches a developer (returned above).
+    if (!empty($user['is_super_admin'])) return true;
     $owner = trim($ticket['assigned_to'] ?? '');
-    if ($owner === '') return true; // unassigned: first admin to act picks it up
+    if ($owner === '') return true; // unassigned: first Brand Manager to act picks it up
     return $owner === ($user['id'] ?? '');
 }
 
@@ -185,7 +199,7 @@ function ticketChecklistComplete($ticket) {
     return !empty($c['fix_verified'])
         && trim($c['root_cause'] ?? '') !== ''
         && trim($ticket['fix_version'] ?? '') !== ''
-        && trim($c['clickup_task'] ?? '') !== '';
+        && !empty($c['clickup_task']);
 }
 
 /** Company-wide summary across tickets, for the stat cards. */
@@ -205,6 +219,87 @@ function ticketsSummary($tickets) {
         'closed' => $closed,
         'total' => count($tickets),
     ];
+}
+
+/** Weekday count strictly between two ISO timestamps (Sat/Sun excluded). */
+function businessDaysBetween($fromIso, $toIso) {
+    if (!$fromIso) return 0;
+    try {
+        $from = new DateTime($fromIso);
+        $to = new DateTime($toIso);
+    } catch (Exception $e) {
+        return 0;
+    }
+    if ($to <= $from) return 0;
+    $from->setTime(0, 0, 0);
+    $to->setTime(0, 0, 0);
+    $days = 0;
+    $cursor = clone $from;
+    while ($cursor < $to) {
+        $cursor->modify('+1 day');
+        if ((int) $cursor->format('N') < 6) $days++; // 1=Mon..5=Fri
+    }
+    return $days;
+}
+
+/**
+ * The "No reply from the client" leg of the ticket-closing SOP: a client
+ * ticket sitting with the last message from staff (the client hasn't
+ * followed up) gets one reminder at 2 business days, then auto-closes with
+ * "closed, no response" at 5 — matching the manual "Close - no response"
+ * path exactly, just fired automatically instead of by a person clicking it.
+ * Only ever acts on governed (client-tagged) tickets: an internal ticket
+ * with no client on the other end has no "waiting on them" state to track.
+ * Safe to call repeatedly (e.g. on every ticket-list load) — a ticket that
+ * isn't due for anything is untouched, and `reminder_sent_for` stops the
+ * same staff message from triggering a second reminder.
+ */
+function processTicketReminders() {
+    $store = getTicketsStore();
+    $now = date('c');
+    $reminded = 0;
+    $closed = 0;
+    $changed = false;
+    foreach ($store['tickets'] as &$ticket) {
+        if (($ticket['status'] ?? 'open') === 'closed') continue;
+        if (!ticketNeedsClosingChecklist($ticket)) continue;
+        $replies = $ticket['replies'] ?? [];
+        if (empty($replies)) continue;
+        $last = end($replies);
+        if (empty($last['is_staff'])) continue; // client already replied - ball's in our court
+        $days = businessDaysBetween($last['created_at'] ?? null, $now);
+        if ($days >= 5) {
+            $ticket['status'] = 'closed';
+            $ticket['closing_note'] = 'closed, no response';
+            $ticket['closed_at'] = $now;
+            $ticket['closed_by'] = '';
+            $ticket['closed_by_name'] = 'Automatic (no response)';
+            $ticket['updated_at'] = $now;
+            $closed++;
+            $changed = true;
+        } elseif ($days >= 2 && ($ticket['reminder_sent_for'] ?? '') !== ($last['id'] ?? '')) {
+            $ownerName = trim($ticket['assigned_to_name'] ?? '') ?: 'Support';
+            $reminder = [
+                'id' => 'rep_' . bin2hex(random_bytes(6)),
+                'author_id' => $ticket['assigned_to'] ?? '',
+                'author_name' => $ownerName,
+                'is_staff' => true,
+                'is_system_reminder' => true,
+                'message' => "Just checking in on this — following up on the message above. Let us know if you need anything else, otherwise we'll close this out soon.",
+                'created_at' => $now,
+            ];
+            if (!isset($ticket['replies']) || !is_array($ticket['replies'])) $ticket['replies'] = [];
+            $ticket['replies'][] = $reminder;
+            $ticket['reminder_sent_for'] = $last['id'] ?? '';
+            $ticket['updated_at'] = $now;
+            if (($ticket['source'] ?? '') === 'client') sendReplyToSpoke($ticket, $reminder);
+            $reminded++;
+            $changed = true;
+        }
+    }
+    unset($ticket);
+    if ($changed) saveTicketsStore($store);
+    return ['reminded' => $reminded, 'closed' => $closed];
 }
 
 /**
@@ -838,5 +933,61 @@ function ingestClientReply($remoteTicketId, $reply) {
     // Light up the bell for hub admins, and live-append for anyone with it open.
     notifyAdminsOfTicket($hubTicket);
     if (function_exists('pusherTriggerTicket')) pusherTriggerTicket($hubTicket['id'] ?? '', 'new-reply', $newReply);
+    return true;
+}
+
+/**
+ * HUB side: store a status change pushed UP from a spoke (the client changed
+ * their own local ticket's status — e.g. resolved it on their end) and apply
+ * it to the hub's copy. The mirror of ingestStatusFromHub() (the other
+ * direction). Matches by remote_id the same way ingestClientReply() does.
+ *
+ * Deliberately NOT gated by ticketCanChangeStatus()/the closing checklist —
+ * this is a system-to-system sync reflecting what already happened on the
+ * client's own deployment, authenticated by the shared secret rather than a
+ * logged-in user, so there's no "current user" for an ownership check to run
+ * against. Idempotent — applying the same status twice is harmless.
+ */
+function ingestClientStatus($remoteTicketId, $status) {
+    global $VALID_TICKET_STATUS;
+    $remoteTicketId = trim($remoteTicketId);
+    if ($remoteTicketId === '' || !in_array($status, $VALID_TICKET_STATUS, true)) return false;
+
+    $store = getTicketsStore();
+    $found = false;
+    $hubTicket = null;
+    foreach ($store['tickets'] as &$ticket) {
+        if (($ticket['source'] ?? '') !== 'client') continue;
+        if (trim($ticket['remote_id'] ?? '') !== $remoteTicketId) continue;
+        $ticket['status'] = $status;
+        $ticket['updated_at'] = date('c');
+        $hubTicket = $ticket;
+        $found = true;
+        break;
+    }
+    unset($ticket);
+    if (!$found) return false;
+    saveTicketsStore($store);
+    notifyAdminsOfTicket($hubTicket);
+    return true;
+}
+
+/**
+ * HUB side: remove the hub's copy of a ticket that was deleted on the
+ * spoke it came from. The mirror of ingestDeleteFromHub(). Matches by
+ * remote_id; idempotent — an already-gone (or never-forwarded) id is a
+ * no-op success, same as every other ingest-delete path in this file.
+ */
+function ingestClientDelete($remoteTicketId) {
+    $remoteTicketId = trim($remoteTicketId);
+    if ($remoteTicketId === '') return false;
+
+    $store = getTicketsStore();
+    $before = count($store['tickets']);
+    $store['tickets'] = array_values(array_filter($store['tickets'], function ($t) use ($remoteTicketId) {
+        return !(($t['source'] ?? '') === 'client' && trim($t['remote_id'] ?? '') === $remoteTicketId);
+    }));
+    if (count($store['tickets']) === $before) return true; // already gone; nothing to do
+    saveTicketsStore($store);
     return true;
 }

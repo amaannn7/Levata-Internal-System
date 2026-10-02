@@ -114,12 +114,51 @@ function applyClientFields($client, $input) {
     $client['contact_name'] = trim($input['contact_name'] ?? ($client['contact_name'] ?? ''));
     $client['contact_email'] = trim($input['contact_email'] ?? ($client['contact_email'] ?? ''));
     $client['contact_phone'] = trim($input['contact_phone'] ?? ($client['contact_phone'] ?? ''));
+    if (!isset($client['contacts']) || !is_array($client['contacts'])) $client['contacts'] = [];
     $client['website'] = trim($input['website'] ?? ($client['website'] ?? ''));
     $client['notes'] = trim($input['notes'] ?? ($client['notes'] ?? ''));
     $client['lead_id'] = trim($input['lead_id'] ?? ($client['lead_id'] ?? ''));
     $status = $input['status'] ?? ($client['status'] ?? 'active');
     $client['status'] = in_array($status, $VALID_CLIENT_STATUS, true) ? $status : 'active';
     return $client;
+}
+
+/**
+ * A client (company) can have several contact people — the CLIENT record
+ * itself stays "the company"; each person who talks to them is one entry in
+ * $client['contacts']. Dedupes on email (case-insensitive) so re-registering
+ * a deal for a repeat contact doesn't pile up duplicates. The FIRST contact
+ * a client ever gets also mirrors into the legacy singular contact_name/
+ * contact_email/contact_phone fields, so anything still reading those (older
+ * client-workspace UI) keeps showing someone sensible.
+ * Returns the (possibly newly created) contact.
+ */
+function addClientContact(&$client, $contact) {
+    $name = trim($contact['name'] ?? '');
+    $email = trim($contact['email'] ?? '');
+    $phone = trim($contact['phone'] ?? '');
+    if ($name === '' && $email === '' && $phone === '') return null;
+    if (!isset($client['contacts']) || !is_array($client['contacts'])) $client['contacts'] = [];
+    if ($email !== '') {
+        foreach ($client['contacts'] as $existing) {
+            if (mb_strtolower($existing['email'] ?? '') === mb_strtolower($email)) return $existing;
+        }
+    }
+    $newContact = [
+        'id' => 'contact_' . bin2hex(random_bytes(6)),
+        'name' => $name,
+        'email' => $email,
+        'phone' => $phone,
+        'created_at' => date('c'),
+    ];
+    $isFirst = empty($client['contacts']);
+    $client['contacts'][] = $newContact;
+    if ($isFirst) {
+        $client['contact_name'] = $name;
+        $client['contact_email'] = $email;
+        $client['contact_phone'] = $phone;
+    }
+    return $newContact;
 }
 
 /**

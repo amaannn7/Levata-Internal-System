@@ -15,7 +15,7 @@
 
 /** Read the shared task store. Shape: ['tasks' => [...], 'seq' => n]. */
 function getTasksStore() {
-    $store = dbGetBlob('tasks', null);
+    $store = memoGetBlob('tasks');
     if ($store === null) return ['tasks' => [], 'seq' => 0];
     if (!isset($store['tasks']) || !is_array($store['tasks'])) $store['tasks'] = [];
     $store['seq'] = (int) ($store['seq'] ?? 0);
@@ -24,7 +24,7 @@ function getTasksStore() {
 
 /** Write the shared task store, plus refresh the reporting projection. */
 function saveTasksStore($store) {
-    dbSaveBlob('tasks', $store);
+    memoSaveBlob('tasks', $store);
     dbSyncReportingTable('tasks', $store['tasks'] ?? [], [
         'status' => fn($t) => $t['status'] ?? 'open',
         'assignee' => fn($t) => $t['assignee'] ?? '',

@@ -27,6 +27,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit(0);
 
 define('DATA_DIR', __DIR__ . '/data');
 
+/**
+ * Per-request memo for the whole-store blobs (leads, jobs, tasks, documents, partners)
+ * and the users table. A single request used to re-read and re-parse the same big JSON
+ * blob several times (the partner scoping helpers, the list endpoints and the gate all
+ * load the leads/jobs stores); now each is fetched once per request and dropped the
+ * moment anything saves it, so a read after a write is always fresh. Lives only for the
+ * request: nothing is shared between requests, so it can't serve stale data to anyone.
+ */
+$GLOBALS['__blobMemo'] = [];
+function memoGetBlob(string $name) {
+    if (!array_key_exists($name, $GLOBALS['__blobMemo'])) $GLOBALS['__blobMemo'][$name] = dbGetBlob($name, null);
+    return $GLOBALS['__blobMemo'][$name];
+}
+function memoSaveBlob(string $name, $data): void {
+    dbSaveBlob($name, $data);
+    unset($GLOBALS['__blobMemo'][$name]);
+}
+
 if (!is_dir(DATA_DIR)) mkdir(DATA_DIR, 0755, true);
 
 // PostgreSQL connection + schema bootstrap. All app data lives in Postgres;
@@ -245,11 +263,15 @@ function dbRowToUser($row) {
 }
 
 function getUsers() {
+    // Memoised per request (the auth gate, requireAuth and the handlers each ask for it);
+    // saveUsers() clears it.
+    if (isset($GLOBALS['__usersMemo'])) return $GLOBALS['__usersMemo'];
     $rows = db()->query('SELECT * FROM users ORDER BY created_at ASC')->fetchAll();
-    return array_map('dbRowToUser', $rows);
+    return $GLOBALS['__usersMemo'] = array_map('dbRowToUser', $rows);
 }
 
 function saveUsers($users) {
+    unset($GLOBALS['__usersMemo']);
     $pdo = db();
     $pdo->beginTransaction();
     try {
@@ -498,11 +520,31 @@ function setDealAmount(&$lead, $amount, $stage = '', $actor = null) {
     ];
     $lead['deal_amount'] = $new;
     $lead['updated_at'] = date('c');
+    // (Winning a deal sets the total as part of win-deal, which sends its own, clearer notices.)
+    if (!empty($lead['partner_id']) && $stage !== 'won') {
+        $cur = normalizeCurrency($lead['deal_currency'] ?? '');
+        partnerNotifyLead($lead, 'leads', 'Deal value updated',
+            (trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? ''))) . ': ' . $cur . ' ' . number_format($new));
+    }
     return true;
 }
 
 function getLeadStage($lead) {
     return legacyStatusToStage($lead['stage'] ?? ($lead['status'] ?? 'new'));
+}
+
+/**
+ * Human-readable label for one of a deal's services — mirrors the frontend's
+ * serviceTabLabel(): "Custom Services" / "Custom Services #2" instances
+ * rename themselves to whatever need was picked ("{service}::need"), every
+ * other service is just its own name.
+ */
+function serviceLabelFor($lead, $service) {
+    if (preg_match('/^Custom Services( #\d+)?$/', $service)) {
+        $need = trim(($lead['requisitions'] ?? [])[$service . '::need'] ?? '');
+        if ($need !== '' && $need !== 'Other') return $need;
+    }
+    return $service;
 }
 
 function setLeadStage(&$lead, $stage, $reason = '', $actor = null) {
@@ -521,6 +563,13 @@ function setLeadStage(&$lead, $stage, $reason = '', $actor = null) {
     }
     $lead['stage'] = $stage;
     $lead['status'] = stageToLegacyStatus($stage);
+    if ($oldStage !== $stage && !empty($lead['partner_id'])) {
+        $label = getMacktilesStages()[$stage]['label'] ?? $stage;
+        $deal = trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? ''));
+        partnerNotifyLead($lead, 'leads',
+            $stage === 'won' ? '🎉 Your deal was won' : ($stage === 'lost' ? 'Deal marked lost' : 'Deal moved to ' . $label),
+            $deal . ($stage === 'won' || $stage === 'lost' ? '' : ' is now at ' . $label));
+    }
     // Track the furthest point reached so a deal that goes back a step (or is
     // lost) still reports how far it actually got.
     $peak = $lead['peak_stage'] ?? $stage;
@@ -840,6 +889,93 @@ function saveUserData($userId, $data) {
 }
 function generateId($prefix = '') { return $prefix . bin2hex(random_bytes(8)); }
 function generateToken() { return bin2hex(random_bytes(32)); }
+// A 6-digit login/verification code. random_int (not rand()/mt_rand()) is
+// cryptographically secure — this is a secret, not a display id.
+function generateOtpCode() { return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT); }
+
+/**
+ * Canonical app URL for links inside system emails (password reset). Trusts
+ * the request's Origin header only when it's one of the app's own known
+ * origins ($allowedOrigins, top of this file) — never builds a link from the
+ * raw, spoofable Host header — and falls back to the production domain so a
+ * reset link can never be steered by attacker-controlled input.
+ */
+function appBaseUrl() {
+    global $allowedOrigins;
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    return in_array($origin, $allowedOrigins, true) ? $origin : 'https://levataos.com';
+}
+
+/**
+ * Send a system security email (OTP code, password reset link) via Resend.
+ * Shared by login-OTP and password-reset — both are the app emailing its own
+ * account holder, not a sales/support audience, so (unlike the outreach vs.
+ * support split elsewhere, which is deliberately never merged) sharing one
+ * sender here is fine. Returns [ok, error] rather than calling respond()
+ * directly — callers decide how to handle failure, since a failed OTP send
+ * must fail the login attempt closed, not silently skip the second factor.
+ */
+function sendAuthEmail($toEmail, $subject, $text, $html) {
+    if (!filter_var($toEmail, FILTER_VALIDATE_EMAIL)) return [false, 'Invalid recipient email'];
+    $admin = getAdmin();
+    $resendKey = trim($admin['resend_key'] ?? '');
+    if ($resendKey === '') return [false, 'Email sending is not configured (no Resend API key)'];
+    $fromAddr = trim($admin['auth_from'] ?? '') ?: (trim($admin['support_from'] ?? '') ?: 'onboarding@resend.dev');
+    $payload = [
+        'from' => 'Levata <' . $fromAddr . '>',
+        'to' => [$toEmail],
+        'subject' => $subject,
+        'text' => $text,
+        'html' => $html,
+    ];
+    $ch = curl_init('https://api.resend.com/emails');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . $resendKey,
+            'Content-Type: application/json',
+        ],
+        CURLOPT_TIMEOUT => 15,
+    ]);
+    $resp = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
+    if ($resp === false) return [false, 'Email send failed: ' . $curlErr];
+    $decoded = json_decode($resp, true);
+    if ($code < 200 || $code >= 300) {
+        $err = is_array($decoded) && !empty($decoded['message']) ? $decoded['message'] : ('Resend returned HTTP ' . $code);
+        return [false, 'Email not sent: ' . $err];
+    }
+    return [true, ''];
+}
+
+/** The 6-digit sign-in code email body (shared by login's first send and resend-otp). */
+function sendOtpCodeEmail($toEmail, $code) {
+    $safeCode = htmlspecialchars($code, ENT_QUOTES, 'UTF-8');
+    $text = "Your Levata sign-in code is {$code}.\n\nThis code expires in 10 minutes. If you didn't try to sign in, you can ignore this email.";
+    $html = '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;color:#111827;">'
+        . '<p style="font-size:15px;margin:0 0 14px;">Your Levata sign-in code is:</p>'
+        . '<p style="font-size:32px;font-weight:700;letter-spacing:6px;margin:0 0 14px;">' . $safeCode . '</p>'
+        . '<p style="font-size:13px;color:#6b7280;margin:0;">This code expires in 10 minutes. If you didn\'t try to sign in, you can ignore this email.</p>'
+        . '</div>';
+    return sendAuthEmail($toEmail, 'Your Levata sign-in code', $text, $html);
+}
+
+/** The password-reset link email body. */
+function sendPasswordResetEmail($toEmail, $resetToken) {
+    $link = appBaseUrl() . '/?reset_token=' . urlencode($resetToken);
+    $safeLink = htmlspecialchars($link, ENT_QUOTES, 'UTF-8');
+    $text = "We received a request to reset your Levata password.\n\nReset it here (expires in 1 hour):\n{$link}\n\nIf you didn't request this, you can ignore this email - your password will not change.";
+    $html = '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;color:#111827;">'
+        . '<p style="font-size:15px;margin:0 0 14px;">We received a request to reset your Levata password.</p>'
+        . '<p style="margin:0 0 14px;"><a href="' . $safeLink . '" style="background:#7c3aed;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">Reset password</a></p>'
+        . '<p style="font-size:13px;color:#6b7280;margin:0;">This link expires in 1 hour. If you didn\'t request this, you can ignore this email - your password will not change.</p>'
+        . '</div>';
+    return sendAuthEmail($toEmail, 'Reset your Levata password', $text, $html);
+}
 function logActivity(&$lead, $type, $detail, $extra = []) {
     if (!isset($lead['activity_log'])) $lead['activity_log'] = [];
     $lead['activity_log'][] = array_merge([
@@ -1920,7 +2056,13 @@ function generateNotifications($leads, $existingNotifications) {
 // ============================================================================
 
 function generatePassword() { $c = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789'; $p = ''; for ($i = 0; $i < 10; $i++) $p .= $c[random_int(0, strlen($c) - 1)]; return $p; }
-function respond($data, $code = 200) { http_response_code($code); echo json_encode($data); exit; }
+function respond($data, $code = 200) {
+    // Partner bell events queued by this request go out only if it succeeded.
+    if ($code < 400 && function_exists('flushPartnerNotifications')) flushPartnerNotifications();
+    // ...and what a partner just did goes into the admins' bells.
+    if ($code < 400 && !empty($GLOBALS['__partnerAction'])) notifyAdminsOfPartnerAction();
+    http_response_code($code); echo json_encode($data); exit;
+}
 
 // Resolve the current user from the X-User-Token header (or ?token= query param as a fallback).
 // Returns null when no valid token is presented.
@@ -1958,6 +2100,33 @@ function addUserToken(&$u, $token, $max = 10) {
     if (count($u['tokens']) > $max) $u['tokens'] = array_slice($u['tokens'], -$max);
 }
 
+/**
+ * "Remember this device" for login-OTP: a separate, longer-lived credential
+ * from the session token, so a leaked session token alone still can't skip
+ * 2FA on a new device. Unlike session tokens (stored plain in $u['tokens'],
+ * this codebase's existing convention), this one is stored as a SHA-256
+ * hash — it specifically exists to bypass the second factor, so it deserves
+ * the extra bar: even a full DB read doesn't hand out a working bypass.
+ */
+function addTrustedDevice(&$u, $deviceToken, $days = 30, $max = 5) {
+    if (!isset($u['trusted_devices']) || !is_array($u['trusted_devices'])) $u['trusted_devices'] = [];
+    $u['trusted_devices'][] = [
+        'hash' => hash('sha256', $deviceToken),
+        'created_at' => date('c'),
+        'expires_at' => date('c', time() + $days * 86400),
+    ];
+    if (count($u['trusted_devices']) > $max) $u['trusted_devices'] = array_slice($u['trusted_devices'], -$max);
+}
+/** True if $deviceToken matches a non-expired trusted device on this user. */
+function isTrustedDevice($u, $deviceToken) {
+    if ($deviceToken === '' || empty($u['trusted_devices'])) return false;
+    $hash = hash('sha256', $deviceToken);
+    foreach ($u['trusted_devices'] as $d) {
+        if (hash_equals($d['hash'] ?? '', $hash) && !empty($d['expires_at']) && strtotime($d['expires_at']) > time()) return true;
+    }
+    return false;
+}
+
 // Require a logged-in user; 401 otherwise.
 function requireAuth() {
     $u = getCurrentUser();
@@ -1986,6 +2155,31 @@ function requireSuperAdmin() {
 $method = $_SERVER['REQUEST_METHOD'];
 $path = $_GET['action'] ?? '';
 $input = in_array($method, ['POST', 'PUT']) ? (json_decode(file_get_contents('php://input'), true) ?: []) : [];
+
+// Channel-partner accounts work like admins on the pages they're given (Dashboard,
+// Pipeline, Cost Proposals, SOWs, Saved Documents, Jobs, Tasks), but only on their
+// own deals/documents/jobs/tasks: partnerMayCall() allows just those endpoints and
+// checks every record a request names belongs to the partner; the list endpoints
+// below narrow their own results the same way.
+// Anything not on that list is refused here, once, before any endpoint runs, so a
+// new endpoint added later is closed to partners by default.
+$GLOBALS['__actorUserId'] = '';
+if (!empty($_SERVER['HTTP_X_USER_TOKEN']) || !empty($_GET['token'])) {
+    $gateUser = getCurrentUser();
+    $GLOBALS['__actorUserId'] = $gateUser['id'] ?? '';
+    if ($gateUser && !empty($gateUser['is_channel_partner'])) {
+        if (!partnerMayCall($gateUser, $path, $method, $input)) {
+            respond(['success' => false, 'error' => 'Not available for channel partner accounts'], 403);
+        }
+        // Remember a partner's write so the admins hear about it once it succeeds. New leads
+        // announce themselves (partner_deal, below), so they're left out here.
+        if ($method !== 'GET' && !in_array($path, ['activity-ping', 'notifications', 'lead'], true)) {
+            $GLOBALS['__partnerAction'] = ['user' => $gateUser, 'action' => $path, 'args' => array_merge($_GET, $_POST, is_array($input) ? $input : [])];
+        } elseif ($path === 'lead' && in_array($method, ['PUT', 'DELETE'], true)) {
+            $GLOBALS['__partnerAction'] = ['user' => $gateUser, 'action' => 'update-lead', 'args' => array_merge($_GET, is_array($input) ? $input : [])];
+        }
+    }
+}
 
 
 switch ($path) {
@@ -2252,13 +2446,16 @@ case 'send-minutes-email':
 
 case 'tasks':
     if ($method !== 'GET') break;
-    requireAuth();
+    $tu = requireAuth();
     $store = getTasksStore();
     $tasks = $store['tasks'];
+    if (!empty($tu['is_channel_partner'])) $tasks = partnerOwnTasks($tu, $tasks);
     // Optional filters via query string.
     if (!empty($_GET['status']))   $tasks = array_values(array_filter($tasks, fn($t) => ($t['status'] ?? '') === $_GET['status']));
     if (!empty($_GET['assignee'])) $tasks = array_values(array_filter($tasks, fn($t) => stripos($t['assignee'] ?? '', $_GET['assignee']) !== false));
     if (!empty($_GET['client']))   $tasks = array_values(array_filter($tasks, fn($t) => stripos($t['client'] ?? '', $_GET['client']) !== false));
+    $pMap = partnerJobMap();
+    $tasks = array_map(fn($t) => partnerStamp($t, $t['job_id'] ?? '', $pMap), $tasks);
     // Newest first.
     usort($tasks, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
     respond(['success' => true, 'tasks' => $tasks]);
@@ -2362,6 +2559,7 @@ case 'save-task':
         }
 
         $store['tasks'][] = $task;
+        if ($task['job_id'] !== '') partnerNotifyJobId($task['job_id'], 'tasks', 'New task on ' . ($task['job_no'] ?: 'your job'), $task['title']);
     } else {
         // Update.
         $found = false;
@@ -2373,7 +2571,12 @@ case 'save-task':
                 if (isset($input['job_id']))      { $t['job_id']   = $taskJob ? ($taskJob['id'] ?? '') : ''; $t['job_no'] = $taskJob ? ($taskJob['job_no'] ?? '') : ''; }
                 if (isset($input['due_date']))      $t['due_date'] = trim($input['due_date']);
                 if (isset($input['notes']))         $t['notes']    = trim($input['notes']);
-                if (isset($input['status']))        $t['status']   = trim($input['status']);
+                if (isset($input['status'])) {
+                    if (trim($input['status']) !== ($t['status'] ?? '') && !empty($t['job_id'])) {
+                        partnerNotifyJobId($t['job_id'], 'tasks', 'Task updated', ($t['title'] ?? '') . ' is now ' . ucwords(str_replace('_', ' ', trim($input['status']))));
+                    }
+                    $t['status']   = trim($input['status']);
+                }
                 $t['updated_at'] = date('c');
                 $task = $t;
                 $found = true;
@@ -2425,7 +2628,9 @@ case 'all-documents':
     // visible to the whole team. 'all-documents' is kept as an alias used by the
     // Job Registry pickers.
     if ($method !== 'GET') break;
-    requireAuth();
+    $lu = requireAuth();
+    $allDocsForList = getAllDocuments();
+    if (!empty($lu['is_channel_partner'])) $allDocsForList = partnerOwnDocs($lu, $allDocsForList);
     $meta = array_map(function ($d) {
         return [
             'id' => $d['id'] ?? '',
@@ -2444,7 +2649,7 @@ case 'all-documents':
             'has_file' => !empty($d['file_path']),
             'file_name' => $d['file_name'] ?? '',
         ];
-    }, getAllDocuments());
+    }, $allDocsForList);
     // Newest first.
     usort($meta, function ($a, $b) { return strcmp($b['updated_at'], $a['updated_at']); });
     respond(['success' => true, 'documents' => $meta]);
@@ -2716,8 +2921,9 @@ case 'studio-overview':
     if ($method !== 'GET') break;
     $u = requireAuth();
     $today = date('Y-m-d');
+    $isPartner = !empty($u['is_channel_partner']);
     $jobsStore = getJobsStore();
-    $allJobs = $jobsStore['jobs'];
+    $allJobs = $isPartner ? partnerOwnJobs($u) : $jobsStore['jobs'];
 
     // --- Money: invoices flattened across every job -----------------------
     // Totals are kept per currency code and never converted — see sumByCurrency().
@@ -2764,6 +2970,7 @@ case 'studio-overview':
 
     // --- Tasks: overdue and due this week --------------------------------
     $tasks = getTasksStore()['tasks'];
+    if ($isPartner) $tasks = partnerOwnTasks($u, $tasks);
     $openTasks = array_values(array_filter($tasks, fn($t) => ($t['status'] ?? 'open') !== 'done'));
     $weekEnd = date('Y-m-d', strtotime('+7 days'));
     $taskRows = [];
@@ -2784,7 +2991,7 @@ case 'studio-overview':
     // Only CPs and SOWs go through approval — NDAs and other doc types are
     // filed, not decided on, so they would just flood this panel.
     $pendingDocs = [];
-    foreach (getAllDocuments() as $d) {
+    foreach ($isPartner ? partnerOwnDocs($u, getAllDocuments()) : getAllDocuments() as $d) {
         if (($d['status'] ?? 'draft') !== 'draft') continue;
         if (!in_array($d['type'] ?? '', ['cp', 'cost-proposal', 'cost_proposal', 'sow'], true)) continue;
         $pendingDocs[] = [
@@ -2796,7 +3003,17 @@ case 'studio-overview':
     usort($pendingDocs, fn($a, $b) => strcmp($b['updated_at'], $a['updated_at']));
 
     // --- Deals still in play (the user's own pipeline) --------------------
-    $userData = getUserData($u['id']);
+    $userData = $isPartner ? ['leads' => partnerOwnLeads($u, getLeadsStore()['leads'])] : getUserData($u['id']);
+    if (!$isPartner) {
+        // Deals a channel partner added themselves are owned by their login, not a team
+        // member, so they'd otherwise appear on nobody's dashboard: everyone on the team
+        // sees them among the open deals until someone takes them over.
+        $partnerUserIds = [];
+        foreach (getUsers() as $pu) { if (!empty($pu['is_channel_partner'])) $partnerUserIds[] = $pu['id']; }
+        foreach (getLeadsStore()['leads'] as $pl) {
+            if (in_array($pl['owner_id'] ?? '', $partnerUserIds, true)) $userData['leads'][] = $pl;
+        }
+    }
     $openDeals = []; $openDealValue = [];
     // Focus Queue: deals that need attention right now, for two different
     // reasons — merged into one list so a rep has a single "what do I do
@@ -2854,7 +3071,7 @@ case 'studio-overview':
     // (no date) sort after any dated ones within the same overdue bucket.
     usort($focusQueue, fn($a, $b) => $b['overdue'] <=> $a['overdue'] ?: strcmp($a['date'] ?? '9999-99-99', $b['date'] ?? '9999-99-99'));
 
-    $clients = getClientsStore()['clients'];
+    $clients = $isPartner ? [] : getClientsStore()['clients'];
     // LKR-converted headline totals — additional, clearly-labelled
     // approximations for display only; the per-currency maps above are
     // untouched and remain the source of truth.
@@ -2895,9 +3112,12 @@ case 'studio-overview':
 // ===== Job Registry (shared company-wide) =====
 case 'jobs':
     if ($method !== 'GET') break;
-    requireAuth();
+    $ju = requireAuth();
     $store = getJobsStore();
+    if (!empty($ju['is_channel_partner'])) $store['jobs'] = partnerOwnJobs($ju);
     $jobs = array_map('decorateJob', $store['jobs']);
+    $pMap = partnerJobMap();
+    $jobs = array_map(fn($j) => partnerStamp($j, $j['id'] ?? '', $pMap), $jobs);
     // Newest first.
     usort($jobs, function ($a, $b) { return strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''); });
     respond(['success' => true, 'jobs' => $jobs, 'summary' => jobsSummary($store['jobs'])]);
@@ -2915,8 +3135,12 @@ case 'save-job':
         $found = false;
         foreach ($store['jobs'] as &$job) {
             if (($job['id'] ?? '') === $id) {
+                $oldJobStatus = $job['status'] ?? '';
                 $job = applyJobFields($job, $input);
                 $job['updated_at'] = $now;
+                if (($job['status'] ?? '') !== $oldJobStatus) {
+                    partnerNotifyJobId($id, 'job-registry', 'Job status updated', ($job['job_no'] ?? '') . ' · ' . ($job['name'] ?? '') . ' is now ' . ucwords(str_replace('_', ' ', $job['status'] ?? '')));
+                }
                 $found = true;
                 break;
             }
@@ -2992,13 +3216,48 @@ case 'deal-win-preview':
 
     $clientName = trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? ''));
     $existingClient = findClientByName(getClientsStore()['clients'], $clientName);
-    $amount = dealMoney($lead['deal_amount'] ?? 0);
+    $answers = $lead['requisitions'] ?? [];
+    $allDocs = getAllDocuments();
+    $docNoFor = function ($docId) use ($allDocs) {
+        foreach ($allDocs as $d) {
+            if (($d['id'] ?? '') === $docId) return $d['doc_no'] ?? '';
+        }
+        return '';
+    };
 
-    // Documents already linked to this deal, so the job can inherit them.
-    $cpNo = ''; $sowNo = '';
-    foreach (getAllDocuments() as $d) {
-        if (($d['id'] ?? '') === ($lead['cost_proposal_id'] ?? '')) $cpNo = $d['doc_no'] ?? '';
-        if (($d['id'] ?? '') === ($lead['sow_id'] ?? '')) $sowNo = $d['doc_no'] ?? '';
+    // One entry per WON service — winning registers a JOB per service, not
+    // one flat job for the whole deal, since each was separately negotiated
+    // (see the Cost Proposal & Negotiation panel). A lead with no services at
+    // all (older/simpler deals that never went through per-service
+    // negotiation) falls back to a single implied service using the deal's
+    // own rolled-up amount, so nothing here regresses for those.
+    $wonServiceKeys = array_values(array_filter($lead['services'] ?? [], function ($s) use ($answers) {
+        return ($answers["{$s}::cp_negotiation_status"] ?? '') === 'won';
+    }));
+    $services = [];
+    if (!empty($wonServiceKeys)) {
+        foreach ($wonServiceKeys as $s) {
+            $dealVal = $answers["{$s}::estimated_deal_value"] ?? null;
+            $amount = is_array($dealVal) ? dealMoney($dealVal['amount'] ?? 0) : 0;
+            $currency = is_array($dealVal) && !empty($dealVal['currency']) ? normalizeCurrency($dealVal['currency']) : normalizeCurrency($lead['deal_currency'] ?? '');
+            $services[] = [
+                'service' => $s,
+                'label' => serviceLabelFor($lead, $s),
+                'amount' => $amount,
+                'currency' => $currency,
+                'linked_cost_proposal' => $docNoFor(($lead['cost_proposal_by_service'] ?? [])[$s] ?? ''),
+                'linked_sow' => $docNoFor(($lead['sow_by_service'] ?? [])[$s] ?? ''),
+            ];
+        }
+    } else {
+        $services[] = [
+            'service' => '',
+            'label' => trim($lead['project_context'] ?? '') ?: ($clientName . ' project'),
+            'amount' => dealMoney($lead['deal_amount'] ?? 0),
+            'currency' => normalizeCurrency($lead['deal_currency'] ?? ''),
+            'linked_cost_proposal' => $docNoFor($lead['cost_proposal_id'] ?? ''),
+            'linked_sow' => $docNoFor($lead['sow_id'] ?? ''),
+        ];
     }
 
     respond(['success' => true, 'preview' => [
@@ -3006,11 +3265,16 @@ case 'deal-win-preview':
         'client_name' => $clientName,
         'client_exists' => (bool) $existingClient,
         'client_id' => $existingClient['id'] ?? '',
-        'job_name' => trim($lead['project_context'] ?? '') ?: ($clientName . ' project'),
-        'amount' => $amount,
-        'currency' => normalizeCurrency($lead['deal_currency'] ?? ''),
-        'linked_cost_proposal' => $cpNo,
-        'linked_sow' => $sowNo,
+        // Existing contacts to pick from if this client already exists;
+        // otherwise the modal offers to create the first one from the lead.
+        // (a partner never sees another client's contacts, only the team does)
+        'client_contacts' => !empty($u['is_channel_partner']) ? [] : ($existingClient['contacts'] ?? []),
+        'default_contact' => [
+            'name' => trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')),
+            'email' => $lead['email'] ?? '',
+            'phone' => $lead['phone'] ?? '',
+        ],
+        'services' => $services,
         'already_registered' => !empty($lead['job_id']),
         'existing_job_no' => $lead['job_no'] ?? '',
     ]]);
@@ -3038,11 +3302,14 @@ case 'win-deal':
     }
 
     // 1. Client — reuse the matching record, or create one from the lead.
+    //    The client IS the company; who you actually talk to there is a
+    //    separate contact person, handled in step 2.
     $clientName = trim($input['client_name'] ?? '') ?: (trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')));
     if ($clientName === '') respond(['success' => false, 'error' => 'A client name is required to register the job'], 400);
     $cStore = getClientsStore();
     $client = findClientByName($cStore['clients'], $clientName);
     $clientCreated = !$client;
+    $clientIdx = null;
     if (!$client) {
         $client = applyClientFields([
             'id' => 'client_' . bin2hex(random_bytes(8)),
@@ -3052,62 +3319,129 @@ case 'win-deal':
             'updated_at' => date('c'),
         ], [
             'name' => $clientName,
-            'contact_name' => trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')),
-            'contact_email' => $lead['email'] ?? '',
-            'contact_phone' => $lead['phone'] ?? '',
             'website' => $lead['website'] ?? '',
             'lead_id' => $lead['id'] ?? '',
         ]);
         $cStore['clients'][] = $client;
-        saveClientsStore($cStore);
+        $clientIdx = count($cStore['clients']) - 1;
+    } else {
+        foreach ($cStore['clients'] as $i => $c) {
+            if (($c['id'] ?? '') === ($client['id'] ?? '')) { $clientIdx = $i; break; }
+        }
     }
 
-    // 2. Deal amount + currency — the confirm dialog may adjust both before winning.
-    if (isset($input['amount'])) setDealAmount($lead, $input['amount'], 'won', $u['id'] ?? null);
-    if (isset($input['currency']) && trim($input['currency']) !== '') {
-        $lead['deal_currency'] = normalizeCurrency($input['currency']);
+    // 2. Contact person(s) — a company can have several, and a single deal can
+    // bring more than one forward at once, so this is a list: each entry is
+    // either an existing contact on file (contact_id, nothing to do — already
+    // there) or a new one ({name, email, phone}), added to the client below.
+    // findClientByName() above returns a copy, not a reference, so contacts
+    // are added to $client here and written back into the store explicitly
+    // via $clientIdx below — otherwise they'd silently vanish for an
+    // already-existing client. Falls back to the single contact_id/contact
+    // shape (older callers) and, with neither, the lead's own name/email/phone.
+    $contactsInput = is_array($input['contacts'] ?? null) ? $input['contacts'] : [];
+    if (empty($contactsInput)) {
+        $legacyContactId = trim($input['contact_id'] ?? '');
+        $legacyContact = is_array($input['contact'] ?? null) ? $input['contact'] : null;
+        if ($legacyContactId !== '') $contactsInput[] = ['contact_id' => $legacyContactId];
+        elseif ($legacyContact) $contactsInput[] = $legacyContact;
+        else $contactsInput[] = [
+            'name' => trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')),
+            'email' => $lead['email'] ?? '',
+            'phone' => $lead['phone'] ?? '',
+        ];
     }
+    foreach ($contactsInput as $c) {
+        if (trim($c['contact_id'] ?? '') !== '') continue; // existing contact, already on file
+        addClientContact($client, $c);
+    }
+    if ($clientIdx !== null) $cStore['clients'][$clientIdx] = $client;
+    saveClientsStore($cStore);
 
-    // 3. Job + invoice schedule, inheriting the deal's linked CP/SOW.
+    // 3. One JOB per won service, each with its own auto-filled category
+    // (the service itself) and its own negotiated amount — plus a default
+    // invoice schedule (advance/final for one-off, monthly for retainer;
+    // buildJobInvoices() already falls back to a 50% advance with nothing
+    // further to configure here). Falls back to a single legacy job if the
+    // caller didn't send a services array (older/simpler deals).
+    $servicesInput = is_array($input['services'] ?? null) && !empty($input['services'])
+        ? $input['services']
+        : [[
+            'label' => trim($input['job_name'] ?? '') ?: ($clientName . ' project'),
+            'amount' => $input['amount'] ?? $lead['deal_amount'] ?? 0,
+            'currency' => $input['currency'] ?? ($lead['deal_currency'] ?? ''),
+            'type' => $input['type'] ?? 'one_off',
+            'linked_cost_proposal' => $input['linked_cost_proposal'] ?? '',
+            'linked_sow' => $input['linked_sow'] ?? '',
+        ]];
+
     $jStore = getJobsStore();
     $now = date('c');
-    $job = [
-        'id' => 'job_' . bin2hex(random_bytes(8)),
-        'job_no' => nextJobNo($jStore),
-        'created_by' => $u['id'] ?? '',
-        'created_at' => $now,
-        'updated_at' => $now,
-        'invoices' => [],
-        'lead_id' => $lead['id'] ?? '',
-    ];
-    $job = applyJobFields($job, [
-        'client_id' => $client['id'],
-        'client' => $client['name'],
-        'name' => trim($input['job_name'] ?? '') ?: ($clientName . ' project'),
-        'category' => trim($input['category'] ?? ''),
-        'type' => $input['type'] ?? 'one_off',
-        'value' => dealMoney($lead['deal_amount'] ?? 0),
-        // Inherits the deal's currency unless the confirm dialog overrode it.
-        'currency' => normalizeCurrency($input['currency'] ?? ($lead['deal_currency'] ?? '')),
-        'status' => 'open',
-        'linked_cost_proposal' => trim($input['linked_cost_proposal'] ?? ''),
-        'linked_sow' => trim($input['linked_sow'] ?? ''),
-        'notes' => 'Registered from won deal: ' . trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')),
-    ]);
-    $job['invoices'] = buildJobInvoices($jStore, $job, $input);
-    $jStore['jobs'][] = $job;
+    $createdJobs = [];
+    $totalAmount = 0.0;
+    $dealCurrency = normalizeCurrency($lead['deal_currency'] ?? '');
+    foreach ($servicesInput as $svc) {
+        $label = trim($svc['label'] ?? '') ?: ($clientName . ' project');
+        $amount = dealMoney($svc['amount'] ?? 0);
+        $currency = !empty($svc['currency']) ? normalizeCurrency($svc['currency']) : $dealCurrency;
+        $totalAmount += $amount;
+        $dealCurrency = $currency; // last service's currency wins for the deal-level rollup below
+
+        $job = [
+            'id' => 'job_' . bin2hex(random_bytes(8)),
+            'job_no' => nextJobNo($jStore),
+            'created_by' => $u['id'] ?? '',
+            'created_at' => $now,
+            'updated_at' => $now,
+            'invoices' => [],
+            'lead_id' => $lead['id'] ?? '',
+        ];
+        $job = applyJobFields($job, [
+            'client_id' => $client['id'],
+            'client' => $client['name'],
+            'name' => $label,
+            'category' => $label,
+            'type' => $svc['type'] ?? 'one_off',
+            'value' => $amount,
+            'currency' => $currency,
+            'status' => 'open',
+            'linked_cost_proposal' => trim($svc['linked_cost_proposal'] ?? ''),
+            'linked_sow' => trim($svc['linked_sow'] ?? ''),
+            'notes' => 'Registered from won deal: ' . trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')),
+        ]);
+        $job['invoices'] = buildJobInvoices($jStore, $job, [
+            'retainer_months' => $svc['retainer_months'] ?? null,
+            'monthly_amount' => $svc['monthly_amount'] ?? null,
+        ]);
+        $jStore['jobs'][] = $job;
+        $createdJobs[] = $job;
+    }
     saveJobsStore($jStore);
 
-    // 4. Stamp the lead: won, linked to its client and job.
+    // 4. Deal amount rolls up to the sum of every service just won, then the
+    // lead is stamped won and linked to its client + jobs.
+    setDealAmount($lead, $totalAmount, 'won', $u['id'] ?? null);
+    $lead['deal_currency'] = $dealCurrency;
     setLeadStage($lead, 'won', 'deal_won', $u['id'] ?? null);
     $lead['client_id'] = $client['id'];
-    $lead['job_id'] = $job['id'];
-    $lead['job_no'] = $job['job_no'];
-    logActivity($lead, 'won', 'Deal won and registered as ' . $job['job_no']);
+    // Kept for older single-job callers/back-compat; job_ids is the real list.
+    $lead['job_id'] = $createdJobs[0]['id'] ?? '';
+    $lead['job_no'] = $createdJobs[0]['job_no'] ?? '';
+    $lead['job_ids'] = array_column($createdJobs, 'id');
+    $jobNos = array_column($createdJobs, 'job_no');
+    foreach ($createdJobs as $cj) {
+        partnerNotifyLead($lead, 'job-registry', 'Job created from your deal', ($cj['job_no'] ?? '') . ' · ' . ($cj['name'] ?? '') . ' (' . ($cj['client'] ?? '') . ')');
+    }
+    logActivity($lead, 'won', 'Deal won and registered as ' . implode(', ', $jobNos));
     $leadsStore['leads'][$targetIdx] = $lead;
     saveLeadsStore($leadsStore);
 
-    respond(['success' => true, 'lead' => $lead, 'job_no' => $job['job_no'], 'job_id' => $job['id'], 'client_id' => $client['id'], 'client_created' => $clientCreated]);
+    respond([
+        'success' => true, 'lead' => $lead,
+        'job_no' => $lead['job_no'], 'job_id' => $lead['job_id'],
+        'job_nos' => $jobNos, 'job_ids' => $lead['job_ids'],
+        'client_id' => $client['id'], 'client_created' => $clientCreated,
+    ]);
     break;
 
 /** Update a deal's amount at any stage (the value legitimately changes as it firms up). */
@@ -3266,12 +3600,14 @@ case 'save-invoice':
     requireAuth();
     $jobId = trim($input['job_id'] ?? '');
     $invId = trim($input['invoice_id'] ?? '');
+    // An invoice only ever exists against a job (and that job's JOB-xxxx), so the job comes first.
+    if ($jobId === '') respond(['success' => false, 'error' => 'An invoice must be raised against a job. Create the job first.'], 400);
     $store = getJobsStore();
     $target = null;
     foreach ($store['jobs'] as &$job) {
         if (($job['id'] ?? '') === $jobId) { $target = &$job; break; }
     }
-    if ($target === null) respond(['success' => false, 'error' => 'Job not found'], 404);
+    if ($target === null) respond(['success' => false, 'error' => 'Job not found. Create the job first, then raise the invoice against it.'], 404);
     if (!isset($target['invoices']) || !is_array($target['invoices'])) $target['invoices'] = [];
 
     if ($invId !== '') {
@@ -3283,6 +3619,9 @@ case 'save-invoice':
                 if (isset($input['due_date'])) $inv['due_date'] = trim($input['due_date']);
                 if (isset($input['status'])) {
                     $st = $input['status'] === 'paid' ? 'paid' : 'unpaid';
+                    if ($st === 'paid' && ($inv['status'] ?? '') !== 'paid') {
+                        partnerNotifyJobId($jobId, 'job-registry', 'Invoice paid', ($inv['invoice_no'] ?? 'Invoice') . ' for ' . ($target['job_no'] ?? '') . ' has been paid');
+                    }
                     $inv['status'] = $st;
                     $inv['paid_at'] = $st === 'paid' ? ($inv['paid_at'] ?? date('c')) : null;
                 }
@@ -3295,6 +3634,7 @@ case 'save-invoice':
     } else {
         $target['invoices'][] = makeInvoice(
             $store,
+            $target,
             trim($input['label'] ?? 'Invoice'),
             $input['amount'] ?? 0,
             trim($input['due_date'] ?? ''),
@@ -3334,130 +3674,67 @@ case 'partners':
     requireAuth();
     $store = getPartnersStore();
     $partners = $store['partners'];
+    // Per-partner rollup for the Channel Partners list. Commission is never entered
+    // here: it is whatever the team set on each deal in the pipeline, computed live by
+    // partnerPayout() (so it follows every edit to a deal's value or rate), grouped
+    // by currency and never converted. Won deals count as earned, open ones as pipeline,
+    // lost ones not at all.
+    $dealCounts = []; $openCounts = []; $earned = []; $pipeline = [];
+    foreach (getLeadsStore()['leads'] as $l) {
+        $pid = $l['partner_id'] ?? '';
+        if ($pid === '' || !empty($l['deleted_at'])) continue;
+        $stage = getLeadStage($l);
+        $dealCounts[$pid] = ($dealCounts[$pid] ?? 0) + 1;
+        if ($stage === 'lost') continue;
+        $payout = partnerPayout($l);
+        if ($stage === 'won') { if (!isset($earned[$pid])) $earned[$pid] = []; addToCurrencyBucket($earned[$pid], $l['deal_currency'] ?? '', $payout); }
+        else { $openCounts[$pid] = ($openCounts[$pid] ?? 0) + 1; if (!isset($pipeline[$pid])) $pipeline[$pid] = []; addToCurrencyBucket($pipeline[$pid], $l['deal_currency'] ?? '', $payout); }
+    }
+    $pMap = partnerJobMap();
+    $jobCounts = []; $taskCounts = [];
+    foreach (getJobsStore()['jobs'] as $j) { $pid = $pMap['job'][$j['id'] ?? ''] ?? ''; if ($pid !== '') $jobCounts[$pid] = ($jobCounts[$pid] ?? 0) + 1; }
+    foreach (getTasksStore()['tasks'] as $t) { $pid = $pMap['job'][$t['job_id'] ?? ''] ?? ''; if ($pid !== '') $taskCounts[$pid] = ($taskCounts[$pid] ?? 0) + 1; }
+    foreach ($partners as &$pr) {
+        $pr['job_count'] = $jobCounts[$pr['id'] ?? ''] ?? 0;
+        $pr['task_count'] = $taskCounts[$pr['id'] ?? ''] ?? 0;
+        $pr['deal_count'] = $dealCounts[$pr['id'] ?? ''] ?? 0;
+        $pr['open_deal_count'] = $openCounts[$pr['id'] ?? ''] ?? 0;
+        $pr['commission_earned'] = (object) ($earned[$pr['id'] ?? ''] ?? []);
+        $pr['commission_pipeline'] = (object) ($pipeline[$pr['id'] ?? ''] ?? []);
+    }
+    unset($pr);
     usort($partners, fn($a, $b) => strcasecmp($a['name'] ?? '', $b['name'] ?? ''));
-    // Never expose the portal password hash or live session tokens to the
-    // internal team's own view of the partner directory.
-    $partners = array_map(function ($p) {
-        unset($p['portal_password'], $p['portal_tokens']);
-        return $p;
-    }, $partners);
     respond(['success' => true, 'partners' => $partners]);
     break;
 
+// Edit an existing partner record. There is deliberately no create here: partners
+// are made from Users (Role: Channel Partner), which makes the login and this
+// record together. Renaming keeps the linked login's name in step.
 case 'save-partner':
     if ($method !== 'POST') break;
-    $u = requireAuth();
-    $store = getPartnersStore();
-    $now = date('c');
-    $id = trim($input['id'] ?? '');
-
-    if ($id !== '') {
-        $found = false;
-        foreach ($store['partners'] as &$partner) {
-            if (($partner['id'] ?? '') === $id) {
-                $partner = applyPartnerFields($partner, $input);
-                // Portal credentials: email always updates if sent; password
-                // only changes if a new one was actually typed (an empty
-                // field must never blank out an existing password).
-                if (isset($input['portal_email']) || isset($input['portal_password'])) {
-                    setPartnerPortalPassword($partner, $input['portal_email'] ?? ($partner['portal_email'] ?? ''), trim($input['portal_password'] ?? ''));
-                }
-                $partner['updated_at'] = $now;
-                $found = true;
-                $saved = $partner;
-                break;
-            }
-        }
-        unset($partner);
-        if (!$found) respond(['success' => false, 'error' => 'Partner not found'], 404);
-        savePartnersStore($store);
-        // Never echo the password hash back to the browser.
-        unset($saved['portal_password']);
-        respond(['success' => true, 'partner' => $saved]);
-    }
-
-    // Create.
-    $name = trim($input['name'] ?? '');
-    if ($name === '') respond(['success' => false, 'error' => 'Partner name is required'], 400);
-    $partner = applyPartnerFields([
-        'id' => 'partner_' . bin2hex(random_bytes(8)),
-        'partner_no' => nextPartnerNo($store),
-        'created_by' => $u['id'] ?? '',
-        'created_at' => $now,
-        'updated_at' => $now,
-    ], $input);
-    if (isset($input['portal_email']) || isset($input['portal_password'])) {
-        setPartnerPortalPassword($partner, $input['portal_email'] ?? '', trim($input['portal_password'] ?? ''));
-    }
-    $store['partners'][] = $partner;
-    savePartnersStore($store);
-    $returned = $partner;
-    unset($returned['portal_password']);
-    respond(['success' => true, 'partner' => $returned]);
-    break;
-
-case 'delete-partner':
-    // Deals that reference this partner keep their own name/rate snapshot
-    // (partnerRefFor falls back to "(deleted partner)"), so nothing else breaks.
-    if ($method !== 'POST') break;
     requireAuth();
+    $store = getPartnersStore();
     $id = trim($input['id'] ?? '');
-    if ($id === '') respond(['success' => false, 'error' => 'No partner id'], 400);
-    $store = getPartnersStore();
-    $before = count($store['partners']);
-    $store['partners'] = array_values(array_filter($store['partners'], fn($p) => ($p['id'] ?? '') !== $id));
-    if (count($store['partners']) === $before) respond(['success' => false, 'error' => 'Partner not found'], 404);
-    savePartnersStore($store);
-    respond(['success' => true]);
-    break;
-
-/**
- * Portal login for an external channel partner — a SEPARATE auth path from
- * the internal team's 'login' action above. A partner is never a `users`
- * row and never gets is_admin/is_super_admin; it only ever sees its own
- * record + its own referred deals (see dealsForPartner() in partners.php).
- */
-case 'partner-login':
-    if ($method !== 'POST') break;
-    $email = trim(strtolower($input['email'] ?? ''));
-    $password = $input['password'] ?? '';
-    if ($email === '' || $password === '') respond(['success' => false, 'error' => 'Email and password are required'], 400);
-    $store = getPartnersStore();
+    if (trim($input['name'] ?? '') === '') respond(['success' => false, 'error' => 'Partner name is required'], 400);
+    $saved = null;
     foreach ($store['partners'] as &$partner) {
-        if (($partner['portal_email'] ?? '') === $email && ($partner['status'] ?? 'active') === 'active'
-            && !empty($partner['portal_password']) && password_verify($password, $partner['portal_password'])) {
-            $token = bin2hex(random_bytes(32));
-            addPartnerPortalToken($partner, $token);
-            $partner['last_login_at'] = date('c');
-            savePartnersStore($store);
-            respond(['success' => true, 'partner' => ['id' => $partner['id'], 'name' => $partner['name']], 'token' => $token]);
+        if (($partner['id'] ?? '') === $id) {
+            $partner = applyPartnerFields($partner, $input);
+            $partner['updated_at'] = date('c');
+            $saved = $partner;
+            break;
         }
     }
     unset($partner);
-    respond(['success' => false, 'error' => 'Invalid email or password'], 401);
-    break;
-
-case 'partner-me':
-    if ($method !== 'GET') break;
-    $partner = getCurrentPartner();
-    if (!$partner) respond(['success' => false, 'error' => 'Not authenticated'], 401);
-    respond(['success' => true, 'partner' => ['id' => $partner['id'], 'name' => $partner['name'], 'partner_no' => $partner['partner_no'] ?? '']]);
-    break;
-
-// The partner's own read-only view: their referred deals + live commission
-// payout on each. Never their contact record, never other partners, never
-// anything from the internal Clients/Jobs/Documents stores.
-case 'partner-portal':
-    if ($method !== 'GET') break;
-    $partner = getCurrentPartner();
-    if (!$partner) respond(['success' => false, 'error' => 'Not authenticated'], 401);
-    $deals = dealsForPartner($partner['id']);
-    $totalsByCurrency = [];
-    foreach ($deals as $d) {
-        if (($d['stage'] ?? '') === 'lost') continue;
-        addToCurrencyBucket($totalsByCurrency, $d['currency'], $d['payout']);
+    if (!$saved) respond(['success' => false, 'error' => 'Partner not found'], 404);
+    savePartnersStore($store);
+    if (!empty($saved['user_id'])) {
+        $users = getUsers();
+        foreach ($users as &$pu) { if ($pu['id'] === $saved['user_id']) $pu['name'] = $saved['name']; }
+        unset($pu);
+        saveUsers($users);
     }
-    respond(['success' => true, 'deals' => $deals, 'total_payout' => $totalsByCurrency]);
+    respond(['success' => true, 'partner' => $saved]);
     break;
 
 /**
@@ -3482,14 +3759,19 @@ case 'set-deal-partner':
             } else {
                 $partner = findPartnerById(getPartnersStore()['partners'], $partnerId);
                 if (!$partner) respond(['success' => false, 'error' => 'Partner not found'], 404);
+                if (($lead['partner_id'] ?? '') !== $partnerId) {
+                    partnerNotifyQueue($partnerId, 'leads', 'New referral credited to you',
+                        trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')), $lead['id'] ?? '');
+                }
                 $lead['partner_id'] = $partnerId;
-                // Rate can be overridden per-deal (e.g. a one-off negotiated
-                // rate); falls back to the partner's default.
-                $rateType = $input['partner_rate_type'] ?? $partner['default_rate_type'] ?? 'percentage';
+                // Partners have no default rate any more — commission is set on
+                // the deal itself (per service), so attaching starts at zero
+                // unless the caller passes one.
+                $rateType = $input['partner_rate_type'] ?? 'percentage';
                 $lead['partner_rate_type'] = $rateType === 'fixed' ? 'fixed' : 'percentage';
                 $lead['partner_rate_value'] = clampPartnerRateValue(
                     $lead['partner_rate_type'],
-                    $input['partner_rate_value'] ?? ($partner['default_rate_value'] ?? 0)
+                    $input['partner_rate_value'] ?? 0
                 );
             }
             $lead['updated_at'] = date('c');
@@ -3774,17 +4056,28 @@ case 'tickets':
     // tickets forwarded in from client (spoke) deployments.
     $adminCfg = getAdmin();
     $hubMode = trim($adminCfg['ticket_ingest_secret'] ?? '') !== '';
+    // No scheduler on this stack (shared hosting, no guaranteed cron) - so the
+    // "No reply from the client" reminder/auto-close leg of the SOP piggybacks
+    // on whoever next loads the ticket list, rate-limited to once per 4 hours
+    // via this timestamp so it isn't rescanning every ticket on every request.
+    if ($isAdmin) {
+        $lastRun = trim($adminCfg['ticket_reminders_last_run'] ?? '');
+        if ($lastRun === '' || (time() - strtotime($lastRun)) > 4 * 3600) {
+            processTicketReminders();
+            $adminCfg['ticket_reminders_last_run'] = date('c');
+            saveAdmin($adminCfg);
+        }
+    }
     // Admins may request the full company-wide queue; everyone else sees only their own.
     $scopeAll = $isAdmin && (($_GET['scope'] ?? '') === 'all');
     $store = getTicketsStore();
     $tickets = $store['tickets'];
     if ($hubMode && $isAdmin) {
-        // On a hub, admins see client tickets: forwarded from a spoke
-        // (source === 'client'), or logged manually on a client's behalf via
-        // the Client/Brand field (ticketNeedsClosingChecklist() — same tag
-        // either way, just a plain 'client' field with no 'source').
+        // On a hub, admins see the client-forwarded tickets (the whole point) —
+        // only ever tickets with source === 'client' (real forwards from a
+        // spoke via ingestForwardedTicket). There is no manual-tagging path.
         $tickets = array_values(array_filter($tickets, function ($t) {
-            return ($t['source'] ?? '') === 'client' || trim($t['client'] ?? '') !== '';
+            return ($t['source'] ?? '') === 'client';
         }));
     } elseif (!$scopeAll) {
         // Otherwise, non-admins (and admins not requesting 'all') see only their own.
@@ -3842,8 +4135,14 @@ case 'save-ticket':
         respond(['success' => true, 'id' => $id]);
     }
 
-    // Create a new ticket.
-    $isAdminCreator = !empty($u['is_admin']) || !empty($u['is_super_admin']);
+    // Create a new ticket. 'client' is deliberately never set here — a
+    // client/brand tag (what puts a ticket under the "Closing a client
+    // support ticket" SOP; see ticketNeedsClosingChecklist()) only ever
+    // comes from a real forwarded ticket (ingestForwardedTicket), not a
+    // manually-typed field. A manual-tagging path existed briefly and was
+    // removed: an untagged ticket silently vanished from the hub's own
+    // queue (it only shows client-tagged tickets), which was worse than not
+    // having the option.
     $ticket = [
         'id' => 'tkt_' . bin2hex(random_bytes(8)),
         'ticket_no' => nextTicketNo($store),
@@ -3854,11 +4153,6 @@ case 'save-ticket':
         'created_at' => $now,
         'updated_at' => $now,
         'replies' => [],
-        // An admin (a Brand Manager) may tag a manually-logged ticket with the
-        // client/brand it's about — e.g. one the client raised by phone or email
-        // rather than through their own deployment. This is what puts it under
-        // the "Closing a client support ticket" SOP; see ticketNeedsClosingChecklist().
-        'client' => $isAdminCreator ? trim($input['client'] ?? '') : '',
     ];
     $ticket = applyTicketFields($ticket, $input);
     if ($ticket['subject'] === '' || $ticket['message'] === '') {
@@ -3952,6 +4246,42 @@ case 'ingest-client-reply':
     respond(['success' => true]);
     break;
 
+case 'ingest-client-status':
+    // HUB side: receive a status change pushed up from a spoke (the client
+    // changed their own local ticket's status). The mirror of 'ingest-status'
+    // (the other direction — see sendStatusToSpoke()). Same auth as every
+    // other ingest-* action: the shared ticket_ingest_secret.
+    if ($method !== 'POST') break;
+    $admin = getAdmin();
+    $ingestSecret = trim($admin['ticket_ingest_secret'] ?? '');
+    if ($ingestSecret === '') respond(['success' => false, 'error' => 'Ingest not enabled'], 404);
+    if (!hash_equals($ingestSecret, trim($input['secret'] ?? ''))) {
+        respond(['success' => false, 'error' => 'Invalid secret'], 403);
+    }
+    $remoteId = trim($input['remote_id'] ?? '');
+    $status = trim($input['status'] ?? '');
+    $ok = ingestClientStatus($remoteId, $status);
+    if (!$ok) respond(['success' => false, 'error' => 'Ticket not found or invalid status'], 404);
+    respond(['success' => true]);
+    break;
+
+case 'ingest-client-delete':
+    // HUB side: receive a deletion pushed up from a spoke (a ticket forwarded
+    // from there was deleted on the client's own side). The mirror of
+    // 'ingest-delete'. Same auth as every other ingest-* action.
+    if ($method !== 'POST') break;
+    $admin = getAdmin();
+    $ingestSecret = trim($admin['ticket_ingest_secret'] ?? '');
+    if ($ingestSecret === '') respond(['success' => false, 'error' => 'Ingest not enabled'], 404);
+    if (!hash_equals($ingestSecret, trim($input['secret'] ?? ''))) {
+        respond(['success' => false, 'error' => 'Invalid secret'], 403);
+    }
+    $remoteId = trim($input['remote_id'] ?? '');
+    $ok = ingestClientDelete($remoteId);
+    if (!$ok) respond(['success' => false, 'error' => 'Missing ticket id'], 404);
+    respond(['success' => true]);
+    break;
+
 case 'ticket-reply':
     if ($method !== 'POST') break;
     $u = requireAuth();
@@ -3968,6 +4298,24 @@ case 'ticket-reply':
     // Owner or admin may post to the thread.
     if (($target['created_by'] ?? '') !== ($u['id'] ?? '') && !$isAdmin) {
         respond(['success' => false, 'error' => 'Not allowed'], 403);
+    }
+    // On a client-tagged ticket, a staff reply here is what actually reaches
+    // the client (pushed to the spoke below) — so the same ownership rule as
+    // status/checklist applies: a Developer never talks to the client (their
+    // channel is mark-ticket-fix-ready, which stays internal), and once a
+    // Brand Manager owns the ticket, only they may reply — not any admin.
+    // Replying to an unassigned client ticket claims it, same as moving its
+    // status, so "who's talking to this client" stays a single, consistent
+    // answer everywhere in the SOP, not a separate rule per action.
+    if ($isAdmin && ticketNeedsClosingChecklist($target)) {
+        if (!ticketCanChangeStatus($target, $u)) {
+            $ownerName = trim($target['assigned_to_name'] ?? '') ?: 'the assigned Brand Manager';
+            respond(['success' => false, 'error' => 'Only ' . $ownerName . ' can reply to this ticket'], 403);
+        }
+        if (trim($target['assigned_to'] ?? '') === '') {
+            $target['assigned_to'] = $u['id'] ?? '';
+            $target['assigned_to_name'] = $u['name'] ?? '';
+        }
     }
     if (!isset($target['replies']) || !is_array($target['replies'])) $target['replies'] = [];
     $reply = [
@@ -4086,8 +4434,9 @@ case 'update-ticket-status':
 
 case 'assign-ticket':
     // Sets the ticket's owning "Brand Manager" per the ticket-closing SOP.
-    // Any admin may claim/reassign — ownership isn't a fixed role on the user
-    // record, just whoever is on the hook for this ticket right now.
+    // Any admin may claim/reassign — ownership isn't itself a fixed role on
+    // the user record, but WHO can be assigned is: only a brand_manager-role
+    // user, never a developer (Fixer). "Amaan owns only the fix."
     if ($method !== 'POST') break;
     $u = requireAdmin();
     $ticketId = trim($input['id'] ?? '');
@@ -4105,6 +4454,9 @@ case 'assign-ticket':
                     if (($usr['id'] ?? '') === $assigneeId) { $assignee = $usr; break; }
                 }
                 if (!$assignee) respond(['success' => false, 'error' => 'User not found'], 404);
+                if (($assignee['ticket_role'] ?? 'brand_manager') === 'developer') {
+                    respond(['success' => false, 'error' => 'Tickets can only be owned by a Brand Manager, not a Developer'], 400);
+                }
                 $ticket['assigned_to'] = $assigneeId;
                 $ticket['assigned_to_name'] = $assignee['name'] ?? '';
             }
@@ -4123,9 +4475,16 @@ case 'mark-ticket-fix-ready':
     // The Fixer's step in the ticket-closing SOP ("Fix done"): log what
     // changed and the version, deployed and QA'd. Doesn't touch status or
     // contact the client — verifying and telling the client stays the
-    // assigned Brand Manager's job.
+    // assigned Brand Manager's job. Restricted to Developer-role users (the
+    // Fixer) — a Brand Manager doesn't fix code, so this isn't theirs to use.
     if ($method !== 'POST') break;
     $u = requireAdmin();
+    // Strictly ticket_role — deliberately no is_super_admin bypass. Being an
+    // app-wide super-admin (Users, API keys, etc.) doesn't make someone the
+    // Fixer; only whoever is actually tagged Developer logs a fix.
+    if (($u['ticket_role'] ?? 'brand_manager') !== 'developer') {
+        respond(['success' => false, 'error' => 'Only a Developer can mark a fix ready'], 403);
+    }
     $ticketId = trim($input['id'] ?? '');
     $version = trim($input['version'] ?? '');
     $note = trim($input['note'] ?? '');
@@ -4196,7 +4555,7 @@ case 'update-ticket-checklist':
             $c = $ticket['checklist'] ?? [];
             if (array_key_exists('fix_verified', $input)) $c['fix_verified'] = (bool) $input['fix_verified'];
             if (array_key_exists('root_cause', $input)) $c['root_cause'] = trim((string) $input['root_cause']);
-            if (array_key_exists('clickup_task', $input)) $c['clickup_task'] = trim((string) $input['clickup_task']);
+            if (array_key_exists('clickup_task', $input)) $c['clickup_task'] = (bool) $input['clickup_task'];
             if (array_key_exists('changelog_updated', $input)) $c['changelog_updated'] = (bool) $input['changelog_updated'];
             if (array_key_exists('recurring_flagged', $input)) $c['recurring_flagged'] = (bool) $input['recurring_flagged'];
             $ticket['checklist'] = $c;
@@ -4262,33 +4621,53 @@ case 'request-password-reset':
     $users = getUsers();
     foreach ($users as &$u) {
         if ($u['email'] === $email) {
+            // Rate-limit: repeated requests don't re-spam the inbox or churn
+            // out fresh tokens (each of which would invalidate the last).
+            if (!empty($u['reset_last_sent_at']) && (time() - strtotime($u['reset_last_sent_at'])) < 60) {
+                respond(['success' => true, 'message' => 'If this email exists, a reset link has been sent.']);
+            }
             $resetToken = bin2hex(random_bytes(32));
             $u['reset_token'] = $resetToken;
             $u['reset_expires'] = date('c', time() + 3600);
+            $u['reset_last_sent_at'] = date('c');
             saveUsers($users);
-            // Return token to admin. In production, email the link.
-            respond(['success' => true, 'message' => 'If this email exists, a reset link has been generated.', 'reset_token' => $resetToken]);
+            [$sent, $sendErr] = sendPasswordResetEmail($u['email'], $resetToken);
+            if (!$sent) error_log('Password reset email failed for ' . $u['email'] . ': ' . $sendErr);
+            $resp = ['success' => true, 'message' => 'If this email exists, a reset link has been sent.'];
+            // Dev/local fallback ONLY when email sending isn't configured at
+            // all — never when a real sender is set up, since that would leak
+            // a live reset token in the API response. Keeps the flow testable
+            // without Resend locally, without weakening it once deployed.
+            $admin = getAdmin();
+            if (!$sent && trim($admin['resend_key'] ?? '') === '') {
+                $resp['reset_token'] = $resetToken;
+                $resp['dev_note'] = 'Email sending is not configured, so the token is included directly for local testing.';
+            }
+            respond($resp);
         }
     }
     // Same message for non-existent emails (security)
-    respond(['success' => true, 'message' => 'If this email exists, a reset link has been generated.']);
+    respond(['success' => true, 'message' => 'If this email exists, a reset link has been sent.']);
     break;
 
 case 'reset-password':
     if ($method !== 'POST') break;
     $resetToken = $input['reset_token'] ?? '';
     $newPassword = $input['new_password'] ?? '';
-    if (strlen($newPassword) < 6) respond(['success' => false, 'error' => 'Password must be at least 6 characters'], 400);
+    if (strlen($newPassword) < 8) respond(['success' => false, 'error' => 'Password must be at least 8 characters'], 400);
 
     $users = getUsers();
     foreach ($users as &$u) {
-        if (($u['reset_token'] ?? '') === $resetToken && !empty($u['reset_expires']) && strtotime($u['reset_expires']) > time()) {
+        if (($u['reset_token'] ?? '') !== '' && hash_equals($u['reset_token'], (string) $resetToken) && !empty($u['reset_expires']) && strtotime($u['reset_expires']) > time()) {
             $u['password'] = password_hash($newPassword, PASSWORD_DEFAULT);
-            unset($u['reset_token']);
-            unset($u['reset_expires']);
-            // Security: a password reset invalidates ALL existing device sessions.
+            unset($u['reset_token'], $u['reset_expires'], $u['reset_last_sent_at']);
+            // A password reset invalidates ALL existing sessions, any
+            // in-flight login-OTP, AND every trusted device — someone who
+            // just proved control of the mailbox (which is how this reset
+            // happened) shouldn't also inherit devices that skip the second
+            // factor entirely.
             $u['tokens'] = [];
-            unset($u['token']);
+            unset($u['token'], $u['otp_hash'], $u['otp_pending_token'], $u['otp_expires'], $u['otp_attempts'], $u['otp_last_sent_at'], $u['trusted_devices']);
             saveUsers($users);
             respond(['success' => true, 'message' => 'Password reset successful. Please login with your new password.']);
         }
@@ -4303,16 +4682,119 @@ case 'login':
     $users = getUsers();
     foreach ($users as &$user) {
         if ($user['email'] === $email && password_verify($password, $user['password'])) {
+            $admin = getAdmin();
+            // Applies to every account once on — proven out on Super Admin
+            // first (2026-09-29), now widened to the whole team. admin-settings
+            // refuses to save otp_enabled=true unless Resend + a from address
+            // are already configured (see that case below), so the earlier
+            // lockout — enabled with no way to actually send the code — can't
+            // happen again from the UI. A "remember this device" token (see
+            // verify-otp) skips the code on a browser that already proved
+            // itself in the last 30 days.
+            $deviceToken = trim($input['device_token'] ?? '');
+            if (!empty($admin['otp_enabled']) && !isTrustedDevice($user, $deviceToken)) {
+                // Email OTP: a correct password alone doesn't issue a session
+                // token — a 6-digit code has to be entered from the account's
+                // own inbox first. Fails CLOSED: if the code can't be sent,
+                // the login attempt fails rather than silently skipping 2FA.
+                $code = generateOtpCode();
+                [$sent, $sendErr] = sendOtpCodeEmail($user['email'], $code);
+                if (!$sent) respond(['success' => false, 'error' => 'Could not send the sign-in code: ' . $sendErr], 502);
+                $pendingToken = generateToken();
+                $user['otp_hash'] = password_hash($code, PASSWORD_DEFAULT);
+                $user['otp_pending_token'] = $pendingToken;
+                $user['otp_expires'] = date('c', time() + 600);
+                $user['otp_attempts'] = 0;
+                $user['otp_last_sent_at'] = date('c');
+                saveUsers($users);
+                respond(['success' => true, 'requires_otp' => true, 'pending_token' => $pendingToken]);
+            }
             $token = generateToken();
             addUserToken($user, $token); // multi-device: keep existing sessions alive
             $user['last_login_at'] = date('c');
             $user['session_start'] = date('c');
             $user['last_active_at'] = date('c');
             saveUsers($users);
-            respond(['success' => true, 'user' => ['id' => $user['id'], 'name' => $user['name'], 'email' => $user['email'], 'is_admin' => ($user['is_admin'] ?? false) || ($user['is_super_admin'] ?? false), 'is_super_admin' => $user['is_super_admin'] ?? false], 'token' => $token]);
+            respond(['success' => true, 'user' => ['id' => $user['id'], 'name' => $user['name'], 'email' => $user['email'], 'title' => $user['title'] ?? '', 'ticket_role' => $user['ticket_role'] ?? 'brand_manager', 'is_admin' => ($user['is_admin'] ?? false) || ($user['is_super_admin'] ?? false), 'is_super_admin' => $user['is_super_admin'] ?? false, 'is_channel_partner' => !empty($user['is_channel_partner'])], 'token' => $token]);
         }
     }
     respond(['success' => false, 'error' => 'Invalid email or password'], 401);
+    break;
+
+case 'verify-otp':
+    if ($method !== 'POST') break;
+    $pendingToken = trim($input['pending_token'] ?? '');
+    $code = trim($input['code'] ?? '');
+    if ($pendingToken === '' || $code === '') respond(['success' => false, 'error' => 'Missing code'], 400);
+    $users = getUsers();
+    foreach ($users as &$user) {
+        if (empty($user['otp_pending_token']) || !hash_equals($user['otp_pending_token'], $pendingToken)) continue;
+        if (empty($user['otp_expires']) || strtotime($user['otp_expires']) < time()) {
+            unset($user['otp_hash'], $user['otp_pending_token'], $user['otp_expires'], $user['otp_attempts'], $user['otp_last_sent_at']);
+            saveUsers($users);
+            respond(['success' => false, 'error' => 'Code expired. Please sign in again.'], 400);
+        }
+        if (($user['otp_attempts'] ?? 0) >= 5) {
+            // Too many wrong guesses: kill the whole pending session, not just
+            // this code — a fresh login (and fresh code) is required, so an
+            // attacker can't keep hammering the same 6-digit space forever.
+            unset($user['otp_hash'], $user['otp_pending_token'], $user['otp_expires'], $user['otp_attempts'], $user['otp_last_sent_at']);
+            saveUsers($users);
+            respond(['success' => false, 'error' => 'Too many incorrect attempts. Please sign in again.'], 429);
+        }
+        if (!password_verify($code, $user['otp_hash'] ?? '')) {
+            $user['otp_attempts'] = ($user['otp_attempts'] ?? 0) + 1;
+            saveUsers($users);
+            respond(['success' => false, 'error' => 'Incorrect code', 'attempts_remaining' => max(0, 5 - $user['otp_attempts'])], 401);
+        }
+        // Correct — single-use, clear all OTP state, then issue the real session token.
+        unset($user['otp_hash'], $user['otp_pending_token'], $user['otp_expires'], $user['otp_attempts'], $user['otp_last_sent_at']);
+        $token = generateToken();
+        addUserToken($user, $token);
+        $user['last_login_at'] = date('c');
+        $user['session_start'] = date('c');
+        $user['last_active_at'] = date('c');
+        // "Remember this device" — opt-in, only when explicitly checked.
+        // Issued once here (never regenerated silently), so it's genuinely
+        // the person's own choice each time a new browser needs trusting.
+        $deviceToken = null;
+        if (!empty($input['remember_device'])) {
+            $deviceToken = generateToken();
+            addTrustedDevice($user, $deviceToken);
+        }
+        saveUsers($users);
+        $resp = ['success' => true, 'user' => ['id' => $user['id'], 'name' => $user['name'], 'email' => $user['email'], 'title' => $user['title'] ?? '', 'ticket_role' => $user['ticket_role'] ?? 'brand_manager', 'is_admin' => ($user['is_admin'] ?? false) || ($user['is_super_admin'] ?? false), 'is_super_admin' => $user['is_super_admin'] ?? false, 'is_channel_partner' => !empty($user['is_channel_partner'])], 'token' => $token];
+        if ($deviceToken !== null) $resp['device_token'] = $deviceToken;
+        respond($resp);
+    }
+    respond(['success' => false, 'error' => 'Invalid or expired code'], 400);
+    break;
+
+case 'resend-otp':
+    if ($method !== 'POST') break;
+    $pendingToken = trim($input['pending_token'] ?? '');
+    if ($pendingToken === '') respond(['success' => false, 'error' => 'Missing pending token'], 400);
+    $users = getUsers();
+    foreach ($users as &$user) {
+        if (empty($user['otp_pending_token']) || !hash_equals($user['otp_pending_token'], $pendingToken)) continue;
+        if (empty($user['otp_expires']) || strtotime($user['otp_expires']) < time()) {
+            respond(['success' => false, 'error' => 'Session expired. Please sign in again.'], 400);
+        }
+        if (!empty($user['otp_last_sent_at']) && (time() - strtotime($user['otp_last_sent_at'])) < 30) {
+            respond(['success' => false, 'error' => 'Please wait a few seconds before requesting another code'], 429);
+        }
+        $code = generateOtpCode();
+        [$sent, $sendErr] = sendOtpCodeEmail($user['email'], $code);
+        if (!$sent) respond(['success' => false, 'error' => 'Could not send the code: ' . $sendErr], 502);
+        // A fresh code also means a fresh attempt budget and expiry window.
+        $user['otp_hash'] = password_hash($code, PASSWORD_DEFAULT);
+        $user['otp_expires'] = date('c', time() + 600);
+        $user['otp_attempts'] = 0;
+        $user['otp_last_sent_at'] = date('c');
+        saveUsers($users);
+        respond(['success' => true]);
+    }
+    respond(['success' => false, 'error' => 'Invalid or expired session. Please sign in again.'], 400);
     break;
 
 case 'me':
@@ -4332,8 +4814,11 @@ case 'me':
             'id' => $user['id'],
             'name' => $user['name'],
             'email' => $user['email'],
+            'title' => $user['title'] ?? '',
+            'ticket_role' => $user['ticket_role'] ?? 'brand_manager',
             'is_admin' => ($user['is_admin'] ?? false) || ($user['is_super_admin'] ?? false),
             'is_super_admin' => $user['is_super_admin'] ?? false,
+            'is_channel_partner' => !empty($user['is_channel_partner']),
             'onboarding_completed' => $userData['onboarding_completed'] ?? true
         ], 'default_currency' => defaultCurrency(), 'currencies' => supportedCurrencies()]);
     }
@@ -4408,6 +4893,22 @@ case 'admin-settings':
         if (isset($input['ticket_ingest_secret']) && strpos($input['ticket_ingest_secret'], '****') === false) $admin['ticket_ingest_secret'] = trim($input['ticket_ingest_secret']);
         // Sales outreach: verified From address for emails sent to leads from the system.
         if (isset($input['outreach_from'])) $admin['outreach_from'] = trim($input['outreach_from']);
+        // Auth emails: sign-in codes + password reset links (see sendAuthEmail()).
+        // otp_enabled requires a code from the account's own inbox at every login.
+        if (isset($input['auth_from'])) $admin['auth_from'] = trim($input['auth_from']);
+        if (isset($input['otp_enabled'])) {
+            // Refuse to turn this on without a way to actually send the code —
+            // otherwise it silently locks the account out at next login with
+            // no way back into this very screen to turn it back off (this
+            // happened once, 2026-09-29; see the login case's comment).
+            // auth_from itself isn't required to check here: sendAuthEmail()
+            // already falls back to support_from, then onboarding@resend.dev,
+            // so the one thing that's NEVER optional is the Resend key.
+            if ((bool) $input['otp_enabled'] && trim($admin['resend_key'] ?? '') === '') {
+                respond(['success' => false, 'error' => 'Add a Resend API key above before requiring an emailed code — otherwise sign-in has no way to send it.'], 400);
+            }
+            $admin['otp_enabled'] = (bool) $input['otp_enabled'];
+        }
 
         // Team Chat real-time (Pusher). key/secret auto-mask on GET (via _key/_secret
         // suffix); app_id/cluster are public and safe to expose to the client.
@@ -4444,13 +4945,12 @@ case 'test-api':
 case 'users':
     if ($method !== 'GET') break;
     requireAdmin();
-    $requestingUser = requireAdmin();
-    $isSuperAdmin = $requestingUser['is_super_admin'] ?? false;
+    // Visibility is not gated by tier — any Admin/Super Admin sees the full
+    // roster, including other Super Admins. Mutating a Super Admin account
+    // (edit/delete/grant/revoke) is still restricted in create-user/
+    // update-user/delete-user below; this only controls who shows up in the list.
     $allUsers = getUsers();
-    if (!$isSuperAdmin) {
-        $allUsers = array_values(array_filter($allUsers, fn($u) => empty($u['is_super_admin'])));
-    }
-    $users = array_map(function($u) { return ['id' => $u['id'], 'name' => $u['name'], 'email' => $u['email'], 'is_admin' => $u['is_admin'] ?? false, 'is_super_admin' => $u['is_super_admin'] ?? false, 'created_at' => $u['created_at'] ?? '', 'last_login_at' => $u['last_login_at'] ?? null, 'session_start' => $u['session_start'] ?? null, 'last_active_at' => $u['last_active_at'] ?? null]; }, $allUsers);
+    $users = array_map(function($u) { return ['id' => $u['id'], 'name' => $u['name'], 'email' => $u['email'], 'title' => $u['title'] ?? '', 'ticket_role' => $u['ticket_role'] ?? 'brand_manager', 'is_admin' => $u['is_admin'] ?? false, 'is_super_admin' => $u['is_super_admin'] ?? false, 'is_channel_partner' => !empty($u['is_channel_partner']), 'created_at' => $u['created_at'] ?? '', 'last_login_at' => $u['last_login_at'] ?? null, 'session_start' => $u['session_start'] ?? null, 'last_active_at' => $u['last_active_at'] ?? null]; }, $allUsers);
     respond(['success' => true, 'users' => $users]);
     break;
 
@@ -4458,8 +4958,10 @@ case 'users':
 // authenticated user can call this, unlike 'users' which is admin-only.
 case 'team-members':
     if ($method !== 'GET') break;
-    requireAuth();
-    $members = array_map(function($u) { return ['id' => $u['id'], 'name' => $u['name'] ?: $u['email']]; }, getUsers());
+    $tmUser = requireAuth();
+    // Channel partners aren't team members: never offered as assignees/owners to the team, and a
+    // partner only ever sees themselves here (so their own pickers work without listing the team).
+    $members = array_map(function($u) { return ['id' => $u['id'], 'name' => $u['name'] ?: $u['email']]; }, array_values(array_filter(getUsers(), fn($u) => !empty($tmUser['is_channel_partner']) ? $u['id'] === $tmUser['id'] : empty($u['is_channel_partner']))));
     respond(['success' => true, 'members' => $members]);
     break;
 
@@ -4531,7 +5033,7 @@ case 'user-sessions':
         $result[] = [
             'user_id' => $uid,
             'user_name' => $u['name'] ?? $u['email'],
-            'user_role' => !empty($u['is_super_admin']) ? 'super_admin' : (!empty($u['is_admin']) ? 'admin' : 'rep'),
+            'user_role' => !empty($u['is_super_admin']) ? 'super_admin' : (!empty($u['is_admin']) ? 'admin' : (!empty($u['is_channel_partner']) ? 'partner' : 'rep')),
             'last_seen' => $lastPing['end'] ?? ($u['last_active_at'] ?? null),
             'last_page' => !empty($lastPing['pages']) ? end($lastPing['pages']) : null,
             'active_mins_today' => min($todayMins, 480),
@@ -4544,13 +5046,23 @@ case 'user-sessions':
     break;
 
 case 'create-user':
+    // Three tiers: Super Admin > Admin > Manager (a plain, non-admin
+    // account — is_admin/is_super_admin both false). Any Admin or Super
+    // Admin may add a new account (Managers can't reach this action at
+    // all — requireAdmin() rejects them); only a Super Admin may hand out
+    // Super Admin status on the new account.
     if ($method !== 'POST') break;
-    requireAdmin();
+    $admin = requireAdmin();
     $name = trim($input['name'] ?? '');
     $email = trim(strtolower($input['email'] ?? ''));
+    $title = trim($input['title'] ?? '');
     $isAdmin = (bool)($input['is_admin'] ?? false);
     $isSuperAdmin = (bool)($input['is_super_admin'] ?? false);
-    if ($isSuperAdmin) requireSuperAdmin();
+    // Fourth tier: Channel Partner — an outside referrer with a scoped login
+    // (own deals/jobs/tasks only, see partnerMayCall()). Never admin.
+    $isChannelPartner = (bool)($input['is_channel_partner'] ?? false);
+    if ($isChannelPartner) { $isAdmin = false; $isSuperAdmin = false; }
+    if ($isSuperAdmin) { requireSuperAdmin(); $isAdmin = true; } // Super Admin implies Admin
     if (!$name || !$email) respond(['success' => false, 'error' => 'Name and email required'], 400);
     $users = getUsers();
     foreach ($users as $u) { if ($u['email'] === $email) respond(['success' => false, 'error' => 'Email exists'], 400); }
@@ -4563,13 +5075,42 @@ case 'create-user':
         $password = generatePassword();
     }
     $userId = generateId('user_');
-    $users[] = ['id' => $userId, 'name' => $name, 'email' => $email, 'password' => password_hash($password, PASSWORD_DEFAULT), 'token' => '', 'created_at' => date('c'), 'is_admin' => $isAdmin, 'is_super_admin' => $isSuperAdmin];
+    // Ticket role (Developer/Brand Manager) — see the "Closing a client support
+    // ticket" SOP. Separate from is_admin/is_super_admin (the Users page's
+    // existing "Role" column, which is a permission tier, not this). Defaults
+    // to brand_manager: a new hire is assumed to own client tickets, not fix
+    // code, unless explicitly set otherwise.
+    $ticketRole = ($input['ticket_role'] ?? '') === 'developer' ? 'developer' : 'brand_manager';
+    $newUser = ['id' => $userId, 'name' => $name, 'email' => $email, 'title' => $title, 'ticket_role' => $ticketRole, 'password' => password_hash($password, PASSWORD_DEFAULT), 'token' => '', 'created_at' => date('c'), 'is_admin' => $isAdmin, 'is_super_admin' => $isSuperAdmin];
+    if ($isChannelPartner) {
+        // The partner record is what deals point at (partner_id); the login
+        // just carries the link to it. Name only — commission is set per deal.
+        $pStore = getPartnersStore();
+        $partnerRec = applyPartnerFields([
+            'id' => 'partner_' . bin2hex(random_bytes(8)),
+            'partner_no' => nextPartnerNo($pStore),
+            'user_id' => $userId,
+            'created_by' => $admin['id'] ?? '',
+            'created_at' => date('c'),
+            'updated_at' => date('c'),
+        ], ['name' => $name, 'contact_email' => $email]);
+        $pStore['partners'][] = $partnerRec;
+        savePartnersStore($pStore);
+        $newUser['is_channel_partner'] = true;
+        $newUser['partner_id'] = $partnerRec['id'];
+    }
+    $users[] = $newUser;
     saveUsers($users);
     saveUserData($userId, ['leads' => [], 'settings' => ['sender_name' => $name, 'sender_company' => 'Levata', 'sender_title' => '', 'company_description' => '', 'value_proposition' => '', 'social_proof' => '', 'calendar_link' => '', 'email_tone' => 'professional', 'signature' => ''], 'onboarding_completed' => false]);
-    respond(['success' => true, 'user' => ['id' => $userId, 'name' => $name, 'email' => $email, 'is_admin' => $isAdmin, 'is_super_admin' => $isSuperAdmin], 'password' => $password]);
+    respond(['success' => true, 'user' => ['id' => $userId, 'name' => $name, 'email' => $email, 'title' => $title, 'ticket_role' => $ticketRole, 'is_admin' => $isAdmin, 'is_super_admin' => $isSuperAdmin, 'is_channel_partner' => $isChannelPartner], 'password' => $password]);
     break;
 
 case 'update-user':
+    // Admin or Super Admin may edit an account (title, ticket role, password,
+    // even the is_admin flag itself — promoting/demoting Manager <-> Admin).
+    // Two things stay Super-Admin-only: touching an account that's ALREADY
+    // Super Admin at all (even just its title), and granting/revoking Super
+    // Admin status on anyone.
     if ($method !== 'POST') break;
     $admin = requireAdmin();
     $userId = $input['id'] ?? '';
@@ -4577,11 +5118,29 @@ case 'update-user':
     $newPass = null;
     foreach ($users as &$u) {
         if ($u['id'] === $userId) {
-            if (!empty($u['is_super_admin']) && empty($admin['is_super_admin'])) respond(['success' => false, 'error' => 'Cannot edit a super admin'], 403);
+            if (!empty($u['is_super_admin']) && empty($admin['is_super_admin'])) respond(['success' => false, 'error' => 'Cannot edit a Super Admin'], 403);
+            $isSelf = $u['id'] === $admin['id'];
+            // Self-lockout guards, enforced here (not just hidden in the UI):
+            // nobody can strip their own admin/super-admin access, or they'd
+            // be instantly unable to reach this very page to undo it.
+            if ($isSelf && isset($input['is_admin']) && !$input['is_admin']) respond(['success' => false, 'error' => 'Cannot demote yourself'], 400);
+            if ($isSelf && isset($input['is_super_admin']) && !$input['is_super_admin']) respond(['success' => false, 'error' => 'Cannot remove your own Super Admin status'], 400);
+            // A channel partner is a separate kind of account, not a rung on
+            // the Manager/Admin ladder — promoting one would hand an outside
+            // referrer the whole system, so it's refused outright.
+            if (!empty($u['is_channel_partner']) && (!empty($input['is_admin']) || !empty($input['is_super_admin']))) {
+                respond(['success' => false, 'error' => 'A channel partner account cannot be made an Admin. Create a separate team account instead.'], 400);
+            }
             if (!empty($input['name'])) $u['name'] = trim($input['name']);
             if (!empty($input['email'])) $u['email'] = trim(strtolower($input['email']));
+            if (isset($input['title'])) $u['title'] = trim($input['title']);
+            if (isset($input['ticket_role'])) $u['ticket_role'] = $input['ticket_role'] === 'developer' ? 'developer' : 'brand_manager';
             if (isset($input['is_admin'])) $u['is_admin'] = (bool)$input['is_admin'];
-            if (isset($input['is_super_admin'])) { requireSuperAdmin(); $u['is_super_admin'] = (bool)$input['is_super_admin']; }
+            if (isset($input['is_super_admin'])) {
+                requireSuperAdmin();
+                $u['is_super_admin'] = (bool)$input['is_super_admin'];
+                if ($u['is_super_admin']) $u['is_admin'] = true; // Super Admin implies Admin
+            }
             // Set a specific password if provided (min 8 chars); else if reset_password is set, auto-generate one.
             if (!empty($input['new_password'])) {
                 if (strlen((string)$input['new_password']) < 8) respond(['success' => false, 'error' => 'Password must be at least 8 characters'], 400);
@@ -4592,6 +5151,15 @@ case 'update-user':
                 $u['password'] = password_hash($newPass, PASSWORD_DEFAULT);
             }
             saveUsers($users);
+            // Keep the linked partner record's name in step with the login's.
+            if (!empty($u['is_channel_partner']) && !empty($u['partner_id']) && !empty($input['name'])) {
+                $pStore = getPartnersStore();
+                foreach ($pStore['partners'] as &$pr) {
+                    if (($pr['id'] ?? '') === $u['partner_id']) { $pr['name'] = $u['name']; $pr['updated_at'] = date('c'); }
+                }
+                unset($pr);
+                savePartnersStore($pStore);
+            }
             $res = ['success' => true];
             if ($newPass) $res['new_password'] = $newPass;
             respond($res);
@@ -4601,15 +5169,33 @@ case 'update-user':
     break;
 
 case 'delete-user':
+    // Admin or Super Admin may remove an account, but only a Super Admin may
+    // delete one that's Admin-tier or above (Manager-tier deletion is the
+    // one thing a plain Admin can do here) — Managers can't reach this
+    // action at all.
     if ($method !== 'POST') break;
     $admin = requireAdmin();
     $userId = $input['id'] ?? '';
     if ($userId === $admin['id']) respond(['success' => false, 'error' => 'Cannot delete yourself'], 400);
     $target = null;
     foreach (getUsers() as $u) { if ($u['id'] === $userId) { $target = $u; break; } }
-    if ($target && !empty($target['is_super_admin']) && empty($admin['is_super_admin'])) respond(['success' => false, 'error' => 'Cannot delete a super admin'], 403);
+    if ($target && !empty($target['is_admin']) && empty($admin['is_super_admin'])) {
+        $msg = !empty($target['is_super_admin']) ? 'Cannot delete a Super Admin' : 'Only a Super Admin can delete an Admin';
+        respond(['success' => false, 'error' => $msg], 403);
+    }
     $users = array_values(array_filter(getUsers(), function($u) use ($userId) { return $u['id'] !== $userId; }));
     saveUsers($users);
+    // A removed channel partner's record is archived, not deleted: deals that
+    // came through them keep showing their name, they just drop out of the
+    // "attach a partner" picker.
+    if ($target && !empty($target['is_channel_partner']) && !empty($target['partner_id'])) {
+        $pStore = getPartnersStore();
+        foreach ($pStore['partners'] as &$pr) {
+            if (($pr['id'] ?? '') === $target['partner_id']) { $pr['status'] = 'archived'; $pr['updated_at'] = date('c'); }
+        }
+        unset($pr);
+        savePartnersStore($pStore);
+    }
     respond(['success' => true]);
     break;
 
@@ -4623,7 +5209,7 @@ case 'impersonate':
             $token = bin2hex(random_bytes(32));
             addUserToken($u, $token); // multi-device: don't evict the target's real sessions
             saveUsers($users);
-            respond(['success' => true, 'token' => $token, 'user' => ['id' => $u['id'], 'name' => $u['name'], 'email' => $u['email'], 'is_admin' => $u['is_admin'] ?? false, 'is_super_admin' => $u['is_super_admin'] ?? false]]);
+            respond(['success' => true, 'token' => $token, 'user' => ['id' => $u['id'], 'name' => $u['name'], 'email' => $u['email'], 'title' => $u['title'] ?? '', 'is_admin' => $u['is_admin'] ?? false, 'is_super_admin' => $u['is_super_admin'] ?? false, 'is_channel_partner' => !empty($u['is_channel_partner'])]]);
         }
     }
     respond(['success' => false, 'error' => 'User not found'], 404);
@@ -4649,6 +5235,54 @@ case 'reset-user-data':
     respond(['success' => true]);
     break;
 
+// Wipes every business record (deals, jobs/invoices, documents, tasks,
+// clients, partners, chat) while leaving accounts, config and support tickets
+// untouched: the `users` table and the `admin_config` blob are never
+// touched here, and each user's own settings (name/email tone/signature
+// etc, still under user_data:<id>) survive — only that key's `leads` array
+// is cleared. Requires the literal confirm phrase so it can't be fired by
+// an accidental button double-click or a replayed request.
+case 'reset-all-data':
+    if ($method !== 'POST') break;
+    requireSuperAdmin();
+    $confirm = trim($input['confirm'] ?? '');
+    if ($confirm !== 'DELETE ALL DATA') {
+        respond(['success' => false, 'error' => 'Confirmation phrase did not match'], 400);
+    }
+
+    foreach (getUsers() as $u) {
+        $ud = getUserData($u['id']);
+        $ud['leads'] = [];
+        $ud['notifications'] = [];
+        saveUserData($u['id'], $ud);
+    }
+
+    saveLeadsStore(['leads' => []]);
+    saveJobsStore(['jobs' => [], 'seq' => ['job' => 0, 'invoice' => 0]]);
+    saveDocsStore(['documents' => []]);
+    saveTasksStore(['tasks' => [], 'seq' => 0]);
+    // Support tickets are deliberately NOT reset: they're a separate record (client
+    // support history and its ticket numbering), not part of the business data being cleared.
+    saveClientsStore(['clients' => [], 'seq' => 0, 'backfilled_once' => false]);
+    // Partner logins survive a reset (users are never touched), so keep their
+    // records or their accounts would point at nothing.
+    $keepPartnerIds = [];
+    foreach (getUsers() as $u) { if (!empty($u['partner_id'])) $keepPartnerIds[] = $u['partner_id']; }
+    $oldPartners = getPartnersStore();
+    savePartnersStore([
+        'partners' => array_values(array_filter($oldPartners['partners'], fn($pr) => in_array($pr['id'] ?? '', $keepPartnerIds, true))),
+        'seq' => $oldPartners['seq'],
+    ]);
+
+    saveChatChannels([
+        ['id' => 'channel_general', 'name' => 'general', 'description' => 'Company-wide chat', 'members' => [], 'created_by' => 'system', 'created_at' => date('c')],
+        ['id' => 'channel_deals', 'name' => 'deals', 'description' => 'Deal updates', 'members' => [], 'created_by' => 'system', 'created_at' => date('c')],
+    ]);
+    db()->exec("TRUNCATE chat_messages, chat_last_read");
+
+    respond(['success' => true]);
+    break;
+
 case 'leads':
     if ($method !== 'GET') break;
     $user = requireAuth();
@@ -4657,12 +5291,14 @@ case 'leads':
     // owner_id narrows to one rep's own leads, same filter shape as the
     // existing status/source_type/search filters below.
     $leads = getLeadsStore()['leads'];
+    $isPartner = !empty($user['is_channel_partner']);
+    if ($isPartner) $leads = partnerOwnLeads($user, $leads);
     $ownerFilter = trim($_GET['owner_id'] ?? '');
     if ($ownerFilter !== '') {
         $leads = array_filter($leads, fn($l) => ($l['owner_id'] ?? '') === $ownerFilter);
     }
 
-    // Filter out soft-deleted leads (unless requesting trash)
+    // Filter out soft-deleted leads (unless requesting trash — never for a partner)
     $showTrash = ($_GET['trash'] ?? '') === 'true';
     if ($showTrash) {
         $leads = array_filter($leads, function($l) { return !empty($l['deleted_at']); });
@@ -4703,6 +5339,13 @@ case 'leads':
     $total = count($leads);
     $totalPages = max(1, ceil($total / $perPage));
     $paginatedLeads = array_slice(array_values($leads), ($page - 1) * $perPage, $perPage);
+    $partnersOut = getPartnersStore()['partners'];
+    // Deals a channel partner added are owned by their login, which isn't in team-members
+    // (partners aren't assignable), so send the names the Owner column needs.
+    $ownerNames = [];
+    foreach (getUsers() as $ou) { if (!empty($ou['is_channel_partner']) && (empty($user['is_channel_partner']) || $ou['id'] === $user['id'])) $ownerNames[$ou['id']] = ($ou['name'] ?: $ou['email']) . ' (Channel Partner)'; }
+    // A partner sees a trimmed copy of their own deals, and only their own name in the partner list.
+    if ($isPartner) $partnersOut = array_values(array_filter($partnersOut, fn($pr) => ($pr['id'] ?? '') === ($user['partner_id'] ?? '')));
 
     respond([
         'success' => true,
@@ -4711,7 +5354,8 @@ case 'leads':
         'requisitions' => $admin['requisitions'] ?? [],
         // So the pipeline table can show "Direct" vs. a partner name/payout
         // without a second round trip.
-        'partners' => getPartnersStore()['partners'],
+        'partners' => $partnersOut,
+        'owner_names' => $ownerNames,
         'service_options' => $admin['service_options'] ?? []
     ]);
     break;
@@ -4722,7 +5366,11 @@ case 'lead':
     
     if ($method === 'GET' && isset($_GET['id'])) {
         $leadsStore = getLeadsStore();
-        foreach ($leadsStore['leads'] as $l) { if ($l['id'] === $_GET['id']) respond(['success' => true, 'lead' => $l]); }
+        foreach ($leadsStore['leads'] as $l) {
+            if ($l['id'] !== $_GET['id']) continue;
+            if (!empty($user['is_channel_partner']) && empty(partnerOwnLeads($user, [$l]))) break; // someone else's deal: same answer as "missing"
+            respond(['success' => true, 'lead' => $l]);
+        }
         respond(['success' => false, 'error' => 'Not found'], 404);
     }
     
@@ -4734,6 +5382,14 @@ case 'lead':
         $phone = trim($input['phone'] ?? '');
         $website = validateLeadContactFields($email, $linkedin, $website, $phone);
 
+        // A channel partner's new deal is always their own: credited to them, owned by their
+        // login (so the team can tell it came from a partner), never assignable elsewhere.
+        $isPartnerUser = !empty($user['is_channel_partner']);
+        if ($isPartnerUser) {
+            if (trim((string) ($user['partner_id'] ?? '')) === '') respond(['success' => false, 'error' => 'Your partner account is not linked to a partner record'], 403);
+            $input['partner_id'] = $user['partner_id'];
+            $input['owner_id'] = $user['id'];
+        }
         $source = normalizeLeadSource($input['source'] ?? 'manual');
         $isWarm = !empty($input['warm']) || (($input['urgency_flag'] ?? '') === 'warm');
         $requestedStage = trim($input['stage'] ?? '');
@@ -4813,17 +5469,33 @@ case 'lead':
             $partner = findPartnerById(getPartnersStore()['partners'], $partnerId);
             if ($partner) {
                 $lead['partner_id'] = $partnerId;
-                $rateType = $input['partner_rate_type'] ?? $partner['default_rate_type'] ?? 'percentage';
+                partnerNotifyLead($lead, 'leads', 'New referral credited to you',
+                    trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')));
+                $rateType = $input['partner_rate_type'] ?? 'percentage';
                 $lead['partner_rate_type'] = $rateType === 'fixed' ? 'fixed' : 'percentage';
                 $lead['partner_rate_value'] = clampPartnerRateValue(
                     $lead['partner_rate_type'],
-                    $input['partner_rate_value'] ?? ($partner['default_rate_value'] ?? 0)
+                    $input['partner_rate_value'] ?? 0
                 );
             }
         }
         $lead = normalizeLeadForMapping($lead);
         $userData['leads'][] = $lead;
         saveUserData($user['id'], $userData);
+        if ($isPartnerUser) {
+            // Tell the team a partner just referred something, so it doesn't sit unseen.
+            $who = trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? ''));
+            foreach (getUsers() as $tu) {
+                if (!empty($tu['is_channel_partner']) || (empty($tu['is_admin']) && empty($tu['is_super_admin']))) continue;
+                addUserNotification($tu['id'] ?? '', [
+                    'notif_key' => 'partner_deal_' . $lead['id'],
+                    'type' => 'partner_deal',
+                    'title' => '🤝 New deal from ' . htmlspecialchars($user['name'] ?? 'a channel partner'),
+                    'body' => htmlspecialchars($who !== '' ? $who : '(unnamed)'),
+                    'lead_id' => $lead['id'], 'page' => 'leads',
+                ]);
+            }
+        }
         respond(['success' => true, 'lead' => $lead], 201);
     }
     
@@ -5111,7 +5783,8 @@ case 'update-lead':
             }
             // Reassigning ownership: validate against the real users table so a
             // bad id can never silently orphan a lead (same rule as creation).
-            if (isset($input['owner_id']) && trim($input['owner_id']) !== '') {
+            // A channel partner's deals always stay with their own login.
+            if (isset($input['owner_id']) && trim($input['owner_id']) !== '' && empty($user['is_channel_partner'])) {
                 foreach (getUsers() as $u) {
                     if ($u['id'] === $input['owner_id']) { $lead['owner_id'] = $input['owner_id']; break; }
                 }
@@ -7031,6 +7704,7 @@ case 'stats':
     // owner_id narrowing, mirrored so the stage strip's counts always match
     // whatever the pipeline table below it is actually showing).
     $leads = getLeadsStore()['leads'];
+    if (!empty($user['is_channel_partner'])) $leads = partnerOwnLeads($user, $leads);
     $ownerFilter = trim($_GET['owner_id'] ?? '');
     if ($ownerFilter !== '') {
         $leads = array_filter($leads, fn($l) => ($l['owner_id'] ?? '') === $ownerFilter);
@@ -7182,7 +7856,10 @@ case 'command-center':
         $settings = getUserData($user['id'])['settings'] ?? [];
     } else {
         $userData = getUserData($user['id']);
-        foreach (($userData['leads'] ?? []) as $lead) {
+        // A channel partner's funnel is built from the deals credited to them (including ones the
+        // team added for them), not just the ones their own login owns.
+        $ownLeads = !empty($user['is_channel_partner']) ? partnerOwnLeads($user, getLeadsStore()['leads']) : ($userData['leads'] ?? []);
+        foreach ($ownLeads as $lead) {
             if (empty($lead['deleted_at'])) $leads[] = $lead;
         }
         $settings = $userData['settings'] ?? [];
