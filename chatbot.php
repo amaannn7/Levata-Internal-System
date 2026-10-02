@@ -119,6 +119,7 @@ function agentToolDeclarations(): array {
                     'value' => ['type' => 'number', 'description' => 'Total job value (a number, no currency symbol). For one-off jobs.'],
                     'currency' => ['type' => 'string', 'description' => 'Currency code, e.g. LKR, USD, GBP. Defaults to LKR if omitted.'],
                     'type' => ['type' => 'string', 'description' => 'Either "one_off" or "retainer". Defaults to one_off.'],
+                    'retainer_months' => ['type' => 'integer', 'description' => 'For retainers only: how many months the contract runs. `value` is then the TOTAL contract value, split evenly over these months into monthly invoices.'],
                 ],
                 'required' => ['client', 'name'],
             ],
@@ -355,6 +356,7 @@ function runAgentTool(string $name, array $args, array $user): array {
                 'value' => $value,
                 'currency' => $currency,
                 'type' => $type,
+                'retainer_months' => max(1, (int) ($args['retainer_months'] ?? 1)),
             ];
             $summary = "Create job \"{$jobName}\" for {$spec['client']}"
                 . ($value > 0 ? " ({$currency} " . number_format($value) . ", {$type})" : " ({$type})") . '.'
@@ -894,6 +896,7 @@ function executeAssistantAction(string $type, array $spec, array $user): array {
                 'value'     => $spec['value'] ?? 0,
                 'currency'  => $spec['currency'] ?? 'LKR',
                 'type'      => $spec['type'] ?? 'one_off',
+                'retainer_months' => $spec['retainer_months'] ?? 1,
             ];
             $job = applyJobFields($job, $inputLike);
             $job['invoices'] = buildJobInvoices($store, $job, $inputLike);

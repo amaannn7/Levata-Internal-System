@@ -3136,7 +3136,51 @@ case 'save-job':
         foreach ($store['jobs'] as &$job) {
             if (($job['id'] ?? '') === $id) {
                 $oldJobStatus = $job['status'] ?? '';
-                $job = applyJobFields($job, $input);
+                $updated = applyJobFields($job, $input);
+                // The job value can't be set below what has already been invoiced on it.
+                $invoicedSoFar = jobInvoicedTotal($updated);
+                if (($updated['type'] ?? 'one_off') === 'one_off' && $updated['value'] > 0
+                    && abs($updated['value'] - (float) ($job['value'] ?? 0)) > 0.005
+                    && $updated['value'] < $invoicedSoFar - 0.005) {
+                    respond(['success' => false, 'error' => 'The job value cannot be lower than the ' . jobMoneyText($invoicedSoFar, $updated['currency'] ?? '') . ' already invoiced on ' . ($job['job_no'] ?? 'this job') . '. Edit or delete an invoice first.'], 422);
+                }
+                // Retainer: switching a job to a retainer, or changing its months / total / start
+                // date, re-plans its monthly invoices. Paid invoices stay (each counts as a month
+                // already billed); unpaid ones are replaced by a fresh split of what is left.
+                // Replacing existing invoices needs the caller to confirm first.
+                if (($updated['type'] ?? '') === 'retainer') {
+                    $oldMonths = (int) ($job['retainer_months'] ?? count($job['invoices'] ?? []));
+                    $oldTotal = (float) ($job['value'] ?? 0) > 0 ? (float) $job['value'] : $invoicedSoFar;
+                    // Older retainers have no stored start date; the form shows their first invoice's due date.
+                    $oldStart = (string) ($job['start_date'] ?? '');
+                    if ($oldStart === '') {
+                        $dues = array_filter(array_column($job['invoices'] ?? [], 'due_date'));
+                        $oldStart = $dues ? min($dues) : '';
+                    }
+                    $changed = ($job['type'] ?? 'one_off') !== 'retainer'
+                        || (int) $updated['retainer_months'] !== $oldMonths
+                        || abs((float) $updated['value'] - $oldTotal) > 0.005
+                        || ($updated['start_date'] ?? '') !== $oldStart;
+                    if ($changed) {
+                        if ((float) $updated['value'] <= 0) respond(['success' => false, 'error' => 'Enter the total contract value for the retainer.'], 422);
+                        $plan = planRetainerSchedule($updated);
+                        if (isset($plan['error'])) respond(['success' => false, 'error' => $plan['error']], 422);
+                        if (!empty($plan['replace']) && empty($input['confirm_schedule'])) {
+                            respond(['success' => false, 'needs_schedule_confirm' => true, 'plan' => [
+                                'replace' => array_map(fn($i) => ['invoice_no' => $i['invoice_no'] ?? '', 'label' => $i['label'] ?? '', 'amount' => (float) ($i['amount'] ?? 0)], $plan['replace']),
+                                'create' => $plan['create'],
+                                'kept_paid' => $plan['kept_paid'],
+                                'currency' => $updated['currency'] ?? '',
+                            ]], 409);
+                        }
+                        $replaceIds = array_column($plan['replace'], 'id');
+                        $updated['invoices'] = array_values(array_filter($updated['invoices'] ?? [], fn($i) => !in_array($i['id'] ?? '', $replaceIds, true)));
+                        foreach ($plan['create'] as $c) {
+                            $updated['invoices'][] = makeInvoice($store, $updated, $c['label'], $c['amount'], $c['due_date']);
+                        }
+                    }
+                }
+                $job = $updated;
                 $job['updated_at'] = $now;
                 if (($job['status'] ?? '') !== $oldJobStatus) {
                     partnerNotifyJobId($id, 'job-registry', 'Job status updated', ($job['job_no'] ?? '') . ' · ' . ($job['name'] ?? '') . ' is now ' . ucwords(str_replace('_', ' ', $job['status'] ?? '')));
@@ -3161,7 +3205,10 @@ case 'save-job':
         'invoices' => [],
     ];
     $job = applyJobFields($job, $input);
-    // Auto-build the default invoice schedule (advance+final, or monthly for retainers).
+    if (($job['type'] ?? '') === 'retainer' && (float) $job['value'] <= 0) {
+        respond(['success' => false, 'error' => 'Enter the total contract value for the retainer.'], 422);
+    }
+    // Auto-build the monthly invoice schedule for retainers (one-off jobs start with none).
     $job['invoices'] = buildJobInvoices($store, $job, $input);
     $store['jobs'][] = $job;
     saveJobsStore($store);
@@ -3170,7 +3217,7 @@ case 'save-job':
     if (!empty($input['starter_tasks'])) {
         $titles = ($job['type'] ?? 'one_off') === 'retainer'
             ? ['Kickoff meeting with client', 'Send Month 1 invoice']
-            : ['Kickoff meeting with client', 'Send advance invoice', 'Deliver work for client review', 'Send final invoice'];
+            : ['Kickoff meeting with client', 'Raise invoice(s) for the job', 'Deliver work for client review'];
         $tStore = getTasksStore();
         foreach ($titles as $t) {
             [$tStore, $tid] = nextTaskId($tStore);
@@ -3224,6 +3271,22 @@ case 'deal-win-preview':
         }
         return '';
     };
+    // If the linked Cost Proposal / SOW was written as a retainer, pre-select Retainer and read
+    // the term ("3 months") and monthly figure off it, so the popup starts from the document
+    // rather than always assuming a one-off. Everything stays editable in the popup.
+    $retainerFromDocs = function (array $docIds) use ($allDocs) {
+        foreach ($docIds as $docId) {
+            if ($docId === '' || $docId === null) continue;
+            foreach ($allDocs as $d) {
+                if (($d['id'] ?? '') !== $docId) continue;
+                $in = $d['input'] ?? [];
+                if (($in['engagementType'] ?? '') !== 'retainer') continue;
+                $months = preg_match('/(\d+)\s*(?:month|mo\b)/i', (string) ($in['retainerTerm'] ?? ''), $m) ? (int) $m[1] : 0;
+                return ['months' => $months > 0 ? min($months, 120) : 3, 'monthly' => dealMoney($in['retainerAmount'] ?? 0)];
+            }
+        }
+        return null;
+    };
 
     // One entry per WON service — winning registers a JOB per service, not
     // one flat job for the whole deal, since each was separately negotiated
@@ -3240,9 +3303,13 @@ case 'deal-win-preview':
             $dealVal = $answers["{$s}::estimated_deal_value"] ?? null;
             $amount = is_array($dealVal) ? dealMoney($dealVal['amount'] ?? 0) : 0;
             $currency = is_array($dealVal) && !empty($dealVal['currency']) ? normalizeCurrency($dealVal['currency']) : normalizeCurrency($lead['deal_currency'] ?? '');
+            $ret = $retainerFromDocs([($lead['cost_proposal_by_service'] ?? [])[$s] ?? '', ($lead['sow_by_service'] ?? [])[$s] ?? '']);
+            if ($ret && $amount <= 0 && $ret['monthly'] > 0) $amount = round($ret['monthly'] * $ret['months'], 2);
             $services[] = [
                 'service' => $s,
                 'label' => serviceLabelFor($lead, $s),
+                'type' => $ret ? 'retainer' : 'one_off',
+                'retainer_months' => $ret ? $ret['months'] : null,
                 'amount' => $amount,
                 'currency' => $currency,
                 'linked_cost_proposal' => $docNoFor(($lead['cost_proposal_by_service'] ?? [])[$s] ?? ''),
@@ -3250,10 +3317,15 @@ case 'deal-win-preview':
             ];
         }
     } else {
+        $ret = $retainerFromDocs([$lead['cost_proposal_id'] ?? '', $lead['sow_id'] ?? '']);
+        $legacyAmount = dealMoney($lead['deal_amount'] ?? 0);
+        if ($ret && $legacyAmount <= 0 && $ret['monthly'] > 0) $legacyAmount = round($ret['monthly'] * $ret['months'], 2);
         $services[] = [
             'service' => '',
             'label' => trim($lead['project_context'] ?? '') ?: ($clientName . ' project'),
-            'amount' => dealMoney($lead['deal_amount'] ?? 0),
+            'type' => $ret ? 'retainer' : 'one_off',
+            'retainer_months' => $ret ? $ret['months'] : null,
+            'amount' => $legacyAmount,
             'currency' => normalizeCurrency($lead['deal_currency'] ?? ''),
             'linked_cost_proposal' => $docNoFor($lead['cost_proposal_id'] ?? ''),
             'linked_sow' => $docNoFor($lead['sow_id'] ?? ''),
@@ -3299,6 +3371,14 @@ case 'win-deal':
 
     if (!empty($lead['job_id']) && jobRefById($lead['job_id'])) {
         respond(['success' => false, 'error' => 'This deal is already registered as ' . ($lead['job_no'] ?? 'a job')], 409);
+    }
+
+    // A retainer needs its total contract value up front (it is split over its months), so
+    // refuse before anything is written, rather than after the client record already exists.
+    foreach (is_array($input['services'] ?? null) ? $input['services'] : [] as $chkSvc) {
+        if (($chkSvc['type'] ?? '') === 'retainer' && dealMoney($chkSvc['amount'] ?? 0) <= 0 && jobMoney($chkSvc['monthly_amount'] ?? 0) <= 0) {
+            respond(['success' => false, 'error' => 'Enter the total amount for the retainer "' . trim($chkSvc['label'] ?? 'service') . '".'], 400);
+        }
     }
 
     // 1. Client — reuse the matching record, or create one from the lead.
@@ -3360,7 +3440,7 @@ case 'win-deal':
 
     // 3. One JOB per won service, each with its own auto-filled category
     // (the service itself) and its own negotiated amount — plus a default
-    // invoice schedule (advance/final for one-off, monthly for retainer;
+    // invoice schedule (monthly for retainer; one-off jobs start with no invoices;
     // buildJobInvoices() already falls back to a 50% advance with nothing
     // further to configure here). Falls back to a single legacy job if the
     // caller didn't send a services array (older/simpler deals).
@@ -3383,6 +3463,10 @@ case 'win-deal':
     foreach ($servicesInput as $svc) {
         $label = trim($svc['label'] ?? '') ?: ($clientName . ' project');
         $amount = dealMoney($svc['amount'] ?? 0);
+        // A retainer sent with only a monthly figure: the total is monthly x months.
+        if (($svc['type'] ?? '') === 'retainer' && $amount <= 0) {
+            $amount = round(jobMoney($svc['monthly_amount'] ?? 0) * max(1, (int) ($svc['retainer_months'] ?? 1)), 2);
+        }
         $currency = !empty($svc['currency']) ? normalizeCurrency($svc['currency']) : $dealCurrency;
         $totalAmount += $amount;
         $dealCurrency = $currency; // last service's currency wins for the deal-level rollup below
@@ -3405,14 +3489,14 @@ case 'win-deal':
             'value' => $amount,
             'currency' => $currency,
             'status' => 'open',
+            // Retainer: the amount above is the TOTAL contract value, split over this many months.
+            'retainer_months' => $svc['retainer_months'] ?? null,
+            'start_date' => $svc['start_date'] ?? '',
             'linked_cost_proposal' => trim($svc['linked_cost_proposal'] ?? ''),
             'linked_sow' => trim($svc['linked_sow'] ?? ''),
             'notes' => 'Registered from won deal: ' . trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')),
         ]);
-        $job['invoices'] = buildJobInvoices($jStore, $job, [
-            'retainer_months' => $svc['retainer_months'] ?? null,
-            'monthly_amount' => $svc['monthly_amount'] ?? null,
-        ]);
+        $job['invoices'] = buildJobInvoices($jStore, $job);
         $jStore['jobs'][] = $job;
         $createdJobs[] = $job;
     }
@@ -3610,12 +3694,32 @@ case 'save-invoice':
     if ($target === null) respond(['success' => false, 'error' => 'Job not found. Create the job first, then raise the invoice against it.'], 404);
     if (!isset($target['invoices']) || !is_array($target['invoices'])) $target['invoices'] = [];
 
+    // An invoice must have an amount, and a one-off job's invoices can never add up to
+    // more than the job's value. Only checked when the amount is being set or changed,
+    // so marking an existing invoice paid is never blocked.
+    $jobCur = normalizeCurrency($target['currency'] ?? '');
+    $checkAmount = function ($amount, $exceptId) use ($target, $jobCur) {
+        if ($amount <= 0) respond(['success' => false, 'error' => 'Enter an invoice amount greater than zero.'], 422);
+        $room = jobInvoiceRoom($target, $exceptId);
+        if ($room !== null && $amount > $room + 0.005) {
+            $jobNo = $target['job_no'] ?? 'This job';
+            $msg = $room <= 0
+                ? "{$jobNo} is already fully invoiced (job value " . jobMoneyText($target['value'] ?? 0, $jobCur) . ")."
+                : "That is more than is left to invoice on {$jobNo}: only " . jobMoneyText($room, $jobCur) . " remains of the " . jobMoneyText($target['value'] ?? 0, $jobCur) . " job value.";
+            respond(['success' => false, 'error' => $msg, 'remaining' => $room], 422);
+        }
+    };
+
     if ($invId !== '') {
         $found = false;
         foreach ($target['invoices'] as &$inv) {
             if (($inv['id'] ?? '') === $invId) {
                 if (isset($input['label'])) $inv['label'] = trim($input['label']);
-                if (isset($input['amount'])) $inv['amount'] = jobMoney($input['amount']);
+                if (isset($input['amount'])) {
+                    $newAmt = jobMoney($input['amount']);
+                    if (abs($newAmt - (float) ($inv['amount'] ?? 0)) > 0.005) $checkAmount($newAmt, $invId);
+                    $inv['amount'] = $newAmt;
+                }
                 if (isset($input['due_date'])) $inv['due_date'] = trim($input['due_date']);
                 if (isset($input['status'])) {
                     $st = $input['status'] === 'paid' ? 'paid' : 'unpaid';
@@ -3632,6 +3736,7 @@ case 'save-invoice':
         unset($inv);
         if (!$found) respond(['success' => false, 'error' => 'Invoice not found'], 404);
     } else {
+        $checkAmount(jobMoney($input['amount'] ?? 0), '');
         $target['invoices'][] = makeInvoice(
             $store,
             $target,

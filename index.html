@@ -275,6 +275,31 @@
            old 28px that overflowed. */
         .jr-stat-body { display: flex; flex-direction: column; gap: 4px; min-height: 74px; padding: 16px 18px; }
         .jr-job-no { display:inline-block; font-size:12px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:.02em; color:var(--gold-dark); background:var(--brand-slate-soft); padding:2px 8px; border-radius:6px; margin-right:6px; }
+        /* Job Registry job card: header (id + status + actions), a money strip, then invoices. */
+        .jr-job { margin-bottom: 10px; }
+        .jr-job .card-body { padding: 16px 18px; }
+        .jr-job-top { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+        .jr-job-id { flex: 1 1 260px; min-width: 0; }
+        .jr-job-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+        .jr-job-title .jr-job-no { margin-right: 0; }
+        .jr-job-sub { font-size: 12px; color: var(--text-muted); margin-top: 5px; }
+        .jr-status { font-size: 11px; font-weight: 600; color: #fff; padding: 3px 10px; border-radius: 20px; white-space: nowrap; }
+        .jr-job-actions { display: flex; gap: 6px; align-items: center; }
+        .jr-job-money { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-top: 14px; padding: 10px 14px; background: var(--bg-subtle); border-radius: var(--radius-md); }
+        .jr-money-label { font-size: 10.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+        .jr-money-value { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+        .jr-inv-summary { display: flex; justify-content: space-between; align-items: center; gap: 8px; cursor: pointer; font-size: 12.5px; color: var(--gold-dark); }
+        .jr-inv-left { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+        .jr-inv-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-light); font-size: 13px; flex-wrap: wrap; }
+        .jr-inv-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
+        .jr-inv-no { font-size: 12px; font-weight: 600; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+        .jr-inv-actions { display: flex; align-items: center; gap: 8px; }
+        .jr-inv-amount { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 96px; text-align: right; }
+        .jr-retainer-calc { font-size: 13px; padding: 9px 12px; background: var(--bg-subtle); border-radius: var(--radius-md); margin: 0 0 12px; color: var(--text-secondary); line-height: 1.5; }
+        .jr-retainer-calc span { color: var(--text-muted); }
+        #confirm-message { white-space: pre-line; }
+        .jr-amount-hint { font-size: 12px; color: var(--text-muted); margin-top: 5px; }
+        .jr-amount-hint.error { color: var(--danger); font-weight: 600; }
         .jr-stat-label { font-size: 10.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; line-height: 1.3; order: -1; }
         .jr-stat-value { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; letter-spacing: -0.02em; overflow-wrap: anywhere; }
         .jr-stat-value .cur-extra { display: block; font-size: 13px; font-weight: 600; opacity: 0.72; }
@@ -3323,16 +3348,16 @@ Phone: +1 234 567 890"></textarea></div>
             <div class="form-row"><div class="form-group"><label class="form-label">Client</label><input type="text" class="form-input" id="job-client" required placeholder="Type to search or create a client" autocomplete="off"><input type="hidden" id="job-client-id"></div><div class="form-group"><label class="form-label">Job name</label><input type="text" class="form-input" id="job-name" required placeholder="e.g. Website development"></div></div>
             <div class="form-row"><div class="form-group"><label class="form-label">Category</label><input type="text" class="form-input" id="job-category" placeholder="website / branding / video / retainer..."></div><div class="form-group"><label class="form-label">Status</label><select class="form-select" id="job-status"><option value="open">Open</option><option value="in_progress">In Progress</option><option value="awaiting_payment">Awaiting Payment</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></select></div></div>
             <div class="form-group"><label class="form-label">Job type</label><select class="form-select" id="job-type" onchange="jrToggleJobType()"><option value="one_off">One-off project</option><option value="retainer">Retainer (monthly)</option></select></div>
-            <!-- One-off fields -->
+            <!-- Value: the job's total for a one-off, the TOTAL contract value for a retainer -->
+            <div class="form-row"><div class="form-group"><label class="form-label" id="job-value-label">Total value</label><input type="text" class="form-input" id="job-value" placeholder="e.g. 450000" inputmode="decimal" autocomplete="off"></div><div class="form-group"><label class="form-label">Currency</label><select class="form-select" id="job-currency"></select></div></div>
             <div id="job-oneoff-fields">
-                <div class="form-row"><div class="form-group"><label class="form-label">Total value</label><input type="text" class="form-input" id="job-value" placeholder="e.g. 450000"></div><div class="form-group"><label class="form-label">Currency</label><select class="form-select" id="job-currency"></select></div></div>
-                <div class="form-group" id="job-advance-wrap"><label class="form-label">Advance % (rest billed as final)</label><input type="number" class="form-input" id="job-advance-pct" value="50" min="0" max="100"><p class="form-hint">On create, an advance + final invoice are generated automatically.</p></div>
+                <p class="form-hint" id="job-oneoff-note" style="margin-bottom:12px;">No invoices are created automatically. Add them from the job row once the job is saved.</p>
             </div>
-            <!-- Retainer fields -->
+            <!-- Retainer fields: the monthly amount is worked out from the total and the months -->
             <div id="job-retainer-fields" style="display:none;">
-                <div class="form-row"><div class="form-group"><label class="form-label">Monthly amount</label><input type="text" class="form-input" id="job-monthly" placeholder="e.g. 100000"></div><div class="form-group"><label class="form-label">Number of months</label><input type="number" class="form-input" id="job-months" value="3" min="1"></div></div>
-                <div class="form-group"><label class="form-label">Start date (first invoice)</label><input type="date" class="form-input" id="job-start"></div>
-                <p class="form-hint">On create, one invoice per month is generated automatically.</p>
+                <div class="form-row"><div class="form-group"><label class="form-label">Number of months</label><input type="number" class="form-input" id="job-months" value="3" min="1" max="120"></div><div class="form-group"><label class="form-label">First invoice due (optional)</label><input type="date" class="form-input" id="job-start"></div></div>
+                <div class="jr-retainer-calc" id="job-retainer-calc"></div>
+                <p class="form-hint" id="job-retainer-note" style="margin-bottom:12px;">One invoice per month is created automatically.</p>
             </div>
             <div class="form-row"><div class="form-group"><label class="form-label">Linked cost proposal</label><select class="form-select" id="job-linked-cp"><option value="">None</option></select></div><div class="form-group"><label class="form-label">Linked SOW</label><select class="form-select" id="job-linked-sow"><option value="">None</option></select></div></div>
             <div class="form-group"><label class="form-label">Notes</label><textarea class="form-textarea" id="job-notes" rows="2"></textarea></div>
@@ -3347,8 +3372,8 @@ Phone: +1 234 567 890"></textarea></div>
         <form id="invoice-form">
             <input type="hidden" id="invoice-job-id"><input type="hidden" id="invoice-id">
             <div id="invoice-job-ref" style="font-size:13px;margin-bottom:12px;color:var(--text-muted);"></div>
-            <div class="form-group"><label class="form-label">Label</label><input type="text" class="form-input" id="invoice-label" required placeholder="e.g. Advance, Month 2, Final payment"></div>
-            <div class="form-group"><label class="form-label">Amount</label><input type="text" class="form-input" id="invoice-amount" required placeholder="e.g. 100000"></div>
+            <div class="form-group"><label class="form-label">Label</label><input type="text" class="form-input" id="invoice-label" required placeholder="e.g. Deposit, Milestone 1, Month 2"></div>
+            <div class="form-group"><label class="form-label">Amount</label><input type="text" class="form-input" id="invoice-amount" required placeholder="e.g. 100000" inputmode="decimal" autocomplete="off"><div class="jr-amount-hint" id="invoice-amount-hint"></div></div>
             <div class="form-row"><div class="form-group"><label class="form-label">Due date</label><input type="date" class="form-input" id="invoice-due"></div><div class="form-group"><label class="form-label">Status</label><select class="form-select" id="invoice-status"><option value="unpaid">Unpaid</option><option value="paid">Paid</option></select></div></div>
             <button type="submit" class="btn btn-primary">Save invoice</button>
         </form>
@@ -8604,12 +8629,14 @@ function closeWinDeal(){
  * (costProposalNegotiationRowHtml) and stay editable in case a last-minute
  * adjustment is needed; category/name is NOT editable here — it's just that
  * service's own name, same one used throughout the deal. No advance % or
- * invoice breakdown to fill in: invoices are created automatically with the
- * standard schedule (50/50 advance/final for one-off, one per month for
- * retainer) once the job exists. */
+ * invoice breakdown to fill in: a one-off job starts with no invoices (raise
+ * them from the Jobs page). A retainer takes the TOTAL contract value and the
+ * number of months and gets one invoice per month, the monthly amount being
+ * worked out from those two (jrRetainerSplit), never typed. */
 function winRenderServices(){
     document.getElementById('win-services-list').innerHTML=winServices.map((s,i)=>{
         const retainer=s.type==='retainer';
+        if(retainer&&!s.retainer_months)s.retainer_months=3;   // what the Months box shows is what gets sent
         const docs=[];
         if(s.linked_cost_proposal)docs.push(s.linked_cost_proposal);
         if(s.linked_sow)docs.push(s.linked_sow);
@@ -8619,21 +8646,32 @@ function winRenderServices(){
                 <span class="win-service-jobno">Job number: assigned on confirm</span>
             </div>
             <div class="form-row">
-                <div class="form-group"><label class="form-label">Amount</label>
-                    <div style="display:flex;gap:6px;"><input type="text" class="form-input" id="win-svc-amount-${i}" value="${esc(s.amount||'')}" style="flex:1;min-width:0;" oninput="winServices[${i}].amount=this.value"><select class="form-select" id="win-svc-currency-${i}" style="width:88px;flex-shrink:0;" onchange="winServices[${i}].currency=this.value">${currencyOptions(s.currency)}</select></div>
+                <div class="form-group"><label class="form-label">${retainer?'Total contract value':'Amount'}</label>
+                    <div style="display:flex;gap:6px;"><input type="text" class="form-input" id="win-svc-amount-${i}" value="${esc(s.amount||'')}" style="flex:1;min-width:0;" inputmode="decimal" autocomplete="off" oninput="winServices[${i}].amount=this.value;winUpdateCalc(${i})"><select class="form-select" id="win-svc-currency-${i}" style="width:88px;flex-shrink:0;" onchange="winServices[${i}].currency=this.value;winUpdateCalc(${i})">${currencyOptions(s.currency)}</select></div>
                 </div>
                 <div class="form-group"><label class="form-label">Job type</label><select class="form-select" id="win-svc-type-${i}" onchange="winServices[${i}].type=this.value;winRenderServices()"><option value="one_off" ${!retainer?'selected':''}>One-off</option><option value="retainer" ${retainer?'selected':''}>Retainer</option></select></div>
             </div>
             ${retainer?`<div class="form-row">
-                <div class="form-group"><label class="form-label">Months</label><input type="number" class="form-input" id="win-svc-months-${i}" value="${s.retainer_months||3}" min="1" oninput="winServices[${i}].retainer_months=this.value"></div>
-                <div class="form-group"><label class="form-label">Monthly amount</label><input type="text" class="form-input" id="win-svc-monthly-${i}" value="${esc(s.monthly_amount||'')}" placeholder="e.g. 50000" oninput="winServices[${i}].monthly_amount=this.value"></div>
-            </div>`:''}
+                <div class="form-group"><label class="form-label">Months</label><input type="number" class="form-input" id="win-svc-months-${i}" value="${s.retainer_months||3}" min="1" max="120" oninput="winServices[${i}].retainer_months=this.value;winUpdateCalc(${i})"></div>
+                <div class="form-group"><label class="form-label">First invoice due (optional)</label><input type="date" class="form-input" id="win-svc-start-${i}" value="${esc(s.start_date||'')}" oninput="winServices[${i}].start_date=this.value"></div>
+            </div>
+            <div class="jr-retainer-calc" id="win-svc-calc-${i}">${jrRetainerSummary(jrParseAmount(s.amount),s.retainer_months,s.currency)}</div>`:''}
             ${docs.length?`<div class="win-service-docs">Linked documents: ${docs.map(esc).join(', ')}</div>`:''}
         </div>`;
     }).join('');
 }
+// Live "monthly amount" line under a retainer service: total / months, adding up exactly.
+function winUpdateCalc(i){
+    const s=winServices[i],el=document.getElementById('win-svc-calc-'+i);
+    if(s&&el)el.innerHTML=jrRetainerSummary(jrParseAmount(s.amount),s.retainer_months,s.currency);
+}
 document.getElementById('win-deal-form')?.addEventListener('submit',async e=>{
     e.preventDefault();
+    for(const s of winServices){
+        if(s.type!=='retainer')continue;
+        if(!(jrParseAmount(s.amount)>0))return toast(`Enter the total contract value for the retainer "${s.label}"`,'error');
+        if(!(parseInt(s.retainer_months)>=1))return toast(`Enter how many months "${s.label}" runs`,'error');
+    }
     const btn=document.getElementById('win-confirm-btn');
     btn.disabled=true;btn.textContent='Registering...';
     const payload={
@@ -8644,7 +8682,7 @@ document.getElementById('win-deal-form')?.addEventListener('submit',async e=>{
             :{name:row.name,email:row.email,phone:row.phone}),
         services:winServices.map(s=>({
             label:s.label,amount:s.amount,currency:s.currency,type:s.type||'one_off',
-            retainer_months:s.retainer_months,monthly_amount:s.monthly_amount,
+            retainer_months:s.type==='retainer'?parseInt(s.retainer_months)||1:null,start_date:s.type==='retainer'?(s.start_date||''):'',
             linked_cost_proposal:s.linked_cost_proposal||'',linked_sow:s.linked_sow||'',
         })),
     };
@@ -10349,7 +10387,7 @@ async function sowFillFromCp(docNo){
 document.getElementById('sow-linked-cp')?.addEventListener('change',e=>sowFillFromCp(e.target.value));
 // ===================== Job Registry =====================
 // Shared company-wide jobs. A job links a client to its approved cost proposal (CP-xxxx),
-// its SOW (SOW-xxxx) and its invoices (advance+final, or one per month for retainers).
+// its SOW (SOW-xxxx) and its invoices (added by hand, or one per month generated for retainers).
 let _jrJobs=[];
 let _jrDocs=[];
 const JR_STATUS={open:{label:'Open',color:'#6366f1'},in_progress:{label:'In Progress',color:'#2563eb'},awaiting_payment:{label:'Awaiting Payment',color:'#d97706'},completed:{label:'Completed',color:'#059669'},cancelled:{label:'Cancelled',color:'#94a3b8'}};
@@ -10437,45 +10475,51 @@ function jrRenderList(jobs){
         return `<div style="margin-bottom:18px;"><div style="font-weight:700;font-size:13px;color:var(--text-primary);margin-bottom:6px;">${esc(client)} <span style="color:var(--text-muted);font-weight:500;">· ${byClient[client].length} job${byClient[client].length>1?'s':''}</span></div>${rows}</div>`;
     }).join('');
 }
+function jrFmt(n,cur){const v=Number(n||0);const whole=Math.abs(v-Math.round(v))<0.005;return (cur?cur+' ':'')+v.toLocaleString(undefined,{minimumFractionDigits:whole?0:2,maximumFractionDigits:whole?0:2});}
 function jrJobRow(j){
     const st=JR_STATUS[j.status]||JR_STATUS.open;
-    const f=j.finance||{value:0,paid:0,outstanding:0};
+    const f=j.finance||{value:0,invoiced:0,paid:0,outstanding:0,to_invoice:null};
     const cur=j.currency||'';
-    const links=[j.linked_cost_proposal?`CP: ${esc(j.linked_cost_proposal)}`:'',j.linked_sow?`SOW: ${esc(j.linked_sow)}`:''].filter(Boolean).join(' · ');
-    const typeBadge=j.type==='retainer'?'<span style="font-size:10px;background:var(--brand-slate-soft);color:var(--gold-dark);padding:2px 6px;border-radius:4px;margin-left:6px;">Retainer</span>':'';
-    const invoices=(j.invoices||[]).map(inv=>jrInvoiceRow(j,inv)).join('')||'<div style="font-size:12px;color:var(--text-muted);padding:6px 0;">No invoices yet.</div>';
-    return `<div class="card" style="margin-bottom:8px;"><div class="card-body" style="padding:12px 14px;">
-        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-            <div style="flex:1 1 220px;min-width:200px;">
-                <div style="font-weight:600;"><span class="jr-job-no" title="Job number">${esc(j.job_no||'No job number')}</span>${esc(j.name||'Untitled job')}${typeBadge} ${partnerTag(j)}</div>
-                <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${j.category?esc(j.category):''}${j.category&&links?' · ':''}${links}</div>
+    const room=f.to_invoice;                       // null = no cap (retainer, or no value set)
+    const fully=room!==null&&room!==undefined&&room<=0;
+    const retainer=j.type==='retainer';
+    // Category is often just the job name again; only show it when it adds something.
+    const sameAsName=(j.category||'').trim().toLowerCase()===(j.name||'').trim().toLowerCase();
+    const rMonths=j.retainer_months||(j.invoices||[]).length||0;
+    const retainerLine=retainer&&rMonths>0&&Number(f.value)>0?`${jrFmt(jrRetainerSplit(Number(f.value),rMonths)[0],cur)} a month × ${rMonths} month${rMonths>1?'s':''}`:'';
+    const sub=[retainerLine,(j.category&&!sameAsName)?esc(j.category):'',j.linked_cost_proposal?`CP ${esc(j.linked_cost_proposal)}`:'',j.linked_sow?`SOW ${esc(j.linked_sow)}`:''].filter(Boolean).join(' · ');
+    const typeBadge=retainer?'<span style="font-size:10px;background:var(--brand-slate-soft);color:var(--gold-dark);padding:2px 6px;border-radius:4px;">Retainer</span>':'';
+    const stat=(label,val,color)=>`<div><div class="jr-money-label">${label}</div><div class="jr-money-value"${color?` style="color:${color};"`:''}>${jrFmt(val,cur)}</div></div>`;
+    const money=[stat(retainer?'Contract value':'Job value',f.value),stat('Invoiced',f.invoiced),stat('Paid',f.paid,'var(--success)'),stat('Outstanding',f.outstanding,'var(--warning)')].join('');
+    const leftTxt=room===null||room===undefined?'':(fully?'Fully invoiced':`${jrFmt(room,cur)} left to invoice`);
+    const invoices=(j.invoices||[]).map(inv=>jrInvoiceRow(j,inv)).join('')||'<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">No invoices yet.</div>';
+    const addBtn=fully
+        ?`<button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px;" disabled title="${retainer?'Every month of the contract is already invoiced. To bill more, extend the months and total on the job (Edit).':'The invoices already add up to the full job value'}">Fully invoiced</button>`
+        :`<button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick="jrOpenInvoiceModal('${j.id}')">+ Add invoice</button>`;
+    return `<div class="card jr-job"><div class="card-body">
+        <div class="jr-job-top">
+            <div class="jr-job-id">
+                <div class="jr-job-title"><span class="jr-job-no" title="Job number">${esc(j.job_no||'No job number')}</span><span>${esc(j.name||'Untitled job')}</span>${typeBadge}${partnerTag(j)}</div>
+                ${sub?`<div class="jr-job-sub">${sub}</div>`:''}
             </div>
-            <div style="flex:0 0 auto;display:flex;justify-content:center;width:130px;">
-                <span style="font-size:11px;font-weight:600;color:#fff;background:${st.color};padding:3px 9px;border-radius:20px;white-space:nowrap;">${st.label}</span>
-            </div>
-            <div style="flex:0 0 auto;text-align:right;font-size:12px;width:120px;line-height:1.5;">
-                <div><strong>${jrMoney(f.value,cur)}</strong></div>
-                <div style="color:var(--success);">Paid ${jrMoney(f.paid,cur)}</div>
-                <div style="color:var(--warning);">Due ${jrMoney(f.outstanding,cur)}</div>
-            </div>
-            <div style="flex:0 0 auto;display:flex;gap:6px;">
+            <span class="jr-status" style="background:${st.color};">${st.label}</span>
+            <div class="jr-job-actions">
                 <button type="button" class="btn btn-secondary btn-sm" onclick="jrEditJob('${j.id}')">Edit</button>
                 <button type="button" class="btn btn-danger btn-sm" onclick="jrDeleteJob('${j.id}')">Delete</button>
             </div>
         </div>
-        <details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--gold-dark);">Invoices (${(j.invoices||[]).length})</summary>
-            <div style="margin-top:8px;">${invoices}
-                <button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px;" onclick="jrOpenInvoiceModal('${j.id}')">+ Add invoice</button>
-            </div>
+        <div class="jr-job-money">${money}</div>
+        <details style="margin-top:12px;"><summary class="jr-inv-summary"><span>Invoices (${(j.invoices||[]).length})</span><span class="jr-inv-left">${leftTxt}</span></summary>
+            <div style="margin-top:6px;">${invoices}${addBtn}</div>
         </details>
     </div></div>`;
 }
 function jrInvoiceRow(j,inv){
     const paid=inv.status==='paid';
-    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-light);font-size:13px;flex-wrap:wrap;">
-        <div><span style="color:var(--text-muted);" title="Raised against ${esc(j.job_no||'')}">${esc(inv.invoice_no||'')}</span> <strong>${esc(inv.label||'')}</strong>${inv.due_date?` <span style="color:var(--text-muted);">due ${esc(inv.due_date)}</span>`:''}</div>
-        <div style="display:flex;align-items:center;gap:8px;">
-            <span>${jrMoney(inv.amount,j.currency)}</span>
+    return `<div class="jr-inv-row">
+        <div class="jr-inv-main"><span class="jr-inv-no" title="Raised against ${esc(j.job_no||'')}">${esc(inv.invoice_no||'')}</span><strong>${esc(inv.label||'')}</strong>${inv.due_date?`<span style="color:var(--text-muted);font-size:12px;">due ${esc(inv.due_date)}</span>`:''}</div>
+        <div class="jr-inv-actions">
+            <span class="jr-inv-amount">${jrFmt(inv.amount,j.currency)}</span>
             <button type="button" class="btn btn-sm ${paid?'btn-secondary':'btn-primary'}" onclick="jrToggleInvoicePaid('${j.id}','${inv.id}',${paid?'false':'true'})">${paid?'Paid ✓':'Mark paid'}</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="jrEditInvoice('${j.id}','${inv.id}')">Edit</button>
             <button type="button" class="btn btn-danger btn-sm" onclick="jrDeleteInvoice('${j.id}','${inv.id}')">×</button>
@@ -10483,11 +10527,44 @@ function jrInvoiceRow(j,inv){
     </div>`;
 }
 // ---- Job modal ----
+// A retainer is a TOTAL contract value over N months; the monthly amount is worked out, never typed.
+// Mirrors retainerSplit() in jobs.php: every month but the last is total/months to the cent and the
+// last month takes the remainder, so the invoices always add up to the total exactly.
+function jrRetainerSplit(total,months){
+    months=Math.max(1,parseInt(months)||1);
+    total=Math.round(total*100)/100;
+    const each=Math.round(total/months*100)/100;
+    const parts=Array(months).fill(each);
+    parts[months-1]=Math.round((total-each*(months-1))*100)/100;
+    return parts;
+}
+function jrRetainerSummary(total,months,cur){
+    months=parseInt(months)||0;
+    if(!(total>0)||months<1)return 'Enter the total contract value and the number of months to see the monthly amount.';
+    const p=jrRetainerSplit(total,months);
+    const even=Math.abs(p[0]-p[p.length-1])<0.005;
+    return `<strong>${jrFmt(p[0],cur)}</strong> a month × ${months} month${months>1?'s':''} = ${jrFmt(total,cur)}`+(even?'':` <span>(last month ${jrFmt(p[p.length-1],cur)} so it adds up exactly)</span>`);
+}
+// The won-deal popup lives outside this closure and shares the retainer maths and number helpers.
+window.jrRetainerSplit=jrRetainerSplit;window.jrRetainerSummary=jrRetainerSummary;window.jrFmt=jrFmt;window.jrParseAmount=jrParseAmount;
+function jrUpdateRetainerCalc(){
+    const el=document.getElementById('job-retainer-calc');if(!el)return;
+    el.innerHTML=jrRetainerSummary(jrParseAmount(document.getElementById('job-value').value),document.getElementById('job-months').value,document.getElementById('job-currency').value);
+}
 function jrToggleJobType(){
     const t=document.getElementById('job-type').value;
     document.getElementById('job-oneoff-fields').style.display=t==='retainer'?'none':'block';
     document.getElementById('job-retainer-fields').style.display=t==='retainer'?'block':'none';
+    document.getElementById('job-value-label').textContent=t==='retainer'?'Total contract value':'Total value';
+    // Editing: say what switching to / editing a retainer does to the invoices already on the job.
+    const editing=!!document.getElementById('job-id').value;
+    document.getElementById('job-retainer-note').textContent=editing
+        ?'Changing the type, months, total or start date rebuilds the unpaid monthly invoices (you will be asked to confirm). Paid invoices are kept and count as months already billed.'
+        :'One invoice per month is created automatically.';
+    jrUpdateRetainerCalc();
 }
+['job-value','job-months'].forEach(id=>document.getElementById(id)?.addEventListener('input',jrUpdateRetainerCalc));
+document.getElementById('job-currency')?.addEventListener('change',jrUpdateRetainerCalc);
 // Bind the toggle directly (belt-and-suspenders, in case the inline onchange is lost).
 (function(){const sel=document.getElementById('job-type');if(sel)sel.addEventListener('change',jrToggleJobType);})();
 window.jrOpenJobModal=function(prefill){
@@ -10495,10 +10572,8 @@ window.jrOpenJobModal=function(prefill){
     document.getElementById('job-form').reset();
     document.getElementById('job-id').value='';
     document.getElementById('job-currency').innerHTML=currencyOptions(DEFAULT_CURRENCY);
-    document.getElementById('job-advance-pct').value='50';
     document.getElementById('job-months').value='3';
     document.getElementById('job-modal-title').textContent='New Job';
-    document.getElementById('job-advance-wrap').style.display='block';
     document.getElementById('job-starter-wrap').style.display='block';
     document.getElementById('job-starter-tasks').checked=false;
     document.getElementById('job-edit-note').style.display='none';
@@ -10523,13 +10598,18 @@ window.jrEditJob=function(id){
     document.getElementById('job-category').value=j.category||'';
     document.getElementById('job-status').value=j.status||'open';
     document.getElementById('job-type').value=j.type||'one_off';
-    document.getElementById('job-value').value=j.value||'';
+    // A retainer's value is its total contract value. Older retainers saved before that was kept
+    // fall back to what their monthly invoices add up to, and to the number of invoices as months.
+    const f=j.finance||{};
+    document.getElementById('job-value').value=(j.type==='retainer'&&!(Number(j.value)>0)?f.invoiced:j.value)||'';
+    document.getElementById('job-months').value=j.retainer_months||(j.type==='retainer'&&(j.invoices||[]).length)||3;
+    const firstDue=(j.invoices||[]).map(i=>i.due_date).filter(Boolean).sort()[0]||'';
+    document.getElementById('job-start').value=j.start_date||(j.type==='retainer'?firstDue:'');
     document.getElementById('job-currency').innerHTML=currencyOptions(j.currency);
     jrLoadDocOptions(j.linked_cost_proposal||'',j.linked_sow||'');
     document.getElementById('job-notes').value=j.notes||'';
     document.getElementById('job-modal-title').textContent='Edit Job '+(j.job_no||'');
     // On edit we don't re-generate invoices or starter tasks, so hide the create-only fields.
-    document.getElementById('job-advance-wrap').style.display='none';
     document.getElementById('job-starter-wrap').style.display='none';
     document.getElementById('job-edit-note').style.display='block';
     document.getElementById('job-no-note').style.display='none';
@@ -10549,8 +10629,6 @@ document.getElementById('job-form').addEventListener('submit',async e=>{
         type:document.getElementById('job-type').value,
         value:document.getElementById('job-value').value,
         currency:document.getElementById('job-currency').value,
-        advance_pct:document.getElementById('job-advance-pct').value,
-        monthly_amount:document.getElementById('job-monthly').value,
         retainer_months:document.getElementById('job-months').value,
         start_date:document.getElementById('job-start').value,
         linked_cost_proposal:document.getElementById('job-linked-cp').value,
@@ -10558,11 +10636,33 @@ document.getElementById('job-form').addEventListener('submit',async e=>{
         notes:document.getElementById('job-notes').value,
         starter_tasks:document.getElementById('job-starter-tasks').checked,
     };
-    const r=await api('save-job','POST',payload);
+    if(payload.type==='retainer'){
+        if(!(jrParseAmount(payload.value)>0)){btn.disabled=false;return toast('Enter the total contract value for the retainer','error');}
+        if(!(parseInt(payload.retainer_months)>=1)){btn.disabled=false;return toast('Enter how many months the retainer runs','error');}
+    }
+    let r=await api('save-job','POST',payload);
+    // Changing a retainer's schedule replaces its unpaid invoices: show what changes and ask first.
+    if(r.needs_schedule_confirm){
+        const ok=await customConfirm(jrScheduleConfirmText(r.plan),'Rebuild monthly invoices',{confirmText:'Rebuild invoices'});
+        if(!ok){btn.disabled=false;return;}
+        r=await api('save-job','POST',{...payload,confirm_schedule:true});
+    }
     btn.disabled=false;
     if(r.success){closeModal('job-modal');toast((r.job_no?`Job ${r.job_no} created`:'Job saved')+(r.starter_tasks?` · ${r.starter_tasks} starter tasks created`:''),'success');loadJobRegistry();window.clMaybeRefresh&&clMaybeRefresh();}
     else toast(r.error||'Save failed','error');
 });
+function jrScheduleConfirmText(plan){
+    const cur=plan.currency||'';
+    const gone=(plan.replace||[]).map(i=>`${i.invoice_no} ${i.label} (${jrFmt(i.amount,cur)})`).join(', ');
+    const made=plan.create||[];
+    let created='no new invoices';
+    if(made.length){
+        const first=made[0],last=made[made.length-1];
+        const even=Math.abs(first.amount-last.amount)<0.005;
+        created=`${made.length} monthly invoice${made.length>1?'s':''} (${first.label}${made.length>1?' to '+last.label:''}): ${jrFmt(first.amount,cur)} each`+(even?'':`, last ${jrFmt(last.amount,cur)}`);
+    }
+    return `This replaces the unpaid invoices on this job.\n\nRemoved: ${gone||'none'}\nCreated: ${created}\n`+(plan.kept_paid?`Kept: ${plan.kept_paid} paid invoice(s), counted as months already billed\n`:'')+`\nContinue?`;
+}
 window.jrDeleteJob=async function(id){
     if(!await customConfirm('Delete this job and its invoices? This cannot be undone.','Delete Job',{danger:true,confirmText:'Delete'}))return;
     const r=await api('delete-job','POST',{id});
@@ -10574,12 +10674,49 @@ function jrShowInvoiceJob(jobId){
     const j=_jrJobs.find(x=>x.id===jobId)||{};
     document.getElementById('invoice-job-ref').innerHTML=`Raised against <span class="jr-job-no">${esc(j.job_no||'')}</span> ${esc(j.name||'')}${j.client?' · '+esc(j.client):''}`;
 }
+function jrParseAmount(v){const n=parseFloat(String(v==null?'':v).replace(/[^0-9.\-]/g,''));return isFinite(n)?n:0;}
+// How much of this job's value an invoice can still take: the job value minus every OTHER
+// invoice on it. null = no cap (a job with no value set, e.g. an older retainer).
+function jrInvoiceRoom(j,exceptInvId){
+    if(!j)return null;
+    const value=Number(j.value||0);
+    if(value<=0)return null;
+    const others=(j.invoices||[]).filter(i=>i.id!==exceptInvId).reduce((a,i)=>a+Number(i.amount||0),0);
+    return Math.max(0,Math.round((value-others)*100)/100);
+}
+function jrUpdateAmountHint(){
+    const j=_jrJobs.find(x=>x.id===document.getElementById('invoice-job-id').value);
+    const hint=document.getElementById('invoice-amount-hint');
+    const room=jrInvoiceRoom(j,document.getElementById('invoice-id').value);
+    if(!j||room===null){hint.className='jr-amount-hint';hint.textContent=j&&j.type==='retainer'?'Retainer: each month is billed as its own invoice.':'';return;}
+    const amt=jrParseAmount(document.getElementById('invoice-amount').value);
+    const over=amt>room+0.005;
+    hint.className='jr-amount-hint'+(over?' error':'');
+    hint.textContent=over
+        ?`More than the ${jrFmt(room,j.currency)} left to invoice on ${j.job_no} (job value ${jrFmt(j.value,j.currency)}).`
+        :`Job value ${jrFmt(j.value,j.currency)} · up to ${jrFmt(room,j.currency)} left to invoice.`;
+}
+document.getElementById('invoice-amount').addEventListener('input',jrUpdateAmountHint);
 window.jrOpenInvoiceModal=function(jobId){
+    const j=_jrJobs.find(x=>x.id===jobId);if(!j)return;
+    const room=jrInvoiceRoom(j,'');
+    if(room!==null&&room<=0){toast(`${j.job_no} is already fully invoiced`,'warning');return;}
     document.getElementById('invoice-form').reset();
     document.getElementById('invoice-job-id').value=jobId;
     document.getElementById('invoice-id').value='';
     document.getElementById('invoice-modal-title').textContent='Add Invoice';
+    // Pre-fill what's left to invoice. A retainer pre-fills its next month: the monthly amount
+    // (contract value / months), or whatever is left if that is less.
+    const existing=j.invoices||[];
+    if(j.type==='retainer'){
+        const months=j.retainer_months||existing.length||1;
+        const monthly=Number(j.value)>0?Math.round(Number(j.value)/months*100)/100:(existing.length?Number(existing[existing.length-1].amount):0);
+        const amt=room!==null?Math.min(room,monthly):monthly;
+        if(amt>0)document.getElementById('invoice-amount').value=amt;
+        document.getElementById('invoice-label').value='Month '+(existing.length+1);
+    }else if(room!==null){document.getElementById('invoice-amount').value=room;}
     jrShowInvoiceJob(jobId);
+    jrUpdateAmountHint();
     openModal('invoice-modal');
 };
 window.jrEditInvoice=function(jobId,invId){
@@ -10593,10 +10730,19 @@ window.jrEditInvoice=function(jobId,invId){
     document.getElementById('invoice-status').value=inv.status||'unpaid';
     document.getElementById('invoice-modal-title').textContent='Edit Invoice '+(inv.invoice_no||'');
     jrShowInvoiceJob(jobId);
+    jrUpdateAmountHint();
     openModal('invoice-modal');
 };
 document.getElementById('invoice-form').addEventListener('submit',async e=>{
     e.preventDefault();
+    const jobId=document.getElementById('invoice-job-id').value,invId=document.getElementById('invoice-id').value;
+    const amt=jrParseAmount(document.getElementById('invoice-amount').value);
+    const j=_jrJobs.find(x=>x.id===jobId);
+    const room=jrInvoiceRoom(j,invId);
+    const was=invId?Number(((j&&j.invoices)||[]).find(i=>i.id===invId)?.amount||0):null;
+    const changed=was===null||Math.abs(amt-was)>0.005;
+    if(changed&&amt<=0)return toast('Enter an invoice amount greater than zero','error');
+    if(changed&&room!==null&&amt>room+0.005)return toast(`That is more than the ${jrFmt(room,j.currency)} left to invoice on ${j.job_no}`,'error');
     const payload={
         job_id:document.getElementById('invoice-job-id').value,
         invoice_id:document.getElementById('invoice-id').value,

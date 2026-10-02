@@ -8,7 +8,7 @@
  * One client can have many jobs. Each job tracks:
  *   - links to the approved cost proposal (CP-xxxx) and the SOW (SOW-xxxx) it came from
  *   - its value and status (open / in_progress / awaiting_payment / completed / cancelled)
- *   - its invoices (advance + final for one-off jobs, or one per month for retainers)
+ *   - its invoices (added manually for one-off jobs, one per month generated for retainers)
  *
  * Job number format: JOB-0001 (sequential, per registry). The job is the primary record:
  * it gets its number the moment it is created, and nothing is numbered without one.
@@ -138,38 +138,122 @@ function makeInvoice(&$store, $job, $label, $amount, $dueDate = '', $status = 'u
 }
 
 /**
- * Generate the default invoice schedule for a new job.
- * - retainer: one invoice per month for `months`, each `monthly_amount`.
- * - one-off:  advance (default 50%) + final.
+ * Split a total over a number of months so the parts add up EXACTLY to the total:
+ * every month but the last is the total / months rounded to cents, and the last
+ * month takes whatever is left (so 100,000 over 3 = 33,333.33 + 33,333.33 + 33,333.34).
  */
-function buildJobInvoices(&$store, $job, $input) {
+function retainerSplit($total, $months) {
+    $months = max(1, (int) $months);
+    $total = round((float) $total, 2);
+    $each = round($total / $months, 2);
+    $parts = array_fill(0, $months, $each);
+    $parts[$months - 1] = round($total - $each * ($months - 1), 2);
+    return $parts;
+}
+
+/** The due date for month index $i (0 = first month) of a retainer starting on $start, or ''. */
+function retainerDueDate($start, $i) {
+    $start = trim((string) $start);
+    if ($start === '') return '';
+    $ts = strtotime($start . ' +' . (int) $i . ' month');
+    return $ts ? date('Y-m-d', $ts) : '';
+}
+
+/**
+ * Build the monthly invoices for a retainer: `$count` months starting at month number
+ * `$firstMonth` (1-based), splitting `$total` between them. Nothing is built for a
+ * zero total, so a retainer is never given zero-value invoices.
+ */
+function makeRetainerInvoices(&$store, $job, $total, $count, $firstMonth = 1) {
     $invoices = [];
-    if (($job['type'] ?? 'one_off') === 'retainer') {
-        $months = max(1, (int) ($input['retainer_months'] ?? 1));
-        $monthly = jobMoney($input['monthly_amount'] ?? 0);
-        $start = trim($input['start_date'] ?? '');
-        for ($i = 0; $i < $months; $i++) {
-            $due = '';
-            if ($start !== '') {
-                $ts = strtotime($start . ' +' . $i . ' month');
-                if ($ts) $due = date('Y-m-d', $ts);
-            }
-            $invoices[] = makeInvoice($store, $job, 'Month ' . ($i + 1), $monthly, $due);
-        }
-    } else {
-        $total = jobMoney($job['value'] ?? 0);
-        if ($total > 0) {
-            $advancePct = isset($input['advance_pct']) ? max(0, min(100, (int) $input['advance_pct'])) : 50;
-            $advance = round($total * $advancePct / 100, 2);
-            $final = round($total - $advance, 2);
-            $invoices[] = makeInvoice($store, $job, 'Advance (' . $advancePct . '%)', $advance);
-            $invoices[] = makeInvoice($store, $job, 'Final payment', $final);
-        }
+    if ($count < 1 || round((float) $total, 2) <= 0) return $invoices;
+    foreach (retainerSplit($total, $count) as $i => $amount) {
+        $n = $firstMonth + $i;
+        $invoices[] = makeInvoice($store, $job, 'Month ' . $n, $amount, retainerDueDate($job['start_date'] ?? '', $n - 1));
     }
     return $invoices;
 }
 
-/** Roll up totals for one job (value, invoiced, paid, outstanding). */
+/**
+ * Generate the default invoice schedule for a new job.
+ * - retainer: one invoice per month, the job's total contract value split across
+ *   `retainer_months` (see retainerSplit).
+ * - one-off:  nothing; invoices are added manually against the job.
+ */
+function buildJobInvoices(&$store, $job, $input = []) {
+    if (($job['type'] ?? 'one_off') === 'retainer') {
+        return makeRetainerInvoices($store, $job, $job['value'] ?? 0, max(1, (int) ($job['retainer_months'] ?? 1)));
+    }
+    // One-off jobs start with no invoices: they are raised by hand against the job
+    // (there is deliberately no automatic advance/final split).
+    return [];
+}
+
+/**
+ * Work out how a retainer's invoices must change after it is created or edited
+ * (type switched to retainer, or its months / total / start date changed).
+ * Paid invoices are never touched and each counts as a month already billed;
+ * unpaid ones are replaced by a fresh split of whatever is still to bill over the
+ * months that are left. Returns:
+ *   ['error' => string]                       when the numbers can't work, or
+ *   ['replace' => [invoice...], 'create' => [['label','amount','due_date']...]].
+ */
+function planRetainerSchedule($job) {
+    $months = max(1, (int) ($job['retainer_months'] ?? 1));
+    $total = round((float) ($job['value'] ?? 0), 2);
+    $paid = []; $unpaid = []; $paidTotal = 0.0;
+    foreach (($job['invoices'] ?? []) as $inv) {
+        if (($inv['status'] ?? '') === 'paid') { $paid[] = $inv; $paidTotal += (float) ($inv['amount'] ?? 0); }
+        else $unpaid[] = $inv;
+    }
+    $cur = normalizeCurrency($job['currency'] ?? '');
+    $remaining = round($total - $paidTotal, 2);
+    $monthsLeft = $months - count($paid);
+    if ($remaining < -0.005) {
+        return ['error' => 'The paid invoices (' . jobMoneyText($paidTotal, $cur) . ') are already more than the new total of ' . jobMoneyText($total, $cur) . '.'];
+    }
+    if ($monthsLeft < 1 && $remaining > 0.005) {
+        return ['error' => count($paid) . ' paid invoice(s) already cover the ' . $months . ' month(s), but ' . jobMoneyText($remaining, $cur) . ' of the contract is still unbilled. Increase the number of months.'];
+    }
+    $create = [];
+    if ($remaining > 0.005 && $monthsLeft >= 1) {
+        foreach (retainerSplit($remaining, $monthsLeft) as $i => $amount) {
+            $n = count($paid) + $i + 1;
+            $create[] = ['label' => 'Month ' . $n, 'amount' => $amount, 'due_date' => retainerDueDate($job['start_date'] ?? '', $n - 1)];
+        }
+    }
+    return ['replace' => $unpaid, 'create' => $create, 'kept_paid' => count($paid)];
+}
+
+/** Total already invoiced on a job, optionally leaving one invoice out (the one being edited). */
+function jobInvoicedTotal($job, $exceptInvoiceId = '') {
+    $sum = 0.0;
+    foreach (($job['invoices'] ?? []) as $inv) {
+        if ($exceptInvoiceId !== '' && ($inv['id'] ?? '') === $exceptInvoiceId) continue;
+        $sum += (float) ($inv['amount'] ?? 0);
+    }
+    return round($sum, 2);
+}
+
+/**
+ * How much of a job's value can still be invoiced (never negative). Returns null
+ * when there is no cap: jobs with no value set (including older retainers saved
+ * before a contract value was kept). A job's invoices may never add up to more than
+ * its value; to bill a retainer for longer, extend its months and total on the job.
+ */
+function jobInvoiceRoom($job, $exceptInvoiceId = '') {
+    $value = (float) ($job['value'] ?? 0);
+    if ($value <= 0) return null;
+    return max(0.0, round($value - jobInvoicedTotal($job, $exceptInvoiceId), 2));
+}
+
+/** "LKR 250,000" / "LKR 1,250.50": whole numbers without decimals, otherwise two. */
+function jobMoneyText($amount, $currency) {
+    $n = round((float) $amount, 2);
+    return ($currency !== '' ? $currency . ' ' : '') . number_format($n, floor($n) == $n ? 0 : 2);
+}
+
+/** Roll up totals for one job (value, invoiced, paid, outstanding, still to invoice). */
 function jobFinance($job) {
     $invoices = $job['invoices'] ?? [];
     $invoiced = 0.0; $paid = 0.0;
@@ -178,13 +262,16 @@ function jobFinance($job) {
         $invoiced += $amt;
         if (($inv['status'] ?? '') === 'paid') $paid += $amt;
     }
-    // For retainers the job "value" is the sum of monthly invoices; for one-off it's the stated value.
-    $value = ($job['type'] ?? 'one_off') === 'retainer' ? $invoiced : (float) ($job['value'] ?? 0);
+    // The job's value is its (total contract) value. Older retainers saved without one fall back
+    // to the sum of their monthly invoices.
+    $value = (float) ($job['value'] ?? 0);
+    if (($job['type'] ?? 'one_off') === 'retainer' && $value <= 0) $value = $invoiced;
     return [
         'value' => $value,
         'invoiced' => $invoiced,
         'paid' => $paid,
         'outstanding' => max(0, $invoiced - $paid),
+        'to_invoice' => jobInvoiceRoom($job), // null = no cap (retainer / no value set)
     ];
 }
 
@@ -260,6 +347,19 @@ function applyJobFields($job, $input) {
     $type = $input['type'] ?? ($job['type'] ?? 'one_off');
     $job['type'] = in_array($type, ['one_off', 'retainer'], true) ? $type : 'one_off';
     $job['value'] = jobMoney($input['value'] ?? ($job['value'] ?? 0));
+    if ($job['type'] === 'retainer') {
+        // A retainer is a TOTAL contract value over a number of months; the monthly amount is
+        // derived (total / months). A caller that only knows the monthly amount can send that
+        // instead and the total becomes monthly x months.
+        $months = (int) ($input['retainer_months'] ?? ($job['retainer_months'] ?? 0));
+        if ($months < 1) $months = max(1, count($job['invoices'] ?? []));
+        $job['retainer_months'] = min($months, 120);
+        $monthly = jobMoney($input['monthly_amount'] ?? 0);
+        if ($job['value'] <= 0 && $monthly > 0) $job['value'] = round($monthly * $job['retainer_months'], 2);
+        $job['start_date'] = trim($input['start_date'] ?? ($job['start_date'] ?? ''));
+    } else {
+        unset($job['retainer_months'], $job['start_date']);
+    }
     // Validated against supportedCurrencies(); falls back to the studio default.
     $job['currency'] = normalizeCurrency($input['currency'] ?? ($job['currency'] ?? ''));
     $status = $input['status'] ?? ($job['status'] ?? 'open');
