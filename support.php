@@ -119,6 +119,86 @@ function notifyOwnerOfStatus($ticket, $actorId = '') {
     ]);
 }
 
+/** Staff who hear about every ticket event: admins and super admins (the Developer is one), never partners. */
+function ticketStaffIds() {
+    $ids = [];
+    foreach (getUsers() as $u) {
+        if (!empty($u['is_channel_partner'])) continue;
+        if (!empty($u['is_admin']) || !empty($u['is_super_admin'])) $ids[] = $u['id'] ?? '';
+    }
+    return array_values(array_filter($ids));
+}
+
+/**
+ * Tell everyone involved about progress on a ticket raised INSIDE this system (internal tickets only;
+ * client tickets and client systems keep their own, unchanged notifications). Whoever did the thing is
+ * never told about their own action, and each person gets one notification per event.
+ *
+ * The raiser hears what concerns them (replies, who took it, status and priority changes, deletion);
+ * the Developer's fix log stays team-only. Staff hear about everything: the raiser's replies, edits and
+ * follow-ups, colleagues' replies, who took or reassigned it, status/priority changes, fixes, deletion.
+ *
+ *   raised, edited, requester_reply, requester_deleted   -> staff
+ *   staff_reply, status, priority, deleted_by_staff      -> the raiser + staff
+ *   taken, assigned                                      -> the raiser + staff (+ the new/previous owner)
+ *   fix                                                  -> staff only
+ *
+ * $actor = the user who did it; $detail = the snippet/value to show (reply text, new status, new owner).
+ * $extra['prev_owner'] / $extra['new_owner'] = user ids, for assigned/taken.
+ */
+function notifyTicketEvent($ticket, $event, $actor, $detail = '', $extra = []) {
+    if (!ticketsInternalEnabled() || !ticketIsInternal($ticket)) return;
+    global $TICKET_STATUS_LABELS, $TICKET_PRIORITY_LABELS;
+    $actorId = $actor['id'] ?? '';
+    $who = trim($actor['name'] ?? '') ?: 'Someone';
+    $no = $ticket['ticket_no'] ?? 'A ticket';
+    $subject = trim($ticket['subject'] ?? '') ?: '(no subject)';
+    $feedback = ($ticket['type'] ?? 'support') === 'feedback';
+    $snippet = mb_substr(trim((string) $detail), 0, 80);
+    $requester = trim($ticket['created_by'] ?? '');
+    $staff = ticketStaffIds();
+    $newOwner = trim($extra['new_owner'] ?? '');
+    $prevOwner = trim($extra['prev_owner'] ?? '');
+    $ownerName = trim($ticket['assigned_to_name'] ?? '') ?: 'a Brand Manager';
+
+    // [type, title for the raiser, title for staff, body] per event; null = that audience is not told.
+    $spec = [
+        'raised'          => ['ticket_new',    null, ($feedback ? '💬 New feedback ' : '🎫 New support ticket ') . $no, ticketRequesterLabel($ticket) . ': ' . $subject],
+        'edited'          => ['ticket_update', '✏️ ' . $no . ' was updated', '✏️ ' . $who . ' updated ' . $no, $subject],
+        'requester_reply' => ['ticket_update', null, '↩️ ' . $who . ' replied on ' . $no, $snippet],
+        'staff_reply'     => ['ticket_reply',  '↩️ New reply on ' . $no, '💬 ' . $who . ' replied on ' . $no, $who . ': ' . $snippet],
+        'taken'           => ['ticket_reply',  '🙋 ' . $who . ' is handling ' . $no, '🙋 ' . $who . ' took ' . $no, $subject],
+        'assigned'        => ['ticket_reply',  '🙋 ' . $ownerName . ' is now handling ' . $no, '📌 ' . $who . ' assigned ' . $no . ' to ' . $ownerName, $subject],
+        'status'          => ['ticket_reply',  '🎫 ' . $no . ' is now ' . ticketLabel($TICKET_STATUS_LABELS, $ticket['status'] ?? ''), '🔄 ' . $who . ' set ' . $no . ' to ' . ticketLabel($TICKET_STATUS_LABELS, $ticket['status'] ?? ''), $subject],
+        'priority'        => ['ticket_reply',  '⚑ Priority of ' . $no . ' is now ' . ticketLabel($TICKET_PRIORITY_LABELS, $ticket['priority'] ?? ''), '⚑ ' . $who . ' set ' . $no . ' to ' . ticketLabel($TICKET_PRIORITY_LABELS, $ticket['priority'] ?? '') . ' priority', $subject],
+        'released'        => ['ticket_update', null, '↩️ ' . $who . ' released ' . $no . ' (it is unassigned again)', $subject],
+        'fix'             => ['ticket_update', null, '🔧 ' . $who . ' logged a fix for ' . $no, $snippet],
+        'deleted_by_staff'=> ['ticket_reply',  '🗑️ ' . $no . ' was deleted', '🗑️ ' . $who . ' deleted ' . $no, $subject],
+        'requester_deleted'=> ['ticket_update', null, '🗑️ ' . $who . ' deleted ' . $no, $subject],
+    ];
+    if (!isset($spec[$event])) return;
+    [$type, $toRequester, $toStaff, $body] = $spec[$event];
+
+    $sent = [];
+    $send = function ($userId, $title, $text, $kind = null) use (&$sent, $actorId, $ticket, $event, $type) {
+        if ($userId === '' || $userId === $actorId || isset($sent[$userId])) return;
+        $sent[$userId] = true;
+        addUserNotification($userId, [
+            'notif_key' => 'ticket_' . $event . '_' . ($ticket['id'] ?? '') . '_' . bin2hex(random_bytes(3)),
+            'type' => $kind ?: $type,
+            'title' => $title,
+            'body' => $text,
+            'ticket_id' => $ticket['id'] ?? '',
+            'page' => 'support',
+        ]);
+    };
+    // The new owner (when someone else assigns them) and the previous owner (when it moves away) are told directly.
+    if ($event === 'assigned' && $newOwner !== '') $send($newOwner, '📌 ' . $no . ' was assigned to you', $subject);
+    if ($event === 'assigned' && $prevOwner !== '' && $prevOwner !== $newOwner) $send($prevOwner, '📌 ' . $no . ' was reassigned to ' . $ownerName, $subject);
+    if ($toRequester !== null && $requester !== '') $send($requester, $toRequester, $body);
+    if ($toStaff !== null) foreach ($staff as $sid) { if ($sid === $requester) continue; $send($sid, $toStaff, $body); }
+}
+
 $VALID_TICKET_TYPE     = ['feedback', 'support'];
 // Categories are type-specific. The frontend shows the right set per type;
 // the backend accepts the union of both (plus the shared 'other').
@@ -201,6 +281,29 @@ function ticketsInternalEnabled() {
     $cfg = getAdmin();
     if (array_key_exists('ticket_internal', $cfg)) return !empty($cfg['ticket_internal']);
     return trim($cfg['ticket_ingest_secret'] ?? '') !== '';
+}
+
+/**
+ * Who may RAISE tickets in this system: 'partners' (channel partners only; the default, "for now") or
+ * 'all' (every account). Only meaningful where internal tickets are on; set in Settings -> Ticket Sync.
+ */
+function ticketRaisersMode() {
+    return (getAdmin()['ticket_raisers'] ?? 'partners') === 'all' ? 'all' : 'partners';
+}
+
+/**
+ * May this account raise a new ticket here? ONLY about tickets raised inside this system: where internal
+ * tickets are on it is channel partners only (unless opened to everyone). Where they are off (a client
+ * system, or a pure client-ticket hub) nothing changes: this never restricts the client-ticket paths.
+ */
+function ticketsMayRaise($user) {
+    if (ticketsInternalEnabled() && ticketRaisersMode() === 'partners') return !empty($user['is_channel_partner']);
+    return true;
+}
+
+/** A ticket raised INSIDE this system (as opposed to one forwarded in from a client system). */
+function ticketIsInternal($ticket) {
+    return trim($ticket['client'] ?? '') === '' && ($ticket['source'] ?? '') !== 'client';
 }
 
 /** A ticket forwarded in from a client system (tagged with that client's name). */

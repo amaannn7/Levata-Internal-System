@@ -1956,7 +1956,7 @@
 
                 <!-- ============ HELP & SUPPORT ============ -->
                 <div class="nav-section-title">Help &amp; Support</div>
-                <div class="nav-item" data-page="support"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span>Help &amp; Support</span></div>
+                <div class="nav-item" data-page="support"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span>Help &amp; Support</span><span id="support-nav-badge" style="display:none;margin-left:auto;background:var(--danger);color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;"></span></div>
 
                 <!-- ============ SYSTEM ============ -->
                 <div class="nav-section-title manager-nav admin-only">System</div>
@@ -3057,6 +3057,7 @@ Phone: +1 234 567 890"></textarea></div>
                                 <div class="form-group"><label class="form-label">Ingest Secret <span style="font-weight:400;color:#888;">(set to accept forwarded tickets; blank = off)</span></label><input type="password" class="form-input" id="admin-ticket-ingest-secret" placeholder="shared secret"></div>
                                 <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin:14px 0 6px;">Tickets raised inside this system</div>
                                 <div class="form-group"><label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;"><input type="checkbox" id="admin-ticket-internal" style="margin-top:3px;"><span>Staff and channel partners can raise tickets here, handled under the same closing SOP (owner, Developer fix, checklist).<br><span style="font-weight:400;color:#888;font-size:12px;">On by default for a hub, off for a client system.</span></span></label></div>
+                                <div class="form-group"><label class="form-label">Who can raise tickets here</label><select class="form-select" id="admin-ticket-raisers" style="max-width:260px;"><option value="partners">Channel partners only</option><option value="all">Everyone with a login</option></select><p class="form-hint">Only applies when the box above is ticked. Client tickets are not affected.</p></div>
                                 <button type="submit" class="btn btn-primary btn-sm">Save Sync Settings</button>
                             </form>
                         </div>
@@ -4017,8 +4018,11 @@ function showPartnerApp(){
     // isn't queueing behind it.
     loadLeads();
     showPage('command-center');
-    setTimeout(pollNotifications,3000);setInterval(pollNotifications,20000);
-    setInterval(()=>{
+    // These timers must start only once: this runs again on every sign-in / session restore, and stacked
+    // timers multiply the polling until the 120-requests-a-minute limit starts refusing real actions.
+    clearInterval(window._pollTimerP);clearInterval(window._refreshTimerP);
+    clearTimeout(window._pollFirstP);window._pollFirstP=setTimeout(pollNotifications,3000);window._pollTimerP=setInterval(pollNotifications,20000);
+    window._refreshTimerP=setInterval(()=>{
         if(document.getElementById('page-leads')?.classList.contains('active')){loadStats();loadLeads()}
         else if(document.getElementById('page-command-center')?.classList.contains('active')){loadStats();loadCommandCenter()}
     },30000);
@@ -4030,7 +4034,10 @@ function showApp(){
     document.getElementById('ai-fab').style.display='flex';document.getElementById('user-name').textContent=user.name;document.getElementById('user-email').textContent=user.email;document.getElementById('user-avatar').textContent=(user.name||'U')[0].toUpperCase();document.getElementById('super-admin-badge').textContent=user.is_super_admin?'Super Admin':(user.is_admin?'Admin':'Manager');document.getElementById('reset-all-data-card').style.display=user.is_super_admin?'block':'none';const _ut=document.getElementById('user-title');_ut.textContent=user.title||'';_ut.style.display=user.title?'block':'none';document.body.classList.toggle('is-admin', !!user.is_admin);document.body.classList.toggle('is-super-admin', !!user.is_super_admin);applyRoleNavigation();getTeamMembers();loadLeads();loadStats();loadSettings();loadActivityFeed();showPage(defaultLandingPage());if(user.is_admin){loadAdminSettings();loadUsers()}
     refreshChatNavBadge();
     initGlobalNotificationChannel();
-    setInterval(pollNotifications, 8000);
+    // One timer only: showApp() runs on every sign-in / session restore, and stacked timers multiplied the
+    // polling (3 requests each) until the 120-requests-a-minute limit refused real actions like ticking a box.
+    clearTimeout(window._pollFirst);window._pollFirst=setTimeout(pollNotifications,1500); // first fetch soon after sign-in, so the bell and the Help & Support badge are not blank for 8s
+    clearInterval(window._pollTimer);window._pollTimer=setInterval(pollNotifications, 8000);
     // Live-refresh while the Pipeline or Studio Overview page is actually
     // open, so a teammate's changes (stage moves, new leads, deal value
     // edits) show up without a manual reload — same lightweight polling
@@ -4038,7 +4045,8 @@ function showApp(){
     // stage strip, LKR total and the KPI panel (which now lives on Studio
     // Overview, not Pipeline); loadLeads()/loadCommandCenter() only need to
     // run for whichever page is actually visible.
-    setInterval(()=>{
+    clearInterval(window._refreshTimer);
+    window._refreshTimer=setInterval(()=>{
         if(document.getElementById('page-leads')?.classList.contains('active')){loadStats();loadLeads()}
         else if(document.getElementById('page-command-center')?.classList.contains('active')){loadStats();loadCommandCenter()}
     }, 30000);
@@ -4674,6 +4682,7 @@ const NOTIF_ICONS = {
     // Help & Support
     ticket_new:       '🎫',
     ticket_reply:     '↩️',
+    ticket_update:    '🔔',
 };
 
 async function loadNotifications() {
@@ -4697,6 +4706,8 @@ async function pollNotifications() {
             const prevIds = new Set(notifications.map(n => n.id));
             notifications = r.notifications || [];
             const hasNew = notifications.some(n => !prevIds.has(n.id));
+            // Already looking at Help & Support: its updates are seen as they arrive, so they don't pile up on the badge.
+            if (document.getElementById('page-support')?.classList.contains('active')) markSupportNotificationsRead();
             renderNotificationBadge();
             // Re-render the open dropdown whenever anything changed
             const dropdown = document.getElementById('notification-dropdown');
@@ -4723,7 +4734,23 @@ async function refreshChatNavBadge() {
     } catch (e) {}
 }
 
+// Sidebar badge on Help & Support: unread ticket notifications (new tickets, replies, who took it, status/priority changes...).
+function renderSupportNavBadge() {
+    const el = document.getElementById('support-nav-badge');
+    if (!el) return;
+    const n = notifications.filter(x => !x.read && String(x.type || '').indexOf('ticket_') === 0).length;
+    el.textContent = n > 0 ? (n > 99 ? '99+' : n) : '';
+    el.style.display = n > 0 ? '' : 'none';
+}
+// Opening Help & Support is "seeing" its updates: clear them from the badge and the bell.
+async function markSupportNotificationsRead() {
+    if (!notifications.some(x => !x.read && String(x.type || '').indexOf('ticket_') === 0)) return;
+    notifications.forEach(x => { if (String(x.type || '').indexOf('ticket_') === 0) x.read = true; });
+    renderNotificationBadge();
+    await api('notifications', 'POST', {action: 'mark_type_read', type_prefix: 'ticket_'});
+}
 function renderNotificationBadge() {
+    renderSupportNavBadge();
     const badge = document.getElementById('notification-badge');
     const unread = notifications.filter(n => !n.read).length;
     if (unread > 0) {
@@ -4791,7 +4818,7 @@ async function handleNotificationClick(notifId, leadId, threadId, notifType) {
     document.getElementById('notification-dropdown').classList.remove('show');
 
     // Ticket notifications open the Help & Support page.
-    if (notifType === 'ticket_new' || notifType === 'ticket_reply') {
+    if (notifType === 'ticket_new' || notifType === 'ticket_reply' || notifType === 'ticket_update') {
         showPage('support');
         return;
     }
@@ -9371,6 +9398,7 @@ async function loadAdminSettings(){
         document.getElementById('admin-ticket-client-name').value=r.settings.ticket_client_name||'';
         document.getElementById('admin-ticket-ingest-secret').value=r.settings.ticket_ingest_secret||'';
         window._ticketInternalLoaded=!!r.settings.ticket_internal_effective;
+        document.getElementById('admin-ticket-raisers').value=r.settings.ticket_raisers_effective||'partners';
         document.getElementById('admin-ticket-internal').checked=window._ticketInternalLoaded;
         document.getElementById('admin-provider').value=r.settings.default_provider||'groq';
         document.getElementById('admin-groq-model').value=r.settings.groq_model||'';
@@ -11076,7 +11104,7 @@ window.jrDeleteInvoice=async function(jobId,invId){
 };
 
 // ===================== Help & Support (feedback + support tickets) =====================
-let _supTickets=[],_supIsAdmin=false,_supHubMode=false,_supInternal=false,_supShowClosed=false,_supReqSeq=0;
+let _supTickets=[],_supIsAdmin=false,_supHubMode=false,_supInternal=false,_supCanRaise=true,_supShowClosed=false,_supReqSeq=0;
 // Shared with the scope select's inline onchange (which runs in the global scope), so it lives on window.
 window._supScopeTouched=false;
 let _supUsers=[],_supUsersLoaded=false;
@@ -11128,13 +11156,15 @@ window.loadSupport=async function(quiet){
     _supIsAdmin=!!r.is_admin;
     _supHubMode=!!r.hub_mode;
     _supInternal=!!r.internal_enabled;
+    _supCanRaise=r.can_raise!==false;
     if(typeof pusherSubscribeAllTickets==='function')pusherSubscribeAllTickets(_supTickets.map(t=>t.id));
     // Hub mode: this system is a central client-ticket inbox — we don't file
     // our own tickets here, only manage ones forwarded in from client (spoke)
     // deployments. Client tickets only ever arrive that way (no manual
     // tagging path), so "+ New Ticket" has nothing useful to do in hub mode.
     // A pure hub has nothing to file; a hub with internal tickets on (Levata) does, so the button stays.
-    document.getElementById('sup-new-ticket-btn').style.display=(_supHubMode&&!_supInternal)?'none':'';
+    // Where internal tickets are on, only the accounts allowed to raise them (channel partners, for now) get the button.
+    document.getElementById('sup-new-ticket-btn').style.display=((_supHubMode&&!_supInternal)||!_supCanRaise)?'none':'';
     const scopeSel=document.getElementById('sup-scope');
     scopeSel.style.display=(_supIsAdmin&&(!_supHubMode||_supInternal))?'':'none';
     if(!window._supScopeTouched&&r.scope)scopeSel.value=r.scope;
@@ -11143,8 +11173,8 @@ window.loadSupport=async function(quiet){
     // Update the page subtitle to reflect the mode.
     const sub=document.getElementById('sup-subtitle');
     if(sub)sub.textContent=(_supHubMode&&_supIsAdmin)
-        ?(_supInternal?'Tickets raised by the team and channel partners, plus client tickets forwarded from connected systems.':'Client support tickets forwarded from connected systems. Reply to respond directly in their app.')
-        :'Raise a support request or send feedback. Track its status and replies here.';
+        ?(_supInternal?'Tickets raised by channel partners, plus client tickets forwarded from connected systems.':'Client support tickets forwarded from connected systems. Reply to respond directly in their app.')
+        :(_supCanRaise?'Raise a support request or send feedback. Track its status and replies here.':'Tickets in this system are raised by channel partners.');
     supRenderSummary(r.summary||{});
     supPopulateClientFilter();
     // Signature of the data, so a quiet poll only repaints on real change.
@@ -11209,7 +11239,7 @@ window.supRenderList=function(){
     const clientFilter=document.getElementById('sup-client-filter')?.value||'';
     if(clientFilter)tickets=tickets.filter(t=>t.client===clientFilter);
     if(!tickets.length){
-        const hint=_supShowClosed?'Tickets marked Closed will appear here.':((_supHubMode&&!_supInternal)?'Client tickets forwarded from connected systems will appear here.':'Click <strong>+ New Ticket</strong> to raise a support request or send feedback.');
+        const hint=_supShowClosed?'Tickets marked Closed will appear here.':((_supHubMode&&!_supInternal)?'Client tickets forwarded from connected systems will appear here.':(!_supCanRaise?'Tickets raised by channel partners will appear here.':'Click <strong>+ New Ticket</strong> to raise a support request or send feedback.'));
         const heading=_supShowClosed?'No closed tickets':'No tickets yet';
         list.innerHTML='<div style="text-align:center;padding:40px 16px;color:var(--text-muted);"><div style="font-size:36px;margin-bottom:10px;">💬</div><div style="font-size:15px;font-weight:600;color:#333;margin-bottom:6px;">'+heading+'</div><p style="max-width:520px;margin:0 auto;line-height:1.6;font-size:13px;">'+hint+'</p></div>';
         return;
@@ -11319,7 +11349,9 @@ function supOwnerControl(t){
 // enforced server-side too (mark-ticket-fix-ready, ticketCanChangeStatus()).
 function supResolutionPanel(t){
     const isDeveloper=(user?.ticket_role||'brand_manager')==='developer';
-    const canEdit=_supIsAdmin&&supCanChangeStatus(t);
+    // A ticket raised in this system must be TAKEN (owned) before it can be verified or closed.
+    const needsTake=_supIsAdmin&&!t.client&&t.source!=='client'&&!t.assigned_to;
+    const canEdit=_supIsAdmin&&supCanChangeStatus(t)&&!needsTake;
     const dis=canEdit?'':'disabled';
     const c=t.checklist||{};
     const isClosed=t.status==='closed';
@@ -11355,6 +11387,7 @@ function supResolutionPanel(t){
 
     const closeStep=isClosed?'':`<div class="sup-step">
         <div class="sup-step-label"><span class="sup-step-num">2</span>Verify &amp; close</div>
+        ${needsTake?'<div style="font-size:11px;color:#92400e;background:#fffbeb;border:1px dashed #fcd34d;border-radius:6px;padding:5px 8px;margin-bottom:8px;">Take this ticket first (button above) before you verify or close it.</div>':''}
         ${hasFix?'':'<div style="font-size:11px;color:#92400e;background:#fffbeb;border:1px dashed #fcd34d;border-radius:6px;padding:5px 8px;margin-bottom:8px;">Waiting on the Developer to log a fix (step 1) before this can close.</div>'}
         <label class="sup-check-row"><input type="checkbox" ${c.fix_verified?'checked':''} ${dis} onchange="supUpdateChecklist('${t.id}',{fix_verified:this.checked})"> Fix verified on production</label>
         <div class="sup-check-row"><input type="text" class="form-input" ${dis} value="${supEsc(c.root_cause||'')}" placeholder="One-line root cause" onblur="supUpdateChecklist('${t.id}',{root_cause:this.value})"></div>
@@ -13136,7 +13169,7 @@ document.getElementById('finance-settings-form')?.addEventListener('submit',asyn
 // Card 4 — Team Chat / Pusher only
 document.getElementById('pusher-settings-form').addEventListener('submit',async e=>{e.preventDefault();const r=await api('admin-settings','POST',{pusher_app_id:document.getElementById('admin-pusher-app-id').value,pusher_key:document.getElementById('admin-pusher-key').value,pusher_secret:document.getElementById('admin-pusher-secret').value,pusher_cluster:document.getElementById('admin-pusher-cluster').value});toast(r.success?'Chat settings saved!':(r.error||'Save failed'),r.success?'success':'error')});
 window._ticketInternalLoaded=false; // set when the settings load, read when the card is saved (different scopes)
-document.getElementById('ticket-sync-form').addEventListener('submit',async e=>{e.preventDefault();const internalNow=document.getElementById('admin-ticket-internal').checked;const r=await api('admin-settings','POST',{...(internalNow!==window._ticketInternalLoaded?{ticket_internal:internalNow}:{}),ticket_hub_url:document.getElementById('admin-ticket-hub-url').value,ticket_hub_secret:document.getElementById('admin-ticket-hub-secret').value,ticket_client_name:document.getElementById('admin-ticket-client-name').value,ticket_ingest_secret:document.getElementById('admin-ticket-ingest-secret').value});toast(r.success?'Sync settings saved!':(r.error||'Save failed'),r.success?'success':'error')});
+document.getElementById('ticket-sync-form').addEventListener('submit',async e=>{e.preventDefault();const internalNow=document.getElementById('admin-ticket-internal').checked;const r=await api('admin-settings','POST',{...(internalNow!==window._ticketInternalLoaded?{ticket_internal:internalNow}:{}),ticket_hub_url:document.getElementById('admin-ticket-hub-url').value,ticket_hub_secret:document.getElementById('admin-ticket-hub-secret').value,ticket_raisers:document.getElementById('admin-ticket-raisers').value,ticket_client_name:document.getElementById('admin-ticket-client-name').value,ticket_ingest_secret:document.getElementById('admin-ticket-ingest-secret').value});toast(r.success?'Sync settings saved!':(r.error||'Save failed'),r.success?'success':'error')});
 document.querySelectorAll('.provider-card').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.provider-card').forEach(x=>x.classList.remove('selected'));c.classList.add('selected');document.getElementById('admin-provider').value=c.dataset.provider}));
 document.getElementById('add-req-form').addEventListener('submit',async e=>{e.preventDefault();const idx=document.getElementById('edit-req-id').value;const type=document.getElementById('req-type-input').value;const options=type==='text'?[]:document.getElementById('req-options-input').value.split('\n').map(o=>o.trim()).filter(o=>o);if(type!=='text'&&!options.length){toast('Add at least one option','warning');return;}const newReq={id:idx!==''?reqConfig[idx].id:'req_'+Date.now(),title:document.getElementById('req-title-input').value,subtitle:document.getElementById('req-subtitle-input').value,type,options,enabled:true};if(idx!=='')reqConfig[idx]=newReq;else reqConfig.push(newReq);await api('admin-settings','POST',{requisitions:reqConfig});renderReqList();closeModal('add-req-modal');toast('Saved!','success')});
 document.getElementById('create-user-form').addEventListener('submit',async e=>{e.preventDefault();const typedPass=document.getElementById('new-user-pass').value;const _nr=document.getElementById('new-user-role').value;const r=await api('create-user','POST',{name:document.getElementById('new-user-name').value,title:document.getElementById('new-user-title').value,email:document.getElementById('new-user-email').value,password:typedPass,is_admin:_nr==='admin'||_nr==='super_admin',is_super_admin:_nr==='super_admin',is_channel_partner:_nr==='channel_partner'});if(r.success){const box=document.getElementById('new-user-password');box.innerHTML='';box.style.display='none';e.target.reset();loadUsers();closeModal('create-user-modal');toast('User created','success')}else toast(r.error||'Failed','error')});
@@ -13382,7 +13415,7 @@ function showPage(p){
     if(p==='clients'&&typeof window.loadClients==='function'){_clWs=null;document.getElementById('cl-detail-view').style.display='none';document.getElementById('cl-list-view').style.display='block';window.loadClients();}
     if(p==='partners'&&typeof window.loadPartnersPage==='function')window.loadPartnersPage();
     if(p==='job-registry'&&typeof window.loadJobRegistry==='function')window.loadJobRegistry();
-    if(p==='support'&&typeof window.loadSupport==='function'){window.loadSupport();window.supStartPolling&&window.supStartPolling();}
+    if(p==='support'&&typeof window.loadSupport==='function'){window.loadSupport();window.supStartPolling&&window.supStartPolling();markSupportNotificationsRead();}
     else if(typeof window.supStopPolling==='function')window.supStopPolling();
     if(p==='tasks'&&typeof window.loadTasks==='function')window.loadTasks();
     if(p==='calendar')loadCalendar();

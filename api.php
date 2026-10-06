@@ -4531,6 +4531,8 @@ case 'tickets':
         'summary' => $summary,
         'is_admin' => $isAdmin,
         'internal_enabled' => $internalOn,
+        'can_raise' => ticketsMayRaise($u),
+        'raisers' => ticketRaisersMode(),
         'hub_mode' => $hubMode,
         'scope' => $scopeAll ? 'all' : 'mine',
         'view_closed' => $viewClosed,
@@ -4548,6 +4550,7 @@ case 'save-ticket':
         // Edit an existing ticket's fields. Owner or admin only.
         $isAdmin = !empty($u['is_admin']) || !empty($u['is_super_admin']);
         $found = false;
+        $editedCopy = null;
         foreach ($store['tickets'] as &$ticket) {
             if (($ticket['id'] ?? '') === $id) {
                 if (($ticket['created_by'] ?? '') !== ($u['id'] ?? '') && !$isAdmin) {
@@ -4555,6 +4558,7 @@ case 'save-ticket':
                 }
                 $ticket = applyTicketFields($ticket, $input);
                 $ticket['updated_at'] = $now;
+                $editedCopy = $ticket;
                 $found = true;
                 break;
             }
@@ -4562,6 +4566,7 @@ case 'save-ticket':
         unset($ticket);
         if (!$found) respond(['success' => false, 'error' => 'Ticket not found'], 404);
         saveTicketsStore($store);
+        notifyTicketEvent($editedCopy, 'edited', $u);
         respond(['success' => true, 'id' => $id]);
     }
 
@@ -4573,6 +4578,9 @@ case 'save-ticket':
     // removed: an untagged ticket silently vanished from the hub's own
     // queue (it only shows client-tagged tickets), which was worse than not
     // having the option.
+    if (!ticketsMayRaise($u)) {
+        respond(['success' => false, 'error' => 'Tickets here are raised by channel partners'], 403);
+    }
     $ticket = [
         'id' => 'tkt_' . bin2hex(random_bytes(8)),
         'ticket_no' => nextTicketNo($store),
@@ -4596,7 +4604,8 @@ case 'save-ticket':
     // Best-effort email out to the vendor support address (never blocks submission).
     notifySupportEmail($ticket, 'new');
     // Light up the bell for admins on this deployment (locally-filed ticket), except the person who raised it.
-    notifyAdminsOfTicket($ticket, $u['id'] ?? '');
+    if (ticketsInternalEnabled()) notifyTicketEvent($ticket, 'raised', $u);
+    else notifyAdminsOfTicket($ticket, $u['id'] ?? '');
     // Best-effort: if this deployment is a spoke, forward a copy to the central hub.
     forwardTicketToHub($ticket);
     respond(['success' => true, 'id' => $ticket['id'], 'ticket_no' => $ticket['ticket_no']]);
@@ -4740,6 +4749,8 @@ case 'ticket-reply':
     // Replying to an unassigned client ticket claims it, same as moving its
     // status, so "who's talking to this client" stays a single, consistent
     // answer everywhere in the SOP, not a separate rule per action.
+    $claimedByReply = false;
+    $statusBeforeReply = $target['status'] ?? 'open';
     if ($isAdmin && ticketNeedsClosingChecklist($target)) {
         if (!ticketCanChangeStatus($target, $u)) {
             $ownerName = trim($target['assigned_to_name'] ?? '') ?: 'the assigned Brand Manager';
@@ -4748,6 +4759,7 @@ case 'ticket-reply':
         if (trim($target['assigned_to'] ?? '') === '') {
             $target['assigned_to'] = $u['id'] ?? '';
             $target['assigned_to_name'] = $u['name'] ?? '';
+            $claimedByReply = true;
         }
     }
     if (!isset($target['replies']) || !is_array($target['replies'])) $target['replies'] = [];
@@ -4778,7 +4790,12 @@ case 'ticket-reply':
     // Live ticket thread: instantly append for anyone with this ticket open.
     if (function_exists('pusherTriggerTicket')) pusherTriggerTicket($ticketId, 'new-reply', $reply);
     // Live bell: notify the OTHER party about this reply.
-    if ($isAdmin) {
+    if (ticketsInternalEnabled() && ticketIsInternal($ticketCopy)) {
+        // A ticket raised in this system: tell everyone involved about every bit of progress.
+        if ($claimedByReply) notifyTicketEvent($ticketCopy, 'taken', $u);
+        notifyTicketEvent($ticketCopy, $isAdmin ? 'staff_reply' : 'requester_reply', $u, $message);
+        if (($ticketCopy['status'] ?? '') !== $statusBeforeReply) notifyTicketEvent($ticketCopy, 'status', $u);
+    } elseif ($isAdmin) {
         // Staff replied -> notify the ticket owner (if a local user).
         notifyOwnerOfReply($ticketCopy, $reply);
     } else {
@@ -4814,6 +4831,8 @@ case 'update-ticket-status':
     $store = getTicketsStore();
     $found = false;
     $statusChanged = false;
+    $claimedByStatus = false;
+    $priorityChanged = false;
     $ticketCopy = null;
     foreach ($store['tickets'] as &$ticket) {
         if (($ticket['id'] ?? '') === $ticketId) {
@@ -4824,6 +4843,10 @@ case 'update-ticket-status':
                         $ownerName = trim($ticket['assigned_to_name'] ?? '') ?: 'the assigned Brand Manager';
                         respond(['success' => false, 'error' => 'Only ' . $ownerName . ' can change this ticket\'s status'], 403);
                     }
+                    if ($newStatus === 'closed' && ticketNeedsClosingChecklist($ticket) && ticketIsInternal($ticket)
+                        && trim($ticket['assigned_to'] ?? '') === '') {
+                        respond(['success' => false, 'error' => 'Take this ticket first, then you can verify and close it'], 400);
+                    }
                     if ($newStatus === 'closed' && ticketNeedsClosingChecklist($ticket)
                         && $closingNote === '' && !ticketChecklistComplete($ticket)) {
                         respond(['success' => false, 'error' => 'Complete the closing checklist first (fix verified, root cause, version, ClickUp task) — or close with a note if there was no client response.'], 400);
@@ -4833,6 +4856,7 @@ case 'update-ticket-status':
                     if (trim($ticket['assigned_to'] ?? '') === '' && ticketNeedsClosingChecklist($ticket)) {
                         $ticket['assigned_to'] = $u['id'] ?? '';
                         $ticket['assigned_to_name'] = $u['name'] ?? '';
+                        $claimedByStatus = true;
                     }
                 }
                 $statusChanged = $ticket['status'] !== $newStatus;
@@ -4845,6 +4869,7 @@ case 'update-ticket-status':
                 }
             }
             if (isset($input['priority']) && in_array($input['priority'], $VALID_TICKET_PRIORITY, true)) {
+                $priorityChanged = ($ticket['priority'] ?? 'normal') !== $input['priority'];
                 $ticket['priority'] = $input['priority'];
             }
             $ticket['updated_at'] = date('c');
@@ -4862,8 +4887,13 @@ case 'update-ticket-status':
     if ($statusChanged && ($ticketCopy['source'] ?? '') === 'client') {
         sendStatusToSpoke($ticketCopy);
     }
-    // A ticket raised in this system: tell its requester (a colleague or channel partner) where it stands.
-    if ($statusChanged && ($ticketCopy['source'] ?? '') !== 'client') {
+    // A ticket raised in this system: tell everyone involved about the progress (see notifyTicketEvent()).
+    if (ticketsInternalEnabled() && ticketIsInternal($ticketCopy)) {
+        if ($claimedByStatus) notifyTicketEvent($ticketCopy, 'taken', $u);
+        if ($statusChanged) notifyTicketEvent($ticketCopy, 'status', $u);
+        if ($priorityChanged) notifyTicketEvent($ticketCopy, 'priority', $u);
+    } elseif ($statusChanged && ($ticketCopy['source'] ?? '') !== 'client') {
+        // A plain system's requester still hears where their ticket stands.
         notifyOwnerOfStatus($ticketCopy, $u['id'] ?? '');
     }
     respond(['success' => true]);
@@ -4880,8 +4910,11 @@ case 'assign-ticket':
     $assigneeId = trim($input['assigned_to'] ?? '');
     $store = getTicketsStore();
     $found = false;
+    $prevOwnerId = '';
+    $assignedCopy = null;
     foreach ($store['tickets'] as &$ticket) {
         if (($ticket['id'] ?? '') === $ticketId) {
+            $prevOwnerId = trim($ticket['assigned_to'] ?? '');
             if ($assigneeId === '') {
                 $ticket['assigned_to'] = '';
                 $ticket['assigned_to_name'] = '';
@@ -4898,6 +4931,7 @@ case 'assign-ticket':
                 $ticket['assigned_to_name'] = $assignee['name'] ?? '';
             }
             $ticket['updated_at'] = date('c');
+            $assignedCopy = $ticket;
             $found = true;
             break;
         }
@@ -4905,6 +4939,12 @@ case 'assign-ticket':
     unset($ticket);
     if (!$found) respond(['success' => false, 'error' => 'Ticket not found'], 404);
     saveTicketsStore($store);
+    // Everyone involved hears who has it now (internal tickets): the raiser, staff, and the new / previous owner.
+    if ($assigneeId === '') {
+        if ($prevOwnerId !== '') notifyTicketEvent($assignedCopy, 'released', $u);
+    } elseif ($assigneeId !== $prevOwnerId) {
+        notifyTicketEvent($assignedCopy, $assigneeId === ($u['id'] ?? '') ? 'taken' : 'assigned', $u, '', ['new_owner' => $assigneeId, 'prev_owner' => $prevOwnerId]);
+    }
     respond(['success' => true]);
     break;
 
@@ -4959,9 +4999,12 @@ case 'mark-ticket-fix-ready':
     unset($ticket);
     if (!$found) respond(['success' => false, 'error' => 'Ticket not found'], 404);
     saveTicketsStore($store);
-    // Tell the assigned Brand Manager it's ready to verify on production.
+    // Tell the assigned Brand Manager it's ready to verify on production. On a ticket raised in this system,
+    // all staff hear about it instead (the raiser does not: the fix log is team-only).
     $ownerId = trim($ticketCopy['assigned_to'] ?? '');
-    if ($ownerId !== '' && $ownerId !== ($u['id'] ?? '')) {
+    if (ticketsInternalEnabled() && ticketIsInternal($ticketCopy)) {
+        notifyTicketEvent($ticketCopy, 'fix', $u, 'v' . $version . ': ' . $note);
+    } elseif ($ownerId !== '' && $ownerId !== ($u['id'] ?? '')) {
         addUserNotification($ownerId, [
             'notif_key' => 'ticket_fix_ready_' . $ticketId . '_' . $ticketCopy['fix_at'],
             'type' => 'ticket_reply',
@@ -4985,6 +5028,11 @@ case 'update-ticket-checklist':
     $found = false;
     foreach ($store['tickets'] as &$ticket) {
         if (($ticket['id'] ?? '') === $ticketId) {
+            // A ticket raised in this system has to be taken (owned) before it can be verified.
+            // Client tickets keep their original behaviour (first Brand Manager to act claims them).
+            if (ticketNeedsClosingChecklist($ticket) && ticketIsInternal($ticket) && trim($ticket['assigned_to'] ?? '') === '') {
+                respond(['success' => false, 'error' => 'Take this ticket first, then you can verify and close it'], 400);
+            }
             if (!ticketCanChangeStatus($ticket, $u)) {
                 $ownerName = trim($ticket['assigned_to_name'] ?? '') ?: 'the assigned Brand Manager';
                 respond(['success' => false, 'error' => 'Only ' . $ownerName . ' can update this ticket\'s checklist'], 403);
@@ -5021,6 +5069,10 @@ case 'delete-ticket':
     if ($target === null) respond(['success' => false, 'error' => 'Ticket not found'], 404);
     if (($target['created_by'] ?? '') !== ($u['id'] ?? '') && !$isAdmin) {
         respond(['success' => false, 'error' => 'Not allowed'], 403);
+    }
+    // A ticket raised in this system: tell the other side it is gone (staff if the raiser deleted it, the raiser + staff if staff did).
+    if (ticketsInternalEnabled() && ticketIsInternal($target)) {
+        notifyTicketEvent($target, ($target['created_by'] ?? '') === ($u['id'] ?? '') ? 'requester_deleted' : 'deleted_by_staff', $u);
     }
     // Push the deletion to the spoke BEFORE removing our own copy — sendDeleteToSpoke()
     // needs the ticket's reply_url/remote_id, which only exist on this (hub) copy.
@@ -5286,6 +5338,7 @@ case 'admin-settings':
         }
         $masked['default_currency'] = defaultCurrency();
         $masked['ticket_internal_effective'] = ticketsInternalEnabled();
+        $masked['ticket_raisers_effective'] = ticketRaisersMode();
         respond(['success' => true, 'settings' => $masked, 'currencies' => supportedCurrencies()]);
     }
     if ($method === 'POST') {
@@ -5331,6 +5384,7 @@ case 'admin-settings':
         if (isset($input['ticket_ingest_secret']) && strpos($input['ticket_ingest_secret'], '****') === false) $admin['ticket_ingest_secret'] = trim($input['ticket_ingest_secret']);
         // Internal tickets: staff and channel partners raise tickets inside this system, handled under the closing SOP.
         if (array_key_exists('ticket_internal', $input)) $admin['ticket_internal'] = !empty($input['ticket_internal']);
+        if (isset($input['ticket_raisers'])) $admin['ticket_raisers'] = $input['ticket_raisers'] === 'all' ? 'all' : 'partners';
         // Sales outreach: verified From address for emails sent to leads from the system.
         if (isset($input['outreach_from'])) $admin['outreach_from'] = trim($input['outreach_from']);
         // Auth emails: sign-in codes + password reset links (see sendAuthEmail()).
@@ -7907,6 +7961,14 @@ case 'notifications':
             if ($tid !== '') {
                 foreach ($userData['notifications'] as $i => $n) {
                     if (($n['thread_id'] ?? '') === $tid) $userData['notifications'][$i]['read'] = true;
+                }
+            }
+        } elseif ($action === 'mark_type_read') {
+            // Opening a section (e.g. Help & Support) clears every bell notification of that kind at once.
+            $prefix = (string) ($input['type_prefix'] ?? '');
+            if ($prefix !== '') {
+                foreach ($userData['notifications'] as $i => $n) {
+                    if (strpos((string) ($n['type'] ?? ''), $prefix) === 0) $userData['notifications'][$i]['read'] = true;
                 }
             }
         } elseif ($action === 'mark_all_read') {
