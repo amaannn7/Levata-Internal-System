@@ -529,6 +529,117 @@ function setDealAmount(&$lead, $amount, $stage = '', $actor = null) {
     return true;
 }
 
+/**
+ * Build a brand-new deal record (everything a deal starts with). Shared by the `lead` create
+ * action and `add-deal`, so a deal started at any stage has exactly the same shape as one that
+ * was added at Lead. The caller has already validated email/website/linkedin and decided the
+ * starting stage; this only assembles the record (owner + channel partner included).
+ */
+function buildNewLead(array $input, array $user, string $initialStage, string $source, string $website, string $linkedin): array {
+    $email = trim($input['email'] ?? '');
+    $lead = [
+        'id' => generateId('lead_'),
+        'first_name' => sanitizeInput($input['first_name'] ?? ''),
+        'last_name' => sanitizeInput($input['last_name'] ?? ''),
+        'email' => $email,
+        'phone' => sanitizeInput($input['phone'] ?? ''),
+        'company' => sanitizeInput($input['company'] ?? ''),
+        'title' => sanitizeInput($input['title'] ?? ''),
+        'industry' => sanitizeInput($input['industry'] ?? ''),
+        'country' => sanitizeInput($input['country'] ?? ''),
+        'website' => $website,
+        'linkedin' => $linkedin,
+        'company_size' => sanitizeInput($input['company_size'] ?? ''),
+        'notes' => sanitizeInput($input['notes'] ?? ''),
+        // Owner defaults to whoever's creating it, but can be assigned to
+        // any real team member at creation (the Add Lead form's Owner
+        // dropdown) — validated against the real users table so a bad id
+        // can never silently orphan a lead to a nonexistent owner.
+        'owner_id' => (function () use ($input, $user) {
+            $requested = trim($input['owner_id'] ?? '');
+            if ($requested === '') return $user['id'];
+            foreach (getUsers() as $u) { if ($u['id'] === $requested) return $requested; }
+            return $user['id'];
+        })(),
+        // Deal value stays zero/unset at creation (still starts at
+        // Qualified — see the New Lead redesign). The channel partner
+        // CAN be set at creation now (who referred this deal is known
+        // up front), but the commission payout stays hidden in the UI
+        // until the deal reaches Cost Proposal, since there's no deal
+        // value yet to compute it against.
+        'deal_amount' => dealMoney($input['deal_amount'] ?? 0),
+        'deal_currency' => normalizeCurrency($input['deal_currency'] ?? ''),
+        'partner_id' => '',
+        'partner_rate_type' => 'percentage',
+        'partner_rate_value' => 0,
+        'services' => [],
+        'services_other' => '',
+        'engagement_method' => [],
+        'generated_questions' => [],
+        'qualified_research' => null,
+        'meeting_link' => '',
+        'demo_checklist' => [],
+        'demo_checklist_answers' => [],
+        'demo_transcript' => '',
+        'demo_feasibility' => [],
+        'enrichment' => '',
+        'requisitions' => null,
+        'source' => $source,
+        'source_detail' => sanitizeInput($input['source_detail'] ?? ''),
+        'assigned_to' => sanitizeInput($input['assigned_to'] ?? ''),
+        'stage' => $initialStage,
+        'status' => stageToLegacyStatus($initialStage),
+        'stage_entered_at' => date('c'),
+        'stage_history' => [],
+        'urgency_flag' => $source === 'inbound' ? 'high' : sanitizeInput($input['urgency_flag'] ?? 'normal'),
+        'call_history' => [],
+        'rejection_reason' => '',
+        'consultation_type' => sanitizeInput($input['consultation_type'] ?? ''),
+        'emails_sent' => 0,
+        'last_email_type' => null,
+        'last_action' => 'created',
+        'last_action_at' => date('c'),
+        'email_history' => [],
+        'created_at' => date('c'),
+        'updated_at' => date('c'),
+    ];
+    // Channel partner at creation time — same validation/rate-fallback
+    // logic as set-deal-partner, so a lead created with a partner
+    // behaves identically to one that had a partner attached later.
+    $partnerId = trim($input['partner_id'] ?? '');
+    if ($partnerId !== '') {
+        $partner = findPartnerById(getPartnersStore()['partners'], $partnerId);
+        if ($partner) {
+            $lead['partner_id'] = $partnerId;
+            partnerNotifyLead($lead, 'leads', 'New referral credited to you',
+                trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')));
+            $rateType = $input['partner_rate_type'] ?? 'percentage';
+            $lead['partner_rate_type'] = $rateType === 'fixed' ? 'fixed' : 'percentage';
+            $lead['partner_rate_value'] = clampPartnerRateValue(
+                $lead['partner_rate_type'],
+                $input['partner_rate_value'] ?? 0
+            );
+        }
+    }
+    $lead = normalizeLeadForMapping($lead);
+    return $lead;
+}
+
+/**
+ * "Add deal at a stage": the stages a deal may be started at, the services it can carry, and why it
+ * skipped ahead. Won is deliberately NOT an entry point (a deal is only won through win-deal, which
+ * is what creates its client + job), and Lost never is.
+ */
+function dealEntryStages() { return ['lead', 'qualified', 'demo', 'cost_proposal', 'sow']; }
+function dealFixedServices() { return ['Website Development', 'Sales Intelligence System']; }
+/** Mirrors CUSTOM_SERVICE_NEED_OPTIONS in index.html: the "need" a Custom Services instance can be named for. */
+function dealCustomNeedOptions() {
+    return ['Website Development', 'Sales Intelligence Platform', 'Custom Software / System', 'Automation', 'Integrations / Implementation', 'Branding', 'Design / Creative', 'General Custom Requirement'];
+}
+function dealEntryTypes() {
+    return ['warm_lead' => 'Warm lead (already spoken)', 'repeat_client' => 'Repeat client', 'referral' => 'Referral', 'other' => 'Other'];
+}
+
 function getLeadStage($lead) {
     return legacyStatusToStage($lead['stage'] ?? ($lead['status'] ?? 'new'));
 }
@@ -3528,6 +3639,202 @@ case 'win-deal':
     ]);
     break;
 
+/**
+ * Who a new deal could be for, found as the user types: existing CLIENTS (with their contact people,
+ * job count and any deal still open) and people already in the pipeline. Feeds the Add Deal picker so
+ * a repeat client or warm contact is chosen, not retyped. Read-only: it never creates a client.
+ */
+case 'deal-contact-search':
+    if ($method !== 'GET') break;
+    requireAuth();
+    $q = mb_strtolower(trim($_GET['q'] ?? ''));
+    if (mb_strlen($q) < 2) respond(['success' => true, 'clients' => [], 'deals' => []]);
+    $stageDefs = getMacktilesStages();
+    $liveLeads = array_values(array_filter(getLeadsStore()['leads'], fn($l) => empty($l['deleted_at'])));
+    $allJobs = getJobsStore()['jobs'];
+    $clientRows = [];
+    foreach (getClientsStore()['clients'] as $c) {
+        $hay = mb_strtolower(($c['name'] ?? '') . ' ' . ($c['client_no'] ?? '') . ' ' . ($c['contact_name'] ?? '') . ' ' . ($c['contact_email'] ?? ''));
+        foreach (($c['contacts'] ?? []) as $cc) $hay .= ' ' . mb_strtolower(($cc['name'] ?? '') . ' ' . ($cc['email'] ?? ''));
+        if (mb_strpos($hay, $q) === false) continue;
+        $open = [];
+        foreach ($liveLeads as $l) {
+            $st = getLeadStage($l);
+            if ($st === 'won' || $st === 'lost') continue;
+            if (($l['client_id'] ?? '') === ($c['id'] ?? '') || clientNameKey($l['company'] ?? '') === clientNameKey($c['name'] ?? '')) {
+                $open[] = ['id' => $l['id'], 'stage' => $st, 'stage_label' => $stageDefs[$st]['label'] ?? $st];
+            }
+        }
+        $contacts = array_map(fn($cc) => ['id' => $cc['id'] ?? '', 'name' => $cc['name'] ?? '', 'email' => $cc['email'] ?? '', 'phone' => $cc['phone'] ?? ''], $c['contacts'] ?? []);
+        if (!$contacts && (($c['contact_name'] ?? '') !== '' || ($c['contact_email'] ?? '') !== '')) {
+            $contacts[] = ['id' => '', 'name' => $c['contact_name'] ?? '', 'email' => $c['contact_email'] ?? '', 'phone' => $c['contact_phone'] ?? ''];
+        }
+        $clientRows[] = [
+            'id' => $c['id'] ?? '', 'client_no' => $c['client_no'] ?? '', 'name' => $c['name'] ?? '',
+            'website' => $c['website'] ?? '', 'contacts' => $contacts,
+            'jobs' => count(array_filter($allJobs, fn($j) => clientOwnsRecord($c, $j))),
+            'open_deals' => $open,
+        ];
+        if (count($clientRows) >= 6) break;
+    }
+    $dealRows = [];
+    usort($liveLeads, fn($a, $b) => strcmp($b['updated_at'] ?? '', $a['updated_at'] ?? ''));
+    foreach ($liveLeads as $l) {
+        $hay = mb_strtolower(trim(($l['first_name'] ?? '') . ' ' . ($l['last_name'] ?? '')) . ' ' . ($l['company'] ?? '') . ' ' . ($l['email'] ?? ''));
+        if (mb_strpos($hay, $q) === false) continue;
+        $st = getLeadStage($l);
+        $dealRows[] = [
+            'lead_id' => $l['id'], 'first_name' => $l['first_name'] ?? '', 'last_name' => $l['last_name'] ?? '',
+            'company' => $l['company'] ?? '', 'email' => $l['email'] ?? '', 'phone' => $l['phone'] ?? '',
+            'title' => $l['title'] ?? '', 'country' => $l['country'] ?? '', 'website' => $l['website'] ?? '',
+            'client_id' => $l['client_id'] ?? '', 'stage' => $st, 'stage_label' => $stageDefs[$st]['label'] ?? $st,
+        ];
+        if (count($dealRows) >= 8) break;
+    }
+    respond(['success' => true, 'clients' => $clientRows, 'deals' => $dealRows]);
+    break;
+
+/**
+ * Add a deal at a chosen pipeline stage, for a warm contact or repeat client, instead of walking it
+ * through every earlier stage. The deal has the same shape as any other; what makes it different is
+ * that (a) it carries what the landing stage's panel needs (services, and a value per service from
+ * Cost Proposal on), (b) the skip is on the record: a "direct entry" stage-history row (no "from", so
+ * the stage KPIs ignore it), an `entered_directly` block saying why and what was skipped, and an
+ * activity-log line, and (c) it is a team action: channel partners are refused by the partner gate.
+ */
+case 'add-deal':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $stageDefs = getMacktilesStages();
+    $stage = trim($input['stage'] ?? 'lead');
+    if (!in_array($stage, dealEntryStages(), true)) {
+        respond(['success' => false, 'error' => 'Start a deal at Lead, Qualified, Demo, Cost Proposal or SOW. A deal is only won through Mark Won, so a client and job get created.'], 400);
+    }
+    $stageLabel = $stageDefs[$stage]['label'];
+    $direct = $stage !== 'lead';
+
+    // Who: an existing client or earlier deal fills the blanks; anything typed wins.
+    $client = null;
+    $clientId = trim($input['client_id'] ?? '');
+    if ($clientId !== '') {
+        $client = findClientById(getClientsStore()['clients'], $clientId);
+        if (!$client) respond(['success' => false, 'error' => 'That client no longer exists'], 404);
+    }
+    $fromLead = null;
+    $srcId = trim($input['source_lead_id'] ?? '');
+    if ($srcId !== '') {
+        foreach (getLeadsStore()['leads'] as $sl) { if (($sl['id'] ?? '') === $srcId && empty($sl['deleted_at'])) { $fromLead = $sl; break; } }
+    }
+    $contact = null;
+    if ($client) {
+        $wantId = trim($input['contact_id'] ?? '');
+        foreach (($client['contacts'] ?? []) as $cc) { if ($wantId !== '' && ($cc['id'] ?? '') === $wantId) { $contact = $cc; break; } }
+        if (!$contact) $contact = ($client['contacts'][0] ?? null);
+    }
+    $contactName = trim($contact['name'] ?? ($client['contact_name'] ?? ''));
+    $nameParts = $contactName !== '' ? preg_split('/\s+/', $contactName, 2) : [];
+    $pick = function ($key, $fallback) use ($input) {
+        $v = trim((string) ($input[$key] ?? ''));
+        return $v !== '' ? $v : (string) $fallback;
+    };
+    $in = $input;
+    $in['company']    = $pick('company', $client['name'] ?? ($fromLead['company'] ?? ''));
+    $in['first_name'] = $pick('first_name', $nameParts[0] ?? ($fromLead['first_name'] ?? ''));
+    $in['last_name']  = $pick('last_name', $nameParts[1] ?? ($fromLead['last_name'] ?? ''));
+    $in['email']      = $pick('email', $contact['email'] ?? ($client['contact_email'] ?? ($fromLead['email'] ?? '')));
+    $in['phone']      = $pick('phone', $contact['phone'] ?? ($client['contact_phone'] ?? ($fromLead['phone'] ?? '')));
+    $in['title']      = $pick('title', $fromLead['title'] ?? '');
+    $in['country']    = $pick('country', $fromLead['country'] ?? '');
+    $website          = $pick('website', $client['website'] ?? ($fromLead['website'] ?? ''));
+    if ($in['first_name'] === '' && $in['company'] === '') respond(['success' => false, 'error' => 'Add a contact name or a company for this deal'], 400);
+    $website = validateLeadContactFields(trim($in['email']), '', $website, trim($in['phone']));
+
+    // Why it skipped ahead. Starting past Lead always says so, so the record explains itself later.
+    $entryTypes = dealEntryTypes();
+    $entryType = trim($input['entry_type'] ?? '');
+    $entryNote = trim($input['entry_note'] ?? '');
+    if ($direct) {
+        if (!isset($entryTypes[$entryType])) respond(['success' => false, 'error' => 'Say why this deal skips ahead: warm lead, repeat client, referral or other'], 400);
+        if ($entryType === 'other' && $entryNote === '') respond(['success' => false, 'error' => 'Add a short note explaining why this deal starts at ' . $stageLabel], 400);
+    }
+
+    // What the landing stage needs: services, and a value per service from Cost Proposal on.
+    $services = []; $seeds = []; $values = [];
+    if ($direct) {
+        foreach ((is_array($input['services'] ?? null) ? $input['services'] : []) as $sv) {
+            if (!is_array($sv)) continue;
+            if (($sv['type'] ?? 'fixed') === 'custom') {
+                $need = trim($sv['need'] ?? '');
+                if (!in_array($need, dealCustomNeedOptions(), true)) respond(['success' => false, 'error' => 'Unknown service: ' . $need], 400);
+                $key = 'Custom Services'; $n = 2;
+                while (in_array($key, $services, true)) $key = 'Custom Services #' . $n++;
+                $seeds[$key . '::need'] = $need;
+                $label = $need;
+            } else {
+                $key = trim($sv['name'] ?? '');
+                if (!in_array($key, dealFixedServices(), true)) respond(['success' => false, 'error' => 'Unknown service: ' . $key], 400);
+                if (in_array($key, $services, true)) continue;
+                $label = $key;
+            }
+            $services[] = $key;
+            $values[$key] = ['amount' => dealMoney($sv['amount'] ?? 0), 'label' => $label];
+        }
+        if (!$services) respond(['success' => false, 'error' => 'Add at least one service. A deal that starts at ' . $stageLabel . ' needs to say what it is for.'], 400);
+        if (in_array($stage, ['cost_proposal', 'sow'], true)) {
+            foreach ($values as $v) {
+                if ($v['amount'] <= 0) respond(['success' => false, 'error' => 'Enter the ' . ($stage === 'sow' ? 'agreed ' : '') . 'value for ' . $v['label'] . '.'], 400);
+            }
+        }
+    }
+
+    $cur = normalizeCurrency($input['currency'] ?? '');
+    $now = date('c');
+    $in['partner_id'] = trim($input['partner_id'] ?? '');
+    $in['source_detail'] = $direct ? $entryTypes[$entryType] : '';
+    $in['deal_amount'] = 0;
+    $in['warm'] = false; $in['urgency_flag'] = 'normal';
+    $lead = buildNewLead($in, $user, $stage, 'manual', $website, '');
+    $lead['deal_currency'] = $cur;
+    $lead['stage_entered_at'] = $now;
+    $lead['peak_stage'] = $stage;
+    if ($client) $lead['client_id'] = $client['id'];
+
+    if ($direct) {
+        $lead['services'] = $services;
+        $req = $seeds;
+        $total = 0.0;
+        foreach ($services as $key) {
+            $amt = $values[$key]['amount'];
+            if ($amt > 0) { $req[$key . '::estimated_deal_value'] = ['amount' => (string) $amt, 'currency' => $cur]; $total += $amt; }
+            // At SOW the price is already agreed: each service arrives Won, as it would have from Cost Proposal.
+            if ($stage === 'sow') $req[$key . '::cp_negotiation_status'] = 'won';
+        }
+        $lead['requisitions'] = $req ?: null;
+        if ($total > 0) setDealAmount($lead, $total, $stage, $user['id'] ?? null);
+        // A deal at Demo has, by definition, had its meeting request sent.
+        if ($stage === 'demo') {
+            $lead['demo_request_sent'] = true;
+            $ml = trim($input['meeting_link'] ?? '');
+            if ($ml !== '' && filter_var($ml, FILTER_VALIDATE_URL)) $lead['meeting_link'] = $ml;
+        }
+        $order = stageOrder($stage);
+        $skipped = [];
+        foreach ($stageDefs as $sid => $sd) { if ($sd['order'] < $order) $skipped[] = $sid; }
+        // No "from": the stage KPIs only count real transitions, so a direct entry doesn't register
+        // as a deal that "advanced" out of the stages it never sat in.
+        $lead['stage_history'] = [['from' => null, 'to' => $stage, 'reason' => 'direct_entry:' . $entryType, 'actor' => $user['id'] ?? null, 'timestamp' => $now]];
+        $lead['entered_directly'] = ['stage' => $stage, 'type' => $entryType, 'note' => $entryNote, 'skipped' => $skipped, 'by' => $user['id'] ?? null, 'at' => $now];
+        logActivity($lead, 'created', 'Added directly at ' . $stageLabel . ' (' . $entryTypes[$entryType] . '). Skipped: '
+            . implode(', ', array_map(fn($sid) => $stageDefs[$sid]['label'], $skipped)) . ($entryNote !== '' ? '. ' . $entryNote : ''),
+            ['actor' => $user['name'] ?? ($user['email'] ?? '')]);
+    }
+    $lead = normalizeLeadForMapping($lead);
+    $userData = getUserData($user['id']);
+    $userData['leads'][] = $lead;
+    saveUserData($user['id'], $userData);
+    respond(['success' => true, 'lead' => $lead], 201);
+    break;
+
 /** Update a deal's amount at any stage (the value legitimately changes as it firms up). */
 case 'set-deal-amount':
     if ($method !== 'POST') break;
@@ -4160,7 +4467,8 @@ case 'tickets':
     // it's a client-ticket inbox — we don't file our own tickets, we only manage
     // tickets forwarded in from client (spoke) deployments.
     $adminCfg = getAdmin();
-    $hubMode = trim($adminCfg['ticket_ingest_secret'] ?? '') !== '';
+    $hubMode = ticketsHubMode();
+    $internalOn = ticketsInternalEnabled();
     // No scheduler on this stack (shared hosting, no guaranteed cron) - so the
     // "No reply from the client" reminder/auto-close leg of the SOP piggybacks
     // on whoever next loads the ticket list, rate-limited to once per 4 hours
@@ -4174,13 +4482,15 @@ case 'tickets':
         }
     }
     // Admins may request the full company-wide queue; everyone else sees only their own.
-    $scopeAll = $isAdmin && (($_GET['scope'] ?? '') === 'all');
+    // Where internal tickets are on (a hub that also raises its own tickets), the admin's default is the
+    // whole queue (client tickets + everything raised here); "mine" is still one explicit choice away.
+    $scopeParam = $_GET['scope'] ?? '';
+    $scopeAll = $isAdmin && ($scopeParam === 'all' || ($scopeParam === '' && $hubMode && $internalOn));
     $store = getTicketsStore();
     $tickets = $store['tickets'];
-    if ($hubMode && $isAdmin) {
-        // On a hub, admins see the client-forwarded tickets (the whole point) —
-        // only ever tickets with source === 'client' (real forwards from a
-        // spoke via ingestForwardedTicket). There is no manual-tagging path.
+    if ($hubMode && $isAdmin && !$internalOn) {
+        // A pure hub: admins see only the client-forwarded tickets (real forwards from a spoke via
+        // ingestForwardedTicket). They don't file their own.
         $tickets = array_values(array_filter($tickets, function ($t) {
             return ($t['source'] ?? '') === 'client';
         }));
@@ -4190,6 +4500,11 @@ case 'tickets':
             return ($t['created_by'] ?? '') === ($u['id'] ?? '');
         }));
     }
+    // Admins can narrow by where a ticket came from: 'client' (forwarded from a connected system) or
+    // 'internal' (raised inside this system by staff or a partner).
+    $sourceFilter = $isAdmin ? ($_GET['source'] ?? '') : '';
+    if ($sourceFilter === 'client') $tickets = array_values(array_filter($tickets, fn($t) => ($t['source'] ?? '') === 'client'));
+    elseif ($sourceFilter === 'internal') $tickets = array_values(array_filter($tickets, fn($t) => ($t['source'] ?? '') !== 'client'));
     // Summary reflects the full scoped set (so the "Closed" count on the stat
     // cards / "Closed Tickets" button is accurate) — filtering below only
     // affects which tickets are returned in the main list.
@@ -4201,11 +4516,21 @@ case 'tickets':
     $tickets = array_values(array_filter($tickets, fn($t) => (($t['status'] ?? 'open') === 'closed') === $viewClosed));
     // Newest first.
     usort($tickets, function ($a, $b) { return strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''); });
+    // The people who raise a ticket (staff without admin rights, channel partners) see its conversation and
+    // status, not the team's working notes: the Developer's fix log and the closing checklist stay internal.
+    if (!$isAdmin) {
+        $tickets = array_map(function ($t) {
+            unset($t['fix_note'], $t['fix_version'], $t['fix_by'], $t['fix_by_name'], $t['fix_at'], $t['checklist'], $t['closing_note']);
+            $t['replies'] = array_values(array_filter($t['replies'] ?? [], fn($r) => empty($r['is_fix_note'])));
+            return $t;
+        }, $tickets);
+    }
     respond([
         'success' => true,
         'tickets' => $tickets,
         'summary' => $summary,
         'is_admin' => $isAdmin,
+        'internal_enabled' => $internalOn,
         'hub_mode' => $hubMode,
         'scope' => $scopeAll ? 'all' : 'mine',
         'view_closed' => $viewClosed,
@@ -4252,9 +4577,12 @@ case 'save-ticket':
         'id' => 'tkt_' . bin2hex(random_bytes(8)),
         'ticket_no' => nextTicketNo($store),
         'status' => 'open',
+        // Raised here, by someone in this system (as opposed to 'client': forwarded in from a connected one).
+        'source' => 'internal',
         'created_by' => $u['id'] ?? '',
         'created_by_name' => $u['name'] ?? '',
         'created_by_email' => $u['email'] ?? '',
+        'created_by_kind' => !empty($u['is_channel_partner']) ? 'partner' : ((!empty($u['is_admin']) || !empty($u['is_super_admin'])) ? 'admin' : 'manager'),
         'created_at' => $now,
         'updated_at' => $now,
         'replies' => [],
@@ -4267,8 +4595,8 @@ case 'save-ticket':
     saveTicketsStore($store);
     // Best-effort email out to the vendor support address (never blocks submission).
     notifySupportEmail($ticket, 'new');
-    // Light up the bell for admins on this deployment (locally-filed ticket).
-    notifyAdminsOfTicket($ticket);
+    // Light up the bell for admins on this deployment (locally-filed ticket), except the person who raised it.
+    notifyAdminsOfTicket($ticket, $u['id'] ?? '');
     // Best-effort: if this deployment is a spoke, forward a copy to the central hub.
     forwardTicketToHub($ticket);
     respond(['success' => true, 'id' => $ticket['id'], 'ticket_no' => $ticket['ticket_no']]);
@@ -4455,7 +4783,7 @@ case 'ticket-reply':
         notifyOwnerOfReply($ticketCopy, $reply);
     } else {
         // Owner replied -> notify admins there's activity.
-        notifyAdminsOfTicket($ticketCopy);
+        notifyAdminsOfTicket($ticketCopy, $u['id'] ?? '');
     }
     // Phase 2: if this is a client-originated (forwarded) ticket and the reply is
     // from staff, push it back to the spoke so the client's user sees it in-app.
@@ -4533,6 +4861,10 @@ case 'update-ticket-status':
     // ticket too — the mirror of the reply push in 'ticket-reply'.
     if ($statusChanged && ($ticketCopy['source'] ?? '') === 'client') {
         sendStatusToSpoke($ticketCopy);
+    }
+    // A ticket raised in this system: tell its requester (a colleague or channel partner) where it stands.
+    if ($statusChanged && ($ticketCopy['source'] ?? '') !== 'client') {
+        notifyOwnerOfStatus($ticketCopy, $u['id'] ?? '');
     }
     respond(['success' => true]);
     break;
@@ -4953,6 +5285,7 @@ case 'admin-settings':
             }
         }
         $masked['default_currency'] = defaultCurrency();
+        $masked['ticket_internal_effective'] = ticketsInternalEnabled();
         respond(['success' => true, 'settings' => $masked, 'currencies' => supportedCurrencies()]);
     }
     if ($method === 'POST') {
@@ -4996,6 +5329,8 @@ case 'admin-settings':
         if (isset($input['ticket_client_name'])) $admin['ticket_client_name'] = trim($input['ticket_client_name']);
         // HUB role: accept forwarded tickets when this secret is set (empty = disabled).
         if (isset($input['ticket_ingest_secret']) && strpos($input['ticket_ingest_secret'], '****') === false) $admin['ticket_ingest_secret'] = trim($input['ticket_ingest_secret']);
+        // Internal tickets: staff and channel partners raise tickets inside this system, handled under the closing SOP.
+        if (array_key_exists('ticket_internal', $input)) $admin['ticket_internal'] = !empty($input['ticket_internal']);
         // Sales outreach: verified From address for emails sent to leads from the system.
         if (isset($input['outreach_from'])) $admin['outreach_from'] = trim($input['outreach_from']);
         // Auth emails: sign-in codes + password reset links (see sendAuthEmail()).
@@ -5498,93 +5833,13 @@ case 'lead':
         $source = normalizeLeadSource($input['source'] ?? 'manual');
         $isWarm = !empty($input['warm']) || (($input['urgency_flag'] ?? '') === 'warm');
         $requestedStage = trim($input['stage'] ?? '');
+        // This plain create can only start a deal at Lead or Qualified (a warm contact). Starting
+        // further along (Demo, Cost Proposal, SOW) is the add-deal action, which records the skip and
+        // collects what that stage needs; Won is never an entry point (it goes through win-deal).
+        if (!in_array(legacyStatusToStage($requestedStage), ['lead', 'qualified'], true)) $requestedStage = '';
         $initialStage = legacyStatusToStage($requestedStage ?: initialStageForSource($source, $isWarm));
 
-        $lead = [
-            'id' => generateId('lead_'),
-            'first_name' => sanitizeInput($input['first_name'] ?? ''),
-            'last_name' => sanitizeInput($input['last_name'] ?? ''),
-            'email' => $email,
-            'phone' => sanitizeInput($input['phone'] ?? ''),
-            'company' => sanitizeInput($input['company'] ?? ''),
-            'title' => sanitizeInput($input['title'] ?? ''),
-            'industry' => sanitizeInput($input['industry'] ?? ''),
-            'country' => sanitizeInput($input['country'] ?? ''),
-            'website' => $website,
-            'linkedin' => $linkedin,
-            'company_size' => sanitizeInput($input['company_size'] ?? ''),
-            'notes' => sanitizeInput($input['notes'] ?? ''),
-            // Owner defaults to whoever's creating it, but can be assigned to
-            // any real team member at creation (the Add Lead form's Owner
-            // dropdown) — validated against the real users table so a bad id
-            // can never silently orphan a lead to a nonexistent owner.
-            'owner_id' => (function () use ($input, $user) {
-                $requested = trim($input['owner_id'] ?? '');
-                if ($requested === '') return $user['id'];
-                foreach (getUsers() as $u) { if ($u['id'] === $requested) return $requested; }
-                return $user['id'];
-            })(),
-            // Deal value stays zero/unset at creation (still starts at
-            // Qualified — see the New Lead redesign). The channel partner
-            // CAN be set at creation now (who referred this deal is known
-            // up front), but the commission payout stays hidden in the UI
-            // until the deal reaches Cost Proposal, since there's no deal
-            // value yet to compute it against.
-            'deal_amount' => dealMoney($input['deal_amount'] ?? 0),
-            'deal_currency' => normalizeCurrency($input['deal_currency'] ?? ''),
-            'partner_id' => '',
-            'partner_rate_type' => 'percentage',
-            'partner_rate_value' => 0,
-            'services' => [],
-            'services_other' => '',
-            'engagement_method' => [],
-            'generated_questions' => [],
-            'qualified_research' => null,
-            'meeting_link' => '',
-            'demo_checklist' => [],
-            'demo_checklist_answers' => [],
-            'demo_transcript' => '',
-            'demo_feasibility' => [],
-            'enrichment' => '',
-            'requisitions' => null,
-            'source' => $source,
-            'source_detail' => sanitizeInput($input['source_detail'] ?? ''),
-            'assigned_to' => sanitizeInput($input['assigned_to'] ?? ''),
-            'stage' => $initialStage,
-            'status' => stageToLegacyStatus($initialStage),
-            'stage_entered_at' => date('c'),
-            'stage_history' => [],
-            'urgency_flag' => $source === 'inbound' ? 'high' : sanitizeInput($input['urgency_flag'] ?? 'normal'),
-            'call_history' => [],
-            'rejection_reason' => '',
-            'consultation_type' => sanitizeInput($input['consultation_type'] ?? ''),
-            'emails_sent' => 0,
-            'last_email_type' => null,
-            'last_action' => 'created',
-            'last_action_at' => date('c'),
-            'email_history' => [],
-            'created_at' => date('c'),
-            'updated_at' => date('c'),
-        ];
-        // Channel partner at creation time — same validation/rate-fallback
-        // logic as set-deal-partner, so a lead created with a partner
-        // behaves identically to one that had a partner attached later.
-        $partnerId = trim($input['partner_id'] ?? '');
-        if ($partnerId !== '') {
-            $partner = findPartnerById(getPartnersStore()['partners'], $partnerId);
-            if ($partner) {
-                $lead['partner_id'] = $partnerId;
-                partnerNotifyLead($lead, 'leads', 'New referral credited to you',
-                    trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? '')));
-                $rateType = $input['partner_rate_type'] ?? 'percentage';
-                $lead['partner_rate_type'] = $rateType === 'fixed' ? 'fixed' : 'percentage';
-                $lead['partner_rate_value'] = clampPartnerRateValue(
-                    $lead['partner_rate_type'],
-                    $input['partner_rate_value'] ?? 0
-                );
-            }
-        }
-        $lead = normalizeLeadForMapping($lead);
+        $lead = buildNewLead($input, $user, $initialStage, $source, $website, $linkedin);
         $userData['leads'][] = $lead;
         saveUserData($user['id'], $userData);
         if ($isPartnerUser) {
@@ -7839,8 +8094,10 @@ case 'stats':
     foreach ($leads as $l) {
         $stage = getLeadStage($l);
         if (isset($stats[$stage])) $stats[$stage]++;
+        // Legacy status aliases only for keys that are NOT also a real stage: 'qualified' is both, and
+        // counting every Demo/Cost Proposal/SOW/Won deal under it as well inflated the Qualified chip.
         $legacy = stageToLegacyStatus($stage);
-        if ($legacy !== $stage && isset($stats[$legacy])) $stats[$legacy]++;
+        if ($legacy !== $stage && isset($stats[$legacy]) && !isset(getMacktilesStages()[$legacy])) $stats[$legacy]++;
         $amt = dealMoney($l['deal_amount'] ?? 0);
         $cur = $l['deal_currency'] ?? '';
         if (isset($stageValue[$stage])) addToCurrencyBucket($stageValue[$stage], $cur, $amt);

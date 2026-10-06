@@ -64,18 +64,28 @@ function addUserNotification($userId, $notif) {
     if (function_exists('pusherNotifyUser')) pusherNotifyUser($userId, $notif);
 }
 
-/** Notify every admin/super-admin (used when a new ticket arrives at the hub). */
-function notifyAdminsOfTicket($ticket) {
-    $from = trim($ticket['client'] ?? '') ?: (trim($ticket['created_by_name'] ?? '') ?: 'a user');
+/** Who raised a ticket, for display: the client system's name, or "Name (Channel Partner)" / "Name". */
+function ticketRequesterLabel($ticket) {
+    $client = trim($ticket['client'] ?? '');
+    if ($client !== '') return $client;
+    $name = trim($ticket['created_by_name'] ?? '') ?: 'a user';
+    return ($ticket['created_by_kind'] ?? '') === 'partner' ? $name . ' (Channel Partner)' : $name;
+}
+
+/** Notify every admin/super-admin (used when a new ticket arrives at the hub). `$exceptUserId` skips the person who did it. */
+function notifyAdminsOfTicket($ticket, $exceptUserId = '') {
+    $from = ticketRequesterLabel($ticket);
     $isFeedback = ($ticket['type'] ?? 'support') === 'feedback';
     foreach (getUsers() as $u) {
         if (empty($u['is_admin']) && empty($u['is_super_admin'])) continue;
+        if ($exceptUserId !== '' && ($u['id'] ?? '') === $exceptUserId) continue;
         addUserNotification($u['id'] ?? '', [
             'notif_key' => 'ticket_new_' . ($ticket['id'] ?? ''),
             'type' => 'ticket_new',
             'title' => ($isFeedback ? '💬 New feedback' : '🎫 New support ticket'),
             'body' => $from . ': ' . (trim($ticket['subject'] ?? '') ?: '(no subject)'),
             'ticket_id' => $ticket['id'] ?? '',
+            'page' => 'support',
         ]);
     }
 }
@@ -90,6 +100,22 @@ function notifyOwnerOfReply($ticket, $reply) {
         'title' => '↩️ New reply on your ticket',
         'body' => (trim($reply['author_name'] ?? '') ?: 'Support') . ': ' . mb_substr(trim($reply['message'] ?? ''), 0, 80),
         'ticket_id' => $ticket['id'] ?? '',
+        'page' => 'support',
+    ]);
+}
+
+/** Tell the person who raised a ticket that its status changed (local requesters only; skips the actor). */
+function notifyOwnerOfStatus($ticket, $actorId = '') {
+    $ownerId = trim($ticket['created_by'] ?? '');
+    if ($ownerId === '' || $ownerId === $actorId) return;
+    global $TICKET_STATUS_LABELS;
+    addUserNotification($ownerId, [
+        'notif_key' => 'ticket_status_' . ($ticket['id'] ?? '') . '_' . ($ticket['status'] ?? '') . '_' . substr((string) ($ticket['updated_at'] ?? ''), 0, 19),
+        'type' => 'ticket_reply',
+        'title' => '🎫 ' . ($ticket['ticket_no'] ?? 'Your ticket') . ' is now ' . ticketLabel($TICKET_STATUS_LABELS, $ticket['status'] ?? ''),
+        'body' => trim($ticket['subject'] ?? '') ?: '(no subject)',
+        'ticket_id' => $ticket['id'] ?? '',
+        'page' => 'support',
     ]);
 }
 
@@ -160,9 +186,37 @@ function applyTicketFields($ticket, $input) {
  * they can leave a fix note ('mark-ticket-fix-ready') but not close it.
  * ===================================================================== */
 
-/** Is this ticket governed by the client-ticket closing SOP? */
-function ticketNeedsClosingChecklist($ticket) {
+/** Is this deployment a ticket hub (it accepts tickets forwarded from client systems)? */
+function ticketsHubMode() {
+    return trim(getAdmin()['ticket_ingest_secret'] ?? '') !== '';
+}
+
+/**
+ * Can people raise tickets INSIDE this system (staff and channel partners), handled under the same
+ * closing SOP as client tickets? On by default for a hub (Levata), off for a spoke (a client
+ * deployment, whose users' tickets go to the hub instead); Admin -> Settings -> Ticket Sync can
+ * override either way. This is the one switch to flip when the feature is ported to another system.
+ */
+function ticketsInternalEnabled() {
+    $cfg = getAdmin();
+    if (array_key_exists('ticket_internal', $cfg)) return !empty($cfg['ticket_internal']);
+    return trim($cfg['ticket_ingest_secret'] ?? '') !== '';
+}
+
+/** A ticket forwarded in from a client system (tagged with that client's name). */
+function ticketIsClientTagged($ticket) {
     return trim($ticket['client'] ?? '') !== '' && ($ticket['type'] ?? 'support') === 'support';
+}
+
+/**
+ * Is this ticket governed by the closing SOP (owner + Developer fix + checklist)? Client-tagged
+ * support tickets always are. Where internal tickets are enabled (see ticketsInternalEnabled()), so
+ * is a support ticket raised inside this system by staff or a channel partner. Feedback never is.
+ */
+function ticketNeedsClosingChecklist($ticket) {
+    if (($ticket['type'] ?? 'support') !== 'support') return false;
+    if (trim($ticket['client'] ?? '') !== '') return true;
+    return ($ticket['source'] ?? '') !== 'client' && ticketsInternalEnabled();
 }
 
 /** May $user change this ticket's status / tick its checklist right now? */
@@ -262,7 +316,9 @@ function processTicketReminders() {
     $changed = false;
     foreach ($store['tickets'] as &$ticket) {
         if (($ticket['status'] ?? 'open') === 'closed') continue;
-        if (!ticketNeedsClosingChecklist($ticket)) continue;
+        // Client tickets only: an internal ticket's requester is a colleague or partner in this
+        // same system, so there is no outside client to chase and nothing is auto-closed on silence.
+        if (!ticketIsClientTagged($ticket)) continue;
         $replies = $ticket['replies'] ?? [];
         if (empty($replies)) continue;
         $last = end($replies);

@@ -154,9 +154,11 @@ function partnerMayCall($user, $action, $method, $input) {
     $D = fn($keys, $req = true) => ['doc', (array) $keys, $req];
     $J = fn($keys, $req = true) => ['job', (array) $keys, $req];
     $T = fn($keys, $req = true) => ['task', (array) $keys, $req];
+    $K = fn($keys, $req = true) => ['ticket', (array) $keys, $req]; // support tickets they raised themselves
     $rules = [
         'GET' => [
             'me' => [], 'leads' => [], 'stats' => [], 'studio-overview' => [], 'jobs' => [], 'tasks' => [], 'notifications' => [],
+            'tickets' => [], // Help & Support: the handler returns only tickets they raised
             'command-center' => [], 'team-members' => [], // dashboard funnel / owner+assignee pickers (both narrowed to the partner)
             'list-documents' => [], 'all-documents' => [],
             'lead' => [$L('id')], 'next-best-action' => [$L('lead_id')], 'deal-documents' => [$L('lead_id')], 'deal-win-preview' => [$L('lead_id')],
@@ -180,6 +182,8 @@ function partnerMayCall($user, $action, $method, $input) {
             'save-job' => [$J('id', false)], 'delete-job' => [$J('id')],
             'save-invoice' => [$J('job_id')], 'delete-invoice' => [$J('job_id')],
             'save-task' => [$T('id', false), $J('job_id', false)], 'delete-task' => [$T('id')],
+            // Help & Support: raise a ticket (create pins it to them), edit/reply/delete only their own.
+            'save-ticket' => [$K('id', false)], 'ticket-reply' => [$K('ticket_id')], 'delete-ticket' => [$K('id')],
         ],
         'PUT' => ['lead' => [$L('id')]],
         'DELETE' => ['lead' => [$L('id')]],
@@ -193,6 +197,7 @@ function partnerMayCall($user, $action, $method, $input) {
         if ($kind === 'lead') $ids = array_column(partnerOwnLeads($user, getLeadsStore()['leads']), 'id');
         elseif ($kind === 'job') $ids = array_column(partnerOwnJobs($user), 'id');
         elseif ($kind === 'task') $ids = array_column(partnerOwnTasks($user, getTasksStore()['tasks']), 'id');
+        elseif ($kind === 'ticket') $ids = array_column(array_filter(getTicketsStore()['tickets'], fn($t) => ($t['created_by'] ?? '') === ($user['id'] ?? '')), 'id');
         else $ids = array_column(partnerOwnDocs($user, getAllDocuments()), 'id');
         return $own[$kind] = $ids;
     };

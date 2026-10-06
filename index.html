@@ -300,6 +300,43 @@
         #confirm-message { white-space: pre-line; }
         .jr-amount-hint { font-size: 12px; color: var(--text-muted); margin-top: 5px; }
         .jr-amount-hint.error { color: var(--danger); font-weight: 600; }
+        /* Add Lead split button: the main click is unchanged, the caret opens more ways to add. */
+        .split-btn { position: relative; display: inline-flex; }
+        .split-btn > .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+        .split-btn-caret { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 1px solid rgba(255,255,255,0.35); padding-left: 8px; padding-right: 8px; }
+        .split-menu { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; min-width: 270px; background: var(--bg-white); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-md); padding: 4px; }
+        .split-menu.open { display: block; }
+        .split-menu button { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: var(--radius-sm); padding: 9px 11px; cursor: pointer; font: inherit; color: var(--text-primary); }
+        .split-menu button:hover { background: var(--bg-subtle); }
+        .split-menu b { display: block; font-size: 13px; }
+        .split-menu span { display: block; font-size: 11.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.35; }
+        /* Add Deal: pick who it is for, the stage to start at, and what that stage needs. */
+        .ad-step { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 700; margin: 18px 0 10px; }
+        .ad-step:first-child { margin-top: 0; }
+        .ad-step-num { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .ad-results { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-white); max-height: 280px; overflow-y: auto; margin-top: 6px; box-shadow: var(--shadow-md); }
+        .ad-group { font-size: 10.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px 4px; }
+        .ad-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; font-size: 13px; border-top: 1px solid var(--border-light); }
+        .ad-row:hover { background: var(--bg-subtle); }
+        .ad-row.sub { padding-left: 28px; font-size: 12.5px; color: var(--text-secondary); }
+        .ad-row small { color: var(--text-muted); font-size: 11.5px; }
+        .ad-warn { font-size: 11px; font-weight: 600; color: var(--warning); white-space: nowrap; }
+        .ad-chip { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; background: var(--bg-subtle); border-radius: var(--radius-md); font-size: 13px; margin-bottom: 12px; }
+        .ad-chip button { border: 0; background: none; cursor: pointer; font-size: 18px; line-height: 1; color: var(--text-muted); }
+        .ad-link { background: none; border: 0; padding: 8px 0 0; font-size: 12.5px; color: var(--gold-dark); cursor: pointer; font-weight: 600; }
+        .ad-stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; }
+        .ad-stage { text-align: left; border: 1.5px solid var(--border); border-radius: var(--radius-md); background: var(--bg-white); padding: 10px 11px; cursor: pointer; transition: border-color .15s, background .15s; font: inherit; }
+        .ad-stage:hover { border-color: var(--accent-line); }
+        .ad-stage.is-on { border-color: var(--accent); background: var(--brand-slate-soft); }
+        .ad-stage b { display: block; font-size: 13px; margin-bottom: 3px; }
+        .ad-stage span { font-size: 11.5px; color: var(--text-muted); line-height: 1.35; display: block; }
+        .ad-note { font-size: 12px; color: var(--text-secondary); margin: 10px 0 0; line-height: 1.5; }
+        .ad-note strong { color: var(--text-primary); }
+        .ad-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+        .ad-pill { border: 1.5px solid var(--border); background: var(--bg-white); border-radius: 20px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; font: inherit; font-size: 12.5px; }
+        .ad-pill.is-on { border-color: var(--accent); background: var(--brand-slate-soft); font-weight: 600; }
+        .ad-svc-row { display: grid; grid-template-columns: 1fr 150px 28px; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 13px; }
+        .ad-svc-row button { border: 0; background: none; cursor: pointer; font-size: 18px; color: var(--text-muted); }
         .jr-stat-label { font-size: 10.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; line-height: 1.3; order: -1; }
         .jr-stat-value { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; letter-spacing: -0.02em; overflow-wrap: anywhere; }
         .jr-stat-value .cur-extra { display: block; font-size: 13px; font-weight: 600; opacity: 0.72; }
@@ -316,6 +353,8 @@
         .sup-badge.type-support { background: #eef2ff; color: #3730a3; }
         .sup-badge.type-feedback { background: #f3eefe; color: #6d28d9; }
         .sup-badge.client { background: #ecfdf5; color: #047857; }
+        .sup-badge.internal { background: #f1f5f9; color: #475569; }
+        .sup-badge.partner { background: var(--gold-muted); color: var(--gold-dark); }
         .sup-pri { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
         .sup-pri::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
         .sup-pri.low { background: #f1f5f9; color: #64748b; }
@@ -820,7 +859,7 @@
            The server is the wall (partnerMayCall() in partners.php); this just trims the interface:
            other sections, export/import, the deal-owner/source controls, and ClickUp. */
         body.is-partner .nav-section-title,
-        body.is-partner .nav-item:not([data-page="command-center"]):not([data-page="leads"]):not([data-page="cost-proposals"]):not([data-page="sow"]):not([data-page="saved-documents"]):not([data-page="job-registry"]):not([data-page="tasks"]),
+        body.is-partner .nav-item:not([data-page="command-center"]):not([data-page="leads"]):not([data-page="cost-proposals"]):not([data-page="sow"]):not([data-page="saved-documents"]):not([data-page="job-registry"]):not([data-page="tasks"]):not([data-page="support"]),
         body.is-partner #ai-fab,
         body.is-partner .partner-hide,
         body.is-partner #page-leads .top-bar button[onclick*="export"], body.is-partner #page-leads .top-bar button[onclick*="Export"],
@@ -2030,7 +2069,7 @@
 
             <!-- Workbench Page -->
             <section class="page-section" id="page-leads">
-                <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1 id="leads-page-title">Pipeline</h1><p>Every open opportunity, its value and where it stands</p></div><div class="btn-group"><button class="btn btn-sm btn-secondary" id="bulk-delete-btn" style="display:none;" onclick="bulkDelete()">Delete</button><button class="btn btn-sm btn-secondary" id="export-selected-btn" style="display:none;" onclick="exportSelected()">Export Selected</button><button class="btn btn-sm btn-secondary" onclick="exportAll()">Export All</button><button class="btn btn-sm btn-secondary" onclick="exportCSV()">CSV Export</button><button class="btn btn-sm btn-secondary" id="trash-toggle-btn" onclick="toggleTrash()">Trash</button><button class="btn btn-sm btn-secondary" onclick="showPage('import')">Import</button><button class="btn btn-sm btn-primary" onclick="showPage('add-lead')">+ Add Lead</button></div></div></div>
+                <div class="top-bar"><div class="top-bar-content"><div class="page-title"><h1 id="leads-page-title">Pipeline</h1><p>Every open opportunity, its value and where it stands</p></div><div class="btn-group"><button class="btn btn-sm btn-secondary" id="bulk-delete-btn" style="display:none;" onclick="bulkDelete()">Delete</button><button class="btn btn-sm btn-secondary" id="export-selected-btn" style="display:none;" onclick="exportSelected()">Export Selected</button><button class="btn btn-sm btn-secondary" onclick="exportAll()">Export All</button><button class="btn btn-sm btn-secondary" onclick="exportCSV()">CSV Export</button><button class="btn btn-sm btn-secondary" id="trash-toggle-btn" onclick="toggleTrash()">Trash</button><button class="btn btn-sm btn-secondary" onclick="showPage('import')">Import</button><div class="split-btn" id="add-split"><button class="btn btn-sm btn-primary" onclick="showPage('add-lead')">+ Add Lead</button><button type="button" class="btn btn-sm btn-primary split-btn-caret partner-hide" onclick="toggleAddMenu(event)" aria-label="More ways to add" title="More ways to add"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button><div class="split-menu" id="add-menu"><button type="button" onclick="closeAddMenu();showPage('add-lead')"><b>New lead</b><span>A new contact, starting at the beginning of the pipeline</span></button><button type="button" onclick="closeAddMenu();openAddDeal()"><b>Start at a stage</b><span>A warm lead or repeat client: skip the early stages</span></button></div></div></div></div></div>
                 <div class="page-content">
                     <div class="pipeline-strip" id="pipeline-stage-strip"></div>
                     <div class="pipeline-lkr-total" id="pipeline-lkr-total"></div>
@@ -2801,9 +2840,15 @@
                             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                                 <strong id="sup-list-title">Tickets</strong>
                                 <!-- Admin only: switch between own tickets and the whole company queue. -->
-                                <select class="form-select" id="sup-scope" style="display:none;width:auto;font-size:12px;padding:4px 8px;" onchange="loadSupport()">
+                                <select class="form-select" id="sup-scope" style="display:none;width:auto;font-size:12px;padding:4px 8px;" onchange="window._supScopeTouched=true;loadSupport()">
                                     <option value="mine">My tickets</option>
                                     <option value="all">All tickets</option>
+                                </select>
+                                <!-- Admin, hub with internal tickets on: raised here vs forwarded from a connected system. -->
+                                <select class="form-select" id="sup-source-filter" style="display:none;width:auto;font-size:12px;padding:4px 8px;" onchange="loadSupport()">
+                                    <option value="">All sources</option>
+                                    <option value="internal">Raised here (team &amp; partners)</option>
+                                    <option value="client">Client systems</option>
                                 </select>
                                 <!-- Admin only: filter the queue by originating client. -->
                                 <select class="form-select" id="sup-client-filter" style="display:none;width:auto;font-size:12px;padding:4px 8px;" onchange="supRenderList()">
@@ -3010,6 +3055,8 @@ Phone: +1 234 567 890"></textarea></div>
                                 <div class="form-group"><label class="form-label">This Client's Name <span style="font-weight:400;color:#888;">(tag shown at the hub)</span></label><input type="text" class="form-input" id="admin-ticket-client-name" placeholder="e.g. Macktiles"></div>
                                 <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin:14px 0 6px;">This system receives tickets (hub)</div>
                                 <div class="form-group"><label class="form-label">Ingest Secret <span style="font-weight:400;color:#888;">(set to accept forwarded tickets; blank = off)</span></label><input type="password" class="form-input" id="admin-ticket-ingest-secret" placeholder="shared secret"></div>
+                                <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin:14px 0 6px;">Tickets raised inside this system</div>
+                                <div class="form-group"><label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;cursor:pointer;"><input type="checkbox" id="admin-ticket-internal" style="margin-top:3px;"><span>Staff and channel partners can raise tickets here, handled under the same closing SOP (owner, Developer fix, checklist).<br><span style="font-weight:400;color:#888;font-size:12px;">On by default for a hub, off for a client system.</span></span></label></div>
                                 <button type="submit" class="btn btn-primary btn-sm">Save Sync Settings</button>
                             </form>
                         </div>
@@ -3340,6 +3387,43 @@ Phone: +1 234 567 890"></textarea></div>
             <div class="form-group"><label class="form-label">Notes</label><textarea class="form-textarea" id="client-notes" rows="3" placeholder="Anything the team should know about this client..."></textarea></div>
             <p class="form-hint" id="client-rename-note" style="display:none;">Renaming updates the client name shown on all linked jobs, documents and tasks.</p>
             <button type="submit" class="btn btn-primary" id="client-save-btn">Save client</button>
+        </form>
+    </div></div></div>
+    <!-- Add Deal: start a deal at a chosen stage for a warm contact / repeat client -->
+    <div class="modal-overlay" id="add-deal-modal"><div class="modal" style="max-width:720px;"><div class="modal-header"><h3 class="modal-title">Add deal</h3><button class="modal-close" onclick="closeModal('add-deal-modal')">&times;</button></div><div class="modal-body">
+        <form id="add-deal-form" autocomplete="off" onsubmit="adSubmit(event)">
+            <div class="ad-step"><span class="ad-step-num">1</span>Who is this for?</div>
+            <div id="ad-picked" style="display:none;"></div>
+            <div id="ad-search-wrap">
+                <input type="text" class="form-input" id="ad-search" placeholder="Search a client, a contact, or someone already in the pipeline..." oninput="adSearchSoon()">
+                <div class="ad-results" id="ad-results" style="display:none;"></div>
+                <button type="button" class="ad-link" onclick="adUseNew()">+ Someone new (type their details)</button>
+            </div>
+            <div id="ad-fields" style="display:none;margin-top:12px;">
+                <div id="ad-contact-wrap" class="form-group" style="display:none;"><label class="form-label">Contact person</label><select class="form-select" id="ad-contact" onchange="adPickContact(this.value)"></select></div>
+                <div class="form-row"><div class="form-group"><label class="form-label">First name</label><input type="text" class="form-input" id="ad-first"></div><div class="form-group"><label class="form-label">Last name</label><input type="text" class="form-input" id="ad-last"></div></div>
+                <div class="form-row"><div class="form-group"><label class="form-label">Email</label><input type="email" class="form-input" id="ad-email"></div><div class="form-group"><label class="form-label">Phone</label><input type="text" class="form-input" id="ad-phone" placeholder="+94 77 123 4567"></div></div>
+                <div class="form-row"><div class="form-group"><label class="form-label">Company</label><input type="text" class="form-input" id="ad-company"></div><div class="form-group"><label class="form-label">Title</label><input type="text" class="form-input" id="ad-title"></div></div>
+            </div>
+
+            <div id="ad-rest" style="display:none;">
+                <div class="ad-step"><span class="ad-step-num">2</span>Start at</div>
+                <div class="ad-stages" id="ad-stages"></div>
+                <p class="ad-note" id="ad-skips"></p>
+                <div id="ad-why" style="display:none;margin-top:12px;">
+                    <div class="form-row"><div class="form-group"><label class="form-label">Why it skips ahead</label><select class="form-select" id="ad-entry-type"></select></div><div class="form-group"><label class="form-label" id="ad-note-label">Note (optional)</label><input type="text" class="form-input" id="ad-entry-note" placeholder="e.g. wants a rebrand after the website"></div></div>
+                </div>
+
+                <div id="ad-details-wrap" style="display:none;">
+                    <div class="ad-step"><span class="ad-step-num">3</span><span id="ad-details-title">What is it for?</span></div>
+                    <div class="ad-pills" id="ad-pills"></div>
+                    <div id="ad-svc-rows"></div>
+                    <div class="form-row" id="ad-cur-row" style="display:none;"><div class="form-group"><label class="form-label">Currency</label><select class="form-select" id="ad-currency"></select></div><div class="form-group" id="ad-total"></div></div>
+                    <div class="form-group" id="ad-meeting-wrap" style="display:none;"><label class="form-label">Meeting link (optional)</label><input type="url" class="form-input" id="ad-meeting" placeholder="https://..."></div>
+                </div>
+                <div class="form-row partner-hide" style="margin-top:6px;"><div class="form-group"><label class="form-label">Owner</label><select class="form-select" id="ad-owner"></select></div><div class="form-group"><label class="form-label">Channel partner</label><select class="form-select" id="ad-partner"><option value="">Direct (no source)</option></select></div></div>
+                <div style="display:flex;gap:8px;margin-top:6px;"><button type="submit" class="btn btn-primary" id="ad-submit">Add deal</button><button type="button" class="btn btn-secondary" onclick="closeModal('add-deal-modal')">Cancel</button></div>
+            </div>
         </form>
     </div></div></div>
     <div class="modal-overlay" id="job-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title" id="job-modal-title">New Job</h3><button class="modal-close" onclick="closeModal('job-modal')">&times;</button></div><div class="modal-body">
@@ -8695,6 +8779,228 @@ document.getElementById('win-deal-form')?.addEventListener('submit',async e=>{
     loadLeads();loadStats();
     toast(`Deal won, registered as ${(r.job_nos||[r.job_no]).join(', ')}`,'success');
 });
+// Add Lead split button: the caret menu offers "Start at a stage" (Add Deal) alongside the plain Add Lead.
+function toggleAddMenu(e){e.stopPropagation();document.getElementById('add-menu').classList.toggle('open')}
+function closeAddMenu(){document.getElementById('add-menu')?.classList.remove('open')}
+document.addEventListener('click',e=>{if(!e.target.closest('#add-split'))closeAddMenu()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeAddMenu()});
+// ===================== Add Deal: start a deal at any stage =====================
+// For a warm contact or a repeat client, who shouldn't be walked through Lead, Qualified and Demo
+// again. Search an existing client / contact / earlier deal (or type someone new), pick the stage it
+// is really at, and give that stage what its panel needs (services, and a value per service from
+// Cost Proposal on). The server (add-deal) records the skip on the deal; Won is never an entry
+// point, it goes through Mark Won so a client and job get created.
+const AD_STAGES=[
+    {id:'lead',label:'Lead',hint:'A new contact. Qualify them from the deal as usual.'},
+    {id:'qualified',label:'Qualified',hint:'You already know they fit. On to preparing the demo.',needs:'services'},
+    {id:'demo',label:'Demo/Discussion',hint:'The meeting is set or done. Gather requirements.',needs:'services'},
+    {id:'cost_proposal',label:'Cost Proposal',hint:'Scope is clear. Agree the price.',needs:'services and a value for each'},
+    {id:'sow',label:'SOW',hint:'Price agreed. Get the statement of work signed.',needs:'services and the agreed value for each'},
+];
+const AD_ENTRY_TYPES=[['warm_lead','Warm lead (already spoken)'],['repeat_client','Repeat client'],['referral','Referral'],['other','Other']];
+const AD_FIXED_SERVICES=['Website Development','Sales Intelligence System'];
+let ad={};
+function adReset(){ad={client:null,clientId:'',contactId:'',srcLead:'',stage:'lead',touched:false,picked:false,svcs:[],results:null,seq:0,timer:null};}
+adReset();
+function adStageLabel(id){return (AD_STAGES.find(x=>x.id===id)||{}).label||id}
+async function openAddDeal(opts){
+    opts=opts||{};
+    adReset();
+    document.getElementById('add-deal-form').reset();
+    document.getElementById('ad-picked').style.display='none';
+    document.getElementById('ad-search-wrap').style.display='block';
+    document.getElementById('ad-results').style.display='none';
+    document.getElementById('ad-fields').style.display='none';
+    document.getElementById('ad-rest').style.display='none';
+    document.getElementById('ad-currency').innerHTML=currencyOptions(DEFAULT_CURRENCY);
+    openModal('add-deal-modal');
+    // Owner and channel partner, same pickers the Add Lead form uses.
+    getTeamMembers().then(m=>{document.getElementById('ad-owner').innerHTML=m.map(x=>`<option value="${x.id}"${user&&x.id===user.id?' selected':''}>${esc(x.name)}</option>`).join('')});
+    ensurePartnersLoaded().then(()=>{document.getElementById('ad-partner').innerHTML='<option value="">Direct (no source)</option>'+partners.filter(p=>p.status!=='archived').map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')});
+    if(opts.clientId){
+        const r=await api('clients');
+        const c=(r.clients||[]).find(x=>x.id===opts.clientId);
+        if(c){adPickClient({id:c.id,client_no:c.client_no,name:c.name,website:c.website,contacts:c.contacts||[],jobs:(c.rollup&&c.rollup.jobs)||0,open_deals:[]});return}
+    }
+    document.getElementById('ad-search').focus();
+}
+function adSearchSoon(){
+    clearTimeout(ad.timer);
+    const q=document.getElementById('ad-search').value.trim();
+    const box=document.getElementById('ad-results');
+    if(q.length<2){box.style.display='none';return}
+    ad.timer=setTimeout(async()=>{
+        const my=++ad.seq;
+        const r=await api('deal-contact-search&q='+encodeURIComponent(q));
+        if(my!==ad.seq||!r.success)return;
+        ad.results=r;
+        let html='';
+        if((r.clients||[]).length){
+            html+='<div class="ad-group">Clients</div>';
+            r.clients.forEach((c,i)=>{
+                const warn=(c.open_deals||[]).length?`<span class="ad-warn">${c.open_deals.length} open deal${c.open_deals.length>1?'s':''} (${esc(c.open_deals.map(d=>d.stage_label).join(', '))})</span>`:'';
+                html+=`<div class="ad-row" onclick="adPickClientIdx(${i},'')"><span><b>${esc(c.name)}</b> <small>${esc(c.client_no)} · ${c.jobs} job${c.jobs===1?'':'s'}</small></span>${warn}</div>`;
+                (c.contacts||[]).forEach(ct=>{html+=`<div class="ad-row sub" onclick="adPickClientIdx(${i},'${esc(ct.id)}')"><span>${esc(ct.name||ct.email||'Contact')} <small>${esc(ct.email||'')}</small></span></div>`});
+            });
+        }
+        if((r.deals||[]).length){
+            html+='<div class="ad-group">Already in the pipeline</div>';
+            r.deals.forEach((d,i)=>{html+=`<div class="ad-row" onclick="adPickDealIdx(${i})"><span><b>${esc((d.first_name+' '+d.last_name).trim()||d.company)}</b> <small>${esc(d.company)}</small></span><small>${esc(d.stage_label)}</small></div>`});
+        }
+        box.innerHTML=html||'<div class="ad-row" style="cursor:default;color:var(--text-muted);">No match. Use "Someone new" below to type their details.</div>';
+        box.style.display='block';
+    },250);
+}
+function adPickClientIdx(i,contactId){adPickClient(ad.results.clients[i],contactId)}
+function adPickDealIdx(i){adPickDeal(ad.results.deals[i])}
+function adFill(f){
+    document.getElementById('ad-first').value=f.first||'';document.getElementById('ad-last').value=f.last||'';
+    document.getElementById('ad-email').value=f.email||'';document.getElementById('ad-phone').value=f.phone||'';
+    document.getElementById('ad-company').value=f.company||'';document.getElementById('ad-title').value=f.title||'';
+}
+function adChip(html){
+    const el=document.getElementById('ad-picked');
+    el.innerHTML=`<div class="ad-chip"><span>${html}</span><button type="button" title="Choose someone else" onclick="adClear()">&times;</button></div>`;
+    el.style.display='block';
+    document.getElementById('ad-search-wrap').style.display='none';
+    document.getElementById('ad-fields').style.display='block';
+}
+function adPickClient(c,contactId){
+    ad.client=c;ad.clientId=c.id;ad.srcLead='';ad.picked=true;
+    const contacts=c.contacts||[];
+    const ct=contacts.find(x=>x.id===contactId)||contacts[0]||{};
+    ad.contactId=ct.id||'';
+    const parts=(ct.name||'').trim().split(/\s+/);
+    adFill({first:parts[0]||'',last:parts.slice(1).join(' '),email:ct.email,phone:ct.phone,company:c.name});
+    const wrap=document.getElementById('ad-contact-wrap'),sel=document.getElementById('ad-contact');
+    wrap.style.display=contacts.length>1?'block':'none';
+    sel.innerHTML=contacts.map(x=>`<option value="${esc(x.id)}"${x.id===ad.contactId?' selected':''}>${esc(x.name||x.email||'Contact')}</option>`).join('');
+    const open=(c.open_deals||[]);
+    adChip(`<b>Repeat client</b> · ${esc(c.name)} <small style="color:var(--text-muted);">${esc(c.client_no||'')}${c.jobs?` · ${c.jobs} job${c.jobs===1?'':'s'}`:''}</small>${open.length?`<div class="ad-warn" style="white-space:normal;margin-top:3px;">Already has ${open.length} open deal${open.length>1?'s':''} (${esc(open.map(d=>d.stage_label).join(', '))}). Fine if this is a separate piece of work.</div>`:''}`);
+    adAfterPick('repeat_client','cost_proposal');
+}
+function adPickContact(id){
+    const ct=((ad.client&&ad.client.contacts)||[]).find(x=>x.id===id);if(!ct)return;
+    ad.contactId=id;const parts=(ct.name||'').trim().split(/\s+/);
+    document.getElementById('ad-first').value=parts[0]||'';document.getElementById('ad-last').value=parts.slice(1).join(' ');
+    document.getElementById('ad-email').value=ct.email||'';document.getElementById('ad-phone').value=ct.phone||'';
+}
+function adPickDeal(d){
+    ad.client=null;ad.clientId=d.client_id||'';ad.contactId='';ad.srcLead=d.lead_id;ad.picked=true;
+    document.getElementById('ad-contact-wrap').style.display='none';
+    adFill({first:d.first_name,last:d.last_name,email:d.email,phone:d.phone,company:d.company,title:d.title});
+    adChip(`<b>Known contact</b> · ${esc((d.first_name+' '+d.last_name).trim()||d.company)} <small style="color:var(--text-muted);">${esc(d.company)} · earlier deal at ${esc(d.stage_label)}</small>`);
+    adAfterPick('warm_lead','qualified');
+}
+function adUseNew(){
+    ad.client=null;ad.clientId='';ad.contactId='';ad.srcLead='';ad.picked=true;
+    document.getElementById('ad-contact-wrap').style.display='none';
+    adFill({});
+    document.getElementById('ad-picked').style.display='none';
+    document.getElementById('ad-search-wrap').style.display='none';
+    document.getElementById('ad-results').style.display='none';
+    document.getElementById('ad-fields').style.display='block';
+    adAfterPick('warm_lead','lead');
+    document.getElementById('ad-first').focus();
+}
+function adClear(){
+    adReset();
+    document.getElementById('ad-picked').style.display='none';
+    document.getElementById('ad-fields').style.display='none';
+    document.getElementById('ad-rest').style.display='none';
+    document.getElementById('ad-search-wrap').style.display='block';
+    document.getElementById('ad-search').value='';
+    document.getElementById('ad-search').focus();
+}
+// A repeat client usually needs a proposal, a known contact usually needs the demo prepared; until
+// the person picks a stage themselves, start from what is most likely.
+function adAfterPick(entryType,stage){
+    if(!ad.touched)ad.stage=stage;
+    document.getElementById('ad-entry-type').innerHTML=AD_ENTRY_TYPES.map(([v,l])=>`<option value="${v}"${v===entryType?' selected':''}>${l}</option>`).join('');
+    document.getElementById('ad-entry-type').onchange=adNoteLabel;
+    document.getElementById('ad-rest').style.display='block';
+    adRender();
+}
+function adNoteLabel(){
+    const other=document.getElementById('ad-entry-type').value==='other';
+    document.getElementById('ad-note-label').textContent=other?'Note (required)':'Note (optional)';
+}
+function adPickStage(id){ad.stage=id;ad.touched=true;adRender()}
+function adRender(){
+    const st=ad.stage,idx=AD_STAGES.findIndex(x=>x.id===st);
+    document.getElementById('ad-stages').innerHTML=AD_STAGES.map(x=>`<button type="button" class="ad-stage${x.id===st?' is-on':''}" onclick="adPickStage('${x.id}')"><b>${x.label}</b><span>${x.hint}</span></button>`).join('');
+    const direct=st!=='lead',cur=AD_STAGES[idx];
+    document.getElementById('ad-skips').innerHTML=direct
+        ?`<strong>Skips:</strong> ${AD_STAGES.slice(0,idx).map(x=>x.label).join(', ')}. This is recorded on the deal with the reason below. ${cur.needs?`This stage needs <strong>${cur.needs}</strong>.`:''}`
+        :'Nothing skipped. You will qualify them from the deal as usual.';
+    document.getElementById('ad-why').style.display=direct?'block':'none';
+    adNoteLabel();
+    document.getElementById('ad-details-wrap').style.display=direct?'block':'none';
+    document.getElementById('ad-meeting-wrap').style.display=st==='demo'?'block':'none';
+    document.getElementById('ad-details-title').textContent=({qualified:'Services they want',demo:'Services to discuss',cost_proposal:'Services and their value',sow:'Services and the agreed value'})[st]||'What is it for?';
+    document.getElementById('ad-submit').textContent=direct?`Add deal at ${adStageLabel(st)}`:'Add deal';
+    if(direct)adRenderServices();
+}
+function adRenderServices(){
+    const on=n=>ad.svcs.some(s=>s.type==='fixed'&&s.name===n);
+    const customOpts=CUSTOM_SERVICE_NEED_OPTIONS.filter(n=>n!=='Website Development');
+    document.getElementById('ad-pills').innerHTML=AD_FIXED_SERVICES.map(n=>`<button type="button" class="ad-pill${on(n)?' is-on':''}" onclick="adToggleFixed(this.dataset.n)" data-n="${esc(n)}">${esc(n)}</button>`).join('')
+        +`<select class="form-select" style="width:auto;font-size:12.5px;padding:5px 10px;" onchange="adAddCustom(this)"><option value="">+ Another service...</option>${customOpts.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select>`;
+    const needsValue=ad.stage==='cost_proposal'||ad.stage==='sow';
+    document.getElementById('ad-svc-rows').innerHTML=ad.svcs.map((s,i)=>`<div class="ad-svc-row"><span>${esc(s.type==='custom'?s.need:s.name)}</span><input type="text" class="form-input" inputmode="decimal" placeholder="${needsValue?(ad.stage==='sow'?'Agreed value':'Value'):'Value (optional)'}" value="${esc(s.amount||'')}" oninput="ad.svcs[${i}].amount=this.value;adTotal()"><button type="button" title="Remove" onclick="adRemoveSvc(${i})">&times;</button></div>`).join('')
+        ||`<div class="ad-note" style="margin:0 0 8px;">Pick at least one service.</div>`;
+    document.getElementById('ad-cur-row').style.display=ad.svcs.length?'':'none';
+    adTotal();
+}
+function adToggleFixed(name){
+    const i=ad.svcs.findIndex(s=>s.type==='fixed'&&s.name===name);
+    if(i>-1)ad.svcs.splice(i,1);else ad.svcs.push({type:'fixed',name,amount:''});
+    adRenderServices();
+}
+function adAddCustom(sel){
+    if(!sel.value)return;
+    ad.svcs.push({type:'custom',need:sel.value,amount:''});
+    adRenderServices();
+}
+function adRemoveSvc(i){ad.svcs.splice(i,1);adRenderServices()}
+function adTotal(){
+    const total=ad.svcs.reduce((a,s)=>a+(parseFloat(String(s.amount||'').replace(/[^0-9.\-]/g,''))||0),0);
+    const el=document.getElementById('ad-total');
+    el.innerHTML=total>0?`<label class="form-label">Deal value</label><div style="font-weight:700;padding:8px 0;">${dealMoneyFmt(total,document.getElementById('ad-currency').value)}</div>`:'';
+}
+document.getElementById('ad-currency')?.addEventListener('change',adTotal);
+async function adSubmit(e){
+    e.preventDefault();
+    if(!ad.picked)return;
+    const st=ad.stage,direct=st!=='lead';
+    const first=document.getElementById('ad-first').value.trim(),company=document.getElementById('ad-company').value.trim();
+    if(!first&&!company)return toast('Add a contact name or a company','warning');
+    const entryType=document.getElementById('ad-entry-type').value,note=document.getElementById('ad-entry-note').value.trim();
+    if(direct){
+        if(entryType==='other'&&!note)return toast(`Add a short note explaining why this starts at ${adStageLabel(st)}`,'warning');
+        if(!ad.svcs.length)return toast('Pick at least one service','warning');
+        if(st==='cost_proposal'||st==='sow'){
+            const bad=ad.svcs.find(s=>!(parseFloat(String(s.amount||'').replace(/[^0-9.\-]/g,''))>0));
+            if(bad)return toast(`Enter the ${st==='sow'?'agreed ':''}value for ${bad.type==='custom'?bad.need:bad.name}`,'warning');
+        }
+    }
+    const btn=document.getElementById('ad-submit');btn.disabled=true;
+    const r=await api('add-deal','POST',{
+        stage:st,client_id:ad.clientId||'',contact_id:ad.contactId||'',source_lead_id:ad.srcLead||'',
+        first_name:first,last_name:document.getElementById('ad-last').value.trim(),email:document.getElementById('ad-email').value.trim(),
+        phone:document.getElementById('ad-phone').value.trim(),company,title:document.getElementById('ad-title').value.trim(),
+        entry_type:direct?entryType:'',entry_note:direct?note:'',
+        services:direct?ad.svcs.map(s=>s.type==='custom'?{type:'custom',need:s.need,amount:s.amount}:{type:'fixed',name:s.name,amount:s.amount}):[],
+        currency:document.getElementById('ad-currency').value,meeting_link:st==='demo'?document.getElementById('ad-meeting').value.trim():'',
+        owner_id:document.getElementById('ad-owner').value,partner_id:document.getElementById('ad-partner').value,
+    });
+    btn.disabled=false;
+    if(!r.success)return toast(r.error||'Could not add the deal','error');
+    closeModal('add-deal-modal');
+    toast(`Deal added at ${adStageLabel(st)}`,'success');
+    await loadLeads(1);loadStats();
+    openLead(r.lead.id);
+}
 async function researchLead(){const btn=document.getElementById('research-btn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span> Researching...';const r=await api('enrich-lead','POST',{lead:currentLead});if(r.success){currentLead=r.lead;renderLeadModal();loadLeads();refreshDashboard();toast('Research complete!','success')}else toast(r.error||'Failed','error');btn.disabled=false;btn.textContent='Research Lead'}
 
 async function recalculateGrade(){
@@ -9064,6 +9370,8 @@ async function loadAdminSettings(){
         document.getElementById('admin-ticket-hub-secret').value=r.settings.ticket_hub_secret||'';
         document.getElementById('admin-ticket-client-name').value=r.settings.ticket_client_name||'';
         document.getElementById('admin-ticket-ingest-secret').value=r.settings.ticket_ingest_secret||'';
+        window._ticketInternalLoaded=!!r.settings.ticket_internal_effective;
+        document.getElementById('admin-ticket-internal').checked=window._ticketInternalLoaded;
         document.getElementById('admin-provider').value=r.settings.default_provider||'groq';
         document.getElementById('admin-groq-model').value=r.settings.groq_model||'';
         document.getElementById('admin-cerebras-model').value=r.settings.cerebras_model||'';
@@ -10565,6 +10873,8 @@ function jrToggleJobType(){
 }
 ['job-value','job-months'].forEach(id=>document.getElementById(id)?.addEventListener('input',jrUpdateRetainerCalc));
 document.getElementById('job-currency')?.addEventListener('change',jrUpdateRetainerCalc);
+// The select's inline onchange needs it on window (this code lives in a closure); without it every change threw a ReferenceError.
+window.jrToggleJobType=jrToggleJobType;
 // Bind the toggle directly (belt-and-suspenders, in case the inline onchange is lost).
 (function(){const sel=document.getElementById('job-type');if(sel)sel.addEventListener('change',jrToggleJobType);})();
 window.jrOpenJobModal=function(prefill){
@@ -10766,13 +11076,17 @@ window.jrDeleteInvoice=async function(jobId,invId){
 };
 
 // ===================== Help & Support (feedback + support tickets) =====================
-let _supTickets=[],_supIsAdmin=false,_supHubMode=false,_supShowClosed=false;
+let _supTickets=[],_supIsAdmin=false,_supHubMode=false,_supInternal=false,_supShowClosed=false,_supReqSeq=0;
+// Shared with the scope select's inline onchange (which runs in the global scope), so it lives on window.
+window._supScopeTouched=false;
 let _supUsers=[],_supUsersLoaded=false;
 // "Closing a client support ticket" SOP: governs tickets tagged with a
 // client/brand (Macktiles, Topway, M&M, ...) — only ever forwarded in from a
-// spoke deployment. Feedback and un-tagged internal tickets aren't
-// SOP-governed; must mirror ticketNeedsClosingChecklist() in support.php.
-function supIsSopGoverned(t){return !!(t.client&&t.type==='support');}
+// spoke deployment. Where internal tickets are on (see ticketsInternalEnabled()
+// in support.php) a support ticket raised inside this system by staff or a
+// channel partner is governed too. Feedback never is; must mirror
+// ticketNeedsClosingChecklist() in support.php.
+function supIsSopGoverned(t){return t.type==='support'&&(!!t.client||(_supInternal&&t.source!=='client'));}
 // Mirrors ticketCanChangeStatus() in support.php, for disabling controls
 // client-side (the backend enforces this regardless).
 function supCanChangeStatus(t){
@@ -10803,22 +11117,34 @@ window.loadSupport=async function(quiet){
     const list=document.getElementById('sup-ticket-list');
     if(!quiet)list.innerHTML='<div style="color:var(--text-muted);font-size:13px;padding:8px 0;">Loading...</div>';
     const scope=document.getElementById('sup-scope')?.value||'mine';
-    const r=await api('tickets'+(scope==='all'?'&scope=all':'')+(_supShowClosed?'&view_closed=1':''));
+    const source=document.getElementById('sup-source-filter')?.value||'';
+    // The scope is only sent once the admin has picked one; until then the server chooses its own default
+    // (the whole queue on a hub that also raises its own tickets, "mine" elsewhere).
+    const mySeq=++_supReqSeq;
+    const r=await api('tickets'+(window._supScopeTouched?'&scope='+scope:'')+(source?'&source='+source:'')+(_supShowClosed?'&view_closed=1':''));
+    if(mySeq!==_supReqSeq)return; // a newer request (filter changed meanwhile) supersedes this one
     if(!r.success){if(!quiet)list.innerHTML='<div style="color:var(--text-muted);font-size:13px;">Could not load tickets.</div>';return;}
     _supTickets=r.tickets||[];
     _supIsAdmin=!!r.is_admin;
     _supHubMode=!!r.hub_mode;
+    _supInternal=!!r.internal_enabled;
     if(typeof pusherSubscribeAllTickets==='function')pusherSubscribeAllTickets(_supTickets.map(t=>t.id));
     // Hub mode: this system is a central client-ticket inbox — we don't file
     // our own tickets here, only manage ones forwarded in from client (spoke)
     // deployments. Client tickets only ever arrive that way (no manual
     // tagging path), so "+ New Ticket" has nothing useful to do in hub mode.
-    document.getElementById('sup-new-ticket-btn').style.display=_supHubMode?'none':'';
-    document.getElementById('sup-scope').style.display=(_supIsAdmin&&!_supHubMode)?'':'none';
+    // A pure hub has nothing to file; a hub with internal tickets on (Levata) does, so the button stays.
+    document.getElementById('sup-new-ticket-btn').style.display=(_supHubMode&&!_supInternal)?'none':'';
+    const scopeSel=document.getElementById('sup-scope');
+    scopeSel.style.display=(_supIsAdmin&&(!_supHubMode||_supInternal))?'':'none';
+    if(!window._supScopeTouched&&r.scope)scopeSel.value=r.scope;
+    document.getElementById('sup-source-filter').style.display=(_supIsAdmin&&_supHubMode&&_supInternal)?'':'none';
     if(_supIsAdmin&&!_supUsersLoaded){_supUsersLoaded=true;api('users').then(ur=>{if(ur.success){_supUsers=ur.users||[];supRenderList();}});}
     // Update the page subtitle to reflect the mode.
     const sub=document.getElementById('sup-subtitle');
-    if(sub)sub.textContent=_supHubMode?'Client support tickets forwarded from connected systems. Reply to respond directly in their app.':'Raise a support request or send feedback. Track its status and replies here.';
+    if(sub)sub.textContent=(_supHubMode&&_supIsAdmin)
+        ?(_supInternal?'Tickets raised by the team and channel partners, plus client tickets forwarded from connected systems.':'Client support tickets forwarded from connected systems. Reply to respond directly in their app.')
+        :'Raise a support request or send feedback. Track its status and replies here.';
     supRenderSummary(r.summary||{});
     supPopulateClientFilter();
     // Signature of the data, so a quiet poll only repaints on real change.
@@ -10883,7 +11209,7 @@ window.supRenderList=function(){
     const clientFilter=document.getElementById('sup-client-filter')?.value||'';
     if(clientFilter)tickets=tickets.filter(t=>t.client===clientFilter);
     if(!tickets.length){
-        const hint=_supShowClosed?'Tickets marked Closed will appear here.':(_supHubMode?'Client tickets forwarded from connected systems will appear here.':'Click <strong>+ New Ticket</strong> to raise a support request or send feedback.');
+        const hint=_supShowClosed?'Tickets marked Closed will appear here.':((_supHubMode&&!_supInternal)?'Client tickets forwarded from connected systems will appear here.':'Click <strong>+ New Ticket</strong> to raise a support request or send feedback.');
         const heading=_supShowClosed?'No closed tickets':'No tickets yet';
         list.innerHTML='<div style="text-align:center;padding:40px 16px;color:var(--text-muted);"><div style="font-size:36px;margin-bottom:10px;">💬</div><div style="font-size:15px;font-weight:600;color:#333;margin-bottom:6px;">'+heading+'</div><p style="max-width:520px;margin:0 auto;line-height:1.6;font-size:13px;">'+hint+'</p></div>';
         return;
@@ -10912,6 +11238,8 @@ function supTicketCard(t){
     // Client tag shown to admins when the ticket was forwarded from a client (spoke)
     // or logged manually on their behalf; also what puts it under the SOP.
     const clientBadge=t.client?`<span class="sup-badge client">${supEsc(t.client)}</span>`:'';
+    // On a hub, say which tickets were raised here (and by a channel partner) so they read apart from client tickets.
+    const originBadge=(!t.client&&_supIsAdmin&&_supHubMode?'<span class="sup-badge internal">Internal</span>':'')+(t.created_by_kind==='partner'?'<span class="sup-badge partner">Channel Partner</span>':'');
     const pri=(t.priority||'normal').toLowerCase();
     const priLabel=pri.charAt(0).toUpperCase()+pri.slice(1);
     const priPill=`<span class="sup-pri ${pri}">${priLabel}</span>`;
@@ -10935,7 +11263,7 @@ function supTicketCard(t){
     return `<div class="sup-card">
         <div class="sup-card-head">
             <div class="sup-card-main">
-                <div class="sup-badges">${typeBadge}${clientBadge}${priPill}</div>
+                <div class="sup-badges">${typeBadge}${clientBadge}${originBadge}${priPill}</div>
                 <div class="sup-subject">${supEsc(t.subject||'(no subject)')}</div>
                 <div class="sup-meta">
                     <span>${supEsc(t.ticket_no||'')}</span><span class="dot"></span>
@@ -10951,7 +11279,7 @@ function supTicketCard(t){
             </div>
         </div>
         <div class="sup-msg">${supEsc(t.message||'')}</div>
-        ${governed?supResolutionPanel(t):''}
+        ${(governed&&_supIsAdmin)?supResolutionPanel(t):''}
         <div class="sup-convo">
             <div class="sup-convo-title">Conversation${replyCount?' · '+replyCount:''}</div>
             ${replies}
@@ -11112,7 +11440,9 @@ window.supSendReply=async function(ticketId){
     // same as any other one-way action in this app.
     const t=_supTickets.find(x=>x.id===ticketId);
     if(t&&supIsSopGoverned(t)){
-        const ok=await customConfirm('This reply will be sent to the client — they\'ll see it in their own ticket thread. Send it?','Send to client',{confirmText:'Send'});
+        const ok=t.client
+            ?await customConfirm('This reply will be sent to the client — they\'ll see it in their own ticket thread. Send it?','Send to client',{confirmText:'Send'})
+            :await customConfirm(`This reply goes to ${t.created_by_name||'the person who raised it'} in their ticket thread. Send it?`,'Send reply',{confirmText:'Send'});
         if(!ok)return;
     }
     // Guard against double-submit: a second click would post the reply twice,
@@ -11517,7 +11847,7 @@ function clTabTasks(){
     }).join('');
 }
 function clTabInvoices(){
-    if(!(_clWs.invoices||[]).length)return '<div style="font-size:13px;color:var(--text-muted);">No invoices for this client yet. Invoices are generated when a job is created.</div>';
+    if(!(_clWs.invoices||[]).length)return '<div style="font-size:13px;color:var(--text-muted);">No invoices for this client yet. Raise them from the Jobs page, against a job for this client (retainers get a monthly invoice created for them automatically).</div>';
     return _clWs.invoices.map(inv=>{
         const paid=inv.status==='paid';
         return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border-light);font-size:13px;flex-wrap:wrap;">
@@ -12805,7 +13135,8 @@ document.getElementById('finance-settings-form')?.addEventListener('submit',asyn
 });
 // Card 4 — Team Chat / Pusher only
 document.getElementById('pusher-settings-form').addEventListener('submit',async e=>{e.preventDefault();const r=await api('admin-settings','POST',{pusher_app_id:document.getElementById('admin-pusher-app-id').value,pusher_key:document.getElementById('admin-pusher-key').value,pusher_secret:document.getElementById('admin-pusher-secret').value,pusher_cluster:document.getElementById('admin-pusher-cluster').value});toast(r.success?'Chat settings saved!':(r.error||'Save failed'),r.success?'success':'error')});
-document.getElementById('ticket-sync-form').addEventListener('submit',async e=>{e.preventDefault();const r=await api('admin-settings','POST',{ticket_hub_url:document.getElementById('admin-ticket-hub-url').value,ticket_hub_secret:document.getElementById('admin-ticket-hub-secret').value,ticket_client_name:document.getElementById('admin-ticket-client-name').value,ticket_ingest_secret:document.getElementById('admin-ticket-ingest-secret').value});toast(r.success?'Sync settings saved!':(r.error||'Save failed'),r.success?'success':'error')});
+window._ticketInternalLoaded=false; // set when the settings load, read when the card is saved (different scopes)
+document.getElementById('ticket-sync-form').addEventListener('submit',async e=>{e.preventDefault();const internalNow=document.getElementById('admin-ticket-internal').checked;const r=await api('admin-settings','POST',{...(internalNow!==window._ticketInternalLoaded?{ticket_internal:internalNow}:{}),ticket_hub_url:document.getElementById('admin-ticket-hub-url').value,ticket_hub_secret:document.getElementById('admin-ticket-hub-secret').value,ticket_client_name:document.getElementById('admin-ticket-client-name').value,ticket_ingest_secret:document.getElementById('admin-ticket-ingest-secret').value});toast(r.success?'Sync settings saved!':(r.error||'Save failed'),r.success?'success':'error')});
 document.querySelectorAll('.provider-card').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.provider-card').forEach(x=>x.classList.remove('selected'));c.classList.add('selected');document.getElementById('admin-provider').value=c.dataset.provider}));
 document.getElementById('add-req-form').addEventListener('submit',async e=>{e.preventDefault();const idx=document.getElementById('edit-req-id').value;const type=document.getElementById('req-type-input').value;const options=type==='text'?[]:document.getElementById('req-options-input').value.split('\n').map(o=>o.trim()).filter(o=>o);if(type!=='text'&&!options.length){toast('Add at least one option','warning');return;}const newReq={id:idx!==''?reqConfig[idx].id:'req_'+Date.now(),title:document.getElementById('req-title-input').value,subtitle:document.getElementById('req-subtitle-input').value,type,options,enabled:true};if(idx!=='')reqConfig[idx]=newReq;else reqConfig.push(newReq);await api('admin-settings','POST',{requisitions:reqConfig});renderReqList();closeModal('add-req-modal');toast('Saved!','success')});
 document.getElementById('create-user-form').addEventListener('submit',async e=>{e.preventDefault();const typedPass=document.getElementById('new-user-pass').value;const _nr=document.getElementById('new-user-role').value;const r=await api('create-user','POST',{name:document.getElementById('new-user-name').value,title:document.getElementById('new-user-title').value,email:document.getElementById('new-user-email').value,password:typedPass,is_admin:_nr==='admin'||_nr==='super_admin',is_super_admin:_nr==='super_admin',is_channel_partner:_nr==='channel_partner'});if(r.success){const box=document.getElementById('new-user-password');box.innerHTML='';box.style.display='none';e.target.reset();loadUsers();closeModal('create-user-modal');toast('User created','success')}else toast(r.error||'Failed','error')});
