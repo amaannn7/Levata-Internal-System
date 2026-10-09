@@ -475,7 +475,7 @@ function processTicketReminders() {
 function notifySupportEmail($ticket, $event = 'new', $reply = null) {
     $admin = getAdmin();
     $to = trim($admin['support_email'] ?? '');
-    $apiKey = trim($admin['resend_key'] ?? '');
+    $apiKey = cleanResendKey($admin['resend_key'] ?? '');
     // Need both a recipient and an API key to send. Otherwise no-op (ticket still saved).
     if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL) || $apiKey === '') return false;
 

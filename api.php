@@ -494,6 +494,17 @@ function leadRequiredFields() {
 function callConfigured() {
     return trim(getAdmin()['krispcall_api_key'] ?? '') !== '';
 }
+/**
+ * The Resend key as Resend wants it. A key pasted from a page, document or terminal often carries invisible
+ * baggage (a trailing line break or space, surrounding quotes, "Bearer ", a zero-width character), and Resend then
+ * answers "API key is invalid". Resend keys are re_ followed by letters, digits, _ and -, so take exactly that.
+ * Anything that doesn't contain such a key is returned trimmed and untouched (existing behaviour preserved).
+ */
+function cleanResendKey($raw) {
+    $raw = (string) $raw;
+    if (preg_match('/re_[A-Za-z0-9_\-]{8,}/', $raw, $m)) return $m[0];
+    return trim($raw);
+}
 /** Whether sales email can be sent (needs the Resend API key, same as support email). */
 function outreachEmailConfigured() {
     return trim(getAdmin()['resend_key'] ?? '') !== '';
@@ -747,7 +758,7 @@ function buildNewLead(array $input, array $user, string $initialStage, string $s
  * is what creates its client + job), and Lost never is.
  */
 function dealEntryStages() { return ['lead', 'qualified', 'demo', 'cost_proposal', 'sow']; }
-function dealFixedServices() { return ['Website Development', 'Sales Intelligence System']; }
+function dealFixedServices() { return ['Rapid Web', 'Website Development', 'Sales Intelligence System']; }
 /** Mirrors CUSTOM_SERVICE_NEED_OPTIONS in index.html: the "need" a Custom Services instance can be named for. */
 function dealCustomNeedOptions() {
     return ['Website Development', 'Sales Intelligence Platform', 'Custom Software / System', 'Automation', 'Integrations / Implementation', 'Branding', 'Design / Creative', 'General Custom Requirement'];
@@ -921,6 +932,7 @@ function leadQualifyChecklistDone($lead) {
     if (!is_array($answers) || empty($answers)) return false;
     $hasAnswer = false;
     foreach ($answers as $v) {
+        if (is_array($v) && !empty($v['default'])) continue;   // an untouched default (Rapid Web's USD 999) is not an answer
         if (is_array($v) ? !empty($v) : (!empty($v) || $v === '0')) { $hasAnswer = true; break; }
     }
     if (!$hasAnswer) return false;
@@ -1145,7 +1157,7 @@ function appBaseUrl() {
 function sendAuthEmail($toEmail, $subject, $text, $html) {
     if (!filter_var($toEmail, FILTER_VALIDATE_EMAIL)) return [false, 'Invalid recipient email'];
     $admin = getAdmin();
-    $resendKey = trim($admin['resend_key'] ?? '');
+    $resendKey = cleanResendKey($admin['resend_key'] ?? '');
     if ($resendKey === '') return [false, 'Email sending is not configured (no Resend API key)'];
     $fromAddr = trim($admin['auth_from'] ?? '') ?: (trim($admin['support_from'] ?? '') ?: 'onboarding@resend.dev');
     $payload = [
@@ -2603,7 +2615,7 @@ case 'send-minutes-email':
         respond(['success' => false, 'error' => 'No PDF data received'], 400);
     }
 
-    $resendKey = trim($admin['resend_key'] ?? '');
+    $resendKey = cleanResendKey($admin['resend_key'] ?? '');
     if ($resendKey === '') {
         respond(['success' => false, 'error' => 'Email sending is not configured (no Resend API key in Settings)'], 400);
     }
@@ -5469,6 +5481,8 @@ case 'admin-settings':
         foreach (['groq_key', 'cerebras_key', 'gemini_key', 'anthropic_key', 'clickup_token', 'resend_key'] as $k) {
             if (isset($input[$k]) && strpos($input[$k], '****') === false) $admin[$k] = trim($input[$k]);
         }
+        // A pasted Resend key is stored clean (no quotes / line breaks / "Bearer ").
+        if (isset($input['resend_key']) && strpos($input['resend_key'], '****') === false) $admin['resend_key'] = cleanResendKey($input['resend_key']);
         // ClickUp workspace/list ids (not secrets, no masking needed).
         foreach (['clickup_workspace_id', 'clickup_list_id'] as $k) {
             if (isset($input[$k])) $admin[$k] = trim($input[$k]);
@@ -7448,12 +7462,24 @@ case 'send-email':
     // Sales outreach has its OWN sender config, independent of Help & Support.
     // From: the verified outreach address ('outreach_from'); Reply-To: the rep's own
     // account email so replies land in their inbox, not a shared mailbox.
-    $resendKey = trim($admin['resend_key'] ?? '');
+    $resendKey = cleanResendKey($admin['resend_key'] ?? '');
     if ($resendKey === '') {
         respond(['success' => false, 'error' => 'Email is not configured yet (no Resend API key in Admin → Settings → Email Sending).'], 400);
     }
+    // Resend keys look like re_xxxxxxxx (letters, digits, _ and -). Anything else saved here (a masked
+    // ******** value, quotes, a "Bearer " prefix, spaces, a pasted line break) is turned down by Resend with the
+    // unhelpful "API key is invalid", so say what is actually wrong with the stored key instead.
+    if (!preg_match('/^re_[A-Za-z0-9_\-]{8,}$/', $resendKey)) {
+        $why = strpos($resendKey, '*') !== false ? 'it is the hidden placeholder, not the real key'
+            : (preg_match('/\s|["\']/', $resendKey) ? 'it contains spaces, quotes or a line break'
+            : (strpos($resendKey, 're_') !== 0 ? 'it does not start with "re_"' : 'it looks truncated'));
+        respond(['success' => false, 'error' => 'The saved Resend API key is not valid (' . $why . '). In Admin → Settings → Email Sending paste the key again exactly as Resend shows it, then Save.'], 400);
+    }
     $settings = $userData['settings'] ?? [];
     $repName = trim($settings['sender_name'] ?? '') ?: trim($user['name'] ?? '') ?: 'Levata';
+    // The name goes into the From header ("Name <address>"): characters that break an address list (< > " , ; line
+    // breaks) make Resend refuse the whole message, so keep only a plain display name.
+    $repName = trim(preg_replace('/\s+/', ' ', preg_replace('/[<>",;@\r\n]+/', ' ', $repName))) ?: 'Levata';
     // For now lead outreach reuses the support sender; set 'outreach_from' later to split them.
     $fromAddr = trim($admin['outreach_from'] ?? '') ?: (trim($admin['support_from'] ?? '') ?: 'onboarding@resend.dev');
     $replyTo = trim($user['email'] ?? '');
@@ -7507,6 +7533,19 @@ case 'send-email':
     if ($sendCode < 200 || $sendCode >= 300) {
         $err = is_array($sendDecoded) && !empty($sendDecoded['message'])
             ? $sendDecoded['message'] : ('Resend returned HTTP ' . $sendCode);
+        // The sender is the usual culprit when 2FA/support mail works but lead mail does not: each uses its own From
+        // address (Auth From / Support From / Outreach From), and Resend only sends from addresses on a verified domain
+        // (onboarding@resend.dev can only deliver to the Resend account owner's own inbox).
+        $sentFrom = $fromAddr;
+        $err .= ' [sent from ' . $sentFrom . ']';
+        if (preg_match('/domain|verify|testing emails|own email|from address|sender/i', $err)) {
+            $err .= '. Set "Outreach From" in Admin → Settings → Email Sending to an address on your verified Resend domain (for example sales@yourdomain.com), then Save.'
+                . (trim($admin['outreach_from'] ?? '') === '' ? ' Outreach From is empty right now, so it fell back to ' . $sentFrom . '.' : '');
+        }
+        if (stripos($err, 'api key') !== false || $sendCode === 401) {
+            // Well-formed, but Resend does not accept it (revoked, deleted, or from a different Resend account).
+            $err .= '. Resend rejected the saved key: check it is still active in your Resend dashboard (and belongs to the account that owns your sending domain). If not, create a new key and paste it in Admin → Settings → Email Sending. Support and sign-in emails use the same key.';
+        }
         respond(['success' => false, 'error' => 'Email not sent: ' . $err], 502);
     }
     $messageId = is_array($sendDecoded) ? ($sendDecoded['id'] ?? null) : null;
@@ -10064,6 +10103,21 @@ function calendlyEmailDefaultTemplate($lead, $calendarLink, $settings) {
     $subject = "Scheduling a demo";
     $signOff = $senderName ?: 'there';
     if ($senderTitle) $signOff .= "\n{$senderTitle}";
+
+    // A deal that is only Rapid Web (the fixed-scope Rapid Build Website) gets its own demo invitation: the demo is
+    // a look at their own website and what could be improved, not a requirements workshop.
+    $dealServices = $lead['services'] ?? [];
+    if (count($dealServices) === 1 && $dealServices[0] === 'Rapid Web') {
+        $subject = "A quick look at your website";
+        $body = "Hi {$firstName},\n\n"
+            . "Thank you for taking the time to speak with me.\n\n"
+            . "As discussed, I'd like to show you what we found on your website and what we could improve to turn more of your visitors into enquiries. The demo takes about 15 minutes, and we will use your own website as the example.\n\n"
+            . "Below is a link to my calendar. Please feel free to choose whichever time is most convenient for you, and the meeting will be booked automatically.\n\n"
+            . "{$calendarLink}\n\n"
+            . "Looking forward to speaking with you.\n\n"
+            . "Best,\n{$signOff}";
+        return ['subject' => $subject, 'body' => $body];
+    }
 
     $body = "Hi {$firstName},\n\n"
         . "Thank you for taking the time to speak with me and for sharing an overview of your requirements.\n\n"

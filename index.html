@@ -197,6 +197,16 @@
         .btn-sm { padding: 7px 12px; font-size: 12.5px; }
         .btn-xs { padding: 5px 10px; font-size: 12px; }
         @keyframes savePulse { 50% { box-shadow: 0 0 0 7px rgba(245,158,11,.10); } }
+        .rw-block { border: 1px solid var(--border-light); border-radius: var(--radius-md); margin-bottom: 8px; background: var(--bg-white); }
+        .rw-block > summary { cursor: pointer; padding: 10px 14px; font-size: 13px; font-weight: 600; color: var(--text-primary); list-style: none; }
+        .rw-block > summary::before { content: '▸'; display: inline-block; width: 14px; color: var(--text-muted); }
+        .rw-block[open] > summary::before { content: '▾'; }
+        .rw-script { padding: 2px 16px 12px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+        .rw-script p { margin: 0 0 8px; }
+        .rw-script ul { margin: 0 0 6px 18px; padding: 0; }
+        .rw-ph { background: var(--accent-soft); color: var(--accent-dark); border-radius: 4px; padding: 0 4px; font-weight: 600; }
+        .rw-qgroup { font-size: 12px; font-weight: 700; color: var(--text-primary); margin: 10px 0 4px; }
+        .rw-note { font-style: italic; color: var(--text-muted); margin-top: 10px; }
         .call-btn, .mail-btn { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; padding: 3px 10px; font-size: 12px; font-weight: 600; border-radius: 999px; border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--accent-dark); cursor: pointer; vertical-align: middle; transition: background .14s; }
         .call-btn:hover, .mail-btn:hover { background: var(--accent-line); }
         .call-btn svg, .mail-btn svg { width: 13px; height: 13px; }
@@ -3259,7 +3269,6 @@ Phone: +1 234 567 890"></textarea></div>
         <div class="form-group"><label class="form-label">To</label><input type="text" class="form-input" id="lead-mail-to" readonly></div>
         <div class="form-group"><label class="form-label">Subject</label><input type="text" class="form-input" id="lead-mail-subject"></div>
         <div class="form-group"><label class="form-label">Message</label><textarea class="form-textarea" id="lead-mail-body" rows="10" placeholder="Write your message..."></textarea></div>
-        <p class="form-hint">Sent through Resend from the outreach address set in Admin &rarr; Settings; replies come to your own email. A copy is kept in this deal's email history.</p>
         <div style="display:flex;justify-content:flex-end;gap:8px;"><button type="button" class="btn btn-secondary" onclick="closeModal('lead-mail-modal')">Cancel</button><button type="button" class="btn btn-primary" id="lead-mail-send" onclick="sendLeadMail()">Send</button></div>
     </div></div></div>
     <div class="modal-overlay" id="req-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title">Client Requisitions</h3><button class="modal-close" onclick="closeModal('req-modal')">&times;</button></div><div class="modal-body" id="req-modal-body"></div></div></div>
@@ -3567,7 +3576,7 @@ Phone: +1 234 567 890"></textarea></div>
     <div class="modal-overlay" id="create-user-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title">Create User</h3><button class="modal-close" onclick="closeModal('create-user-modal')">&times;</button></div><div class="modal-body"><form id="create-user-form"><div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" id="new-user-name" required></div><div class="form-group"><label class="form-label">Title</label><input type="text" class="form-input" id="new-user-title" placeholder="e.g. Sales Manager"></div><div class="form-group"><label class="form-label">Email</label><input type="email" class="form-input" id="new-user-email" required></div><div class="form-group"><label class="form-label">Password</label><input type="text" class="form-input" id="new-user-pass" placeholder="At least 8 characters" minlength="8" required autocomplete="new-password"></div><div class="form-group"><label class="form-label">Role</label><select class="form-select" id="new-user-role"><option value="manager">Manager</option><option value="admin">Admin</option><option value="super_admin" class="super-admin-option">Super Admin</option><option value="channel_partner">Channel Partner</option></select><p class="form-hint" id="new-user-role-hint" style="margin-top:4px;">Managers work in the system day to day. Admins can also manage Users and Settings.</p></div><button type="submit" class="btn btn-primary">Create</button><div id="new-user-password" style="display:none;"></div></form></div></div></div>
     <div class="modal-overlay" id="sources-modal"><div class="modal modal-sm"><div class="modal-header"><h3 class="modal-title">Research Sources</h3><button class="modal-close" onclick="closeModal('sources-modal')">&times;</button></div><div class="modal-body" id="sources-modal-body"></div></div></div>
     <div class="modal-overlay" id="onboarding-modal"><div class="modal" style="max-width:520px;"><div class="modal-header" style="background:var(--navy);color:white;"><h3 class="modal-title" style="color:white;">Welcome to Levata</h3></div><div class="modal-body" id="onboarding-body"></div></div></div>
-    <div class="modal-overlay" id="confirm-modal"><div class="modal" style="max-width:420px;"><div class="modal-header"><h3 class="modal-title" id="confirm-title">Confirm</h3><button class="modal-close" onclick="resolveConfirm(false)">&times;</button></div><div class="modal-body"><p id="confirm-message" style="margin-bottom:12px;"></p><div id="confirm-input-wrap" style="display:none;"><input type="text" class="form-input" id="confirm-input" placeholder=""></div><div id="confirm-select-wrap" style="display:none;"><select class="form-select" id="confirm-select"></select></div></div><div style="display:flex;gap:8px;justify-content:flex-end;padding:0 20px 20px;"><button class="btn btn-secondary" onclick="resolveConfirm(false)">Cancel</button><button class="btn btn-primary" id="confirm-ok-btn" onclick="resolveConfirm(true)">Confirm</button></div></div></div>
+    <div class="modal-overlay" id="confirm-modal"><div class="modal" style="max-width:420px;"><div class="modal-header"><h3 class="modal-title" id="confirm-title">Confirm</h3><button class="modal-close" onclick="resolveConfirm(false)">&times;</button></div><div class="modal-body"><p id="confirm-message" style="margin-bottom:12px;"></p><div id="confirm-input-wrap" style="display:none;"><input type="text" class="form-input" id="confirm-input" placeholder=""></div><div id="confirm-select-wrap" style="display:none;"><select class="form-select" id="confirm-select"></select></div></div><div style="display:flex;gap:8px;justify-content:flex-end;padding:0 20px 20px;"><button class="btn btn-secondary" id="confirm-cancel-btn" onclick="resolveConfirm(false)">Cancel</button><button class="btn btn-primary" id="confirm-ok-btn" onclick="resolveConfirm(true)">Confirm</button></div></div></div>
     <div class="modal-overlay" id="override-modal"><div class="modal modal-sm"><div class="modal-header"><h3 class="modal-title">Grade Override</h3><button class="modal-close" onclick="closeModal('override-modal')">&times;</button></div><div class="modal-body" id="override-modal-body"></div></div></div>
     <div class="modal-overlay" id="disq-services-modal"><div class="modal modal-sm"><div class="modal-header"><h3 class="modal-title">Disqualified Services</h3><button class="modal-close" onclick="closeModal('disq-services-modal')">&times;</button></div><div class="modal-body" id="disq-services-modal-body"></div></div></div>
     <div class="toast-container" id="toast-container"></div>
@@ -5636,11 +5645,16 @@ function stageRailHtml(current){
     }).join('');
 }
 /** True once a lead has services, at least one qualification question answered (not necessarily all), and an engagement method — the gate for leaving the Lead stage forward. Reads the SAVED record, not live DOM state, so it works from the stage rail too, not just the Qualify button. Mirrors _leadQualifyState()'s allDone, minus the "qualified" status requirement (the rail only needs the checklist done, not a specific Lead Status pick — Qualify itself still requires that). */
+/** An answer that counts toward "at least one qualification question answered": an untouched default (Rapid Web's USD 999) does not. */
+function hasRealAnswer(v){
+    if(v&&typeof v==='object'&&!Array.isArray(v)&&v.default)return false;
+    return Array.isArray(v)?v.length>0:!!v;
+}
 function leadQualifyChecklistDone(l){
     const services=l.services||[];
     if(!(services.length>0||!!l.services_other))return false;
     const answers=l.requisitions||{};
-    if(!Object.values(answers).some(v=>Array.isArray(v)?v.length>0:!!v))return false;
+    if(!Object.values(answers).some(hasRealAnswer))return false;
     if(!(l.engagement_method||[]).length)return false;
     return true;
 }
@@ -5649,7 +5663,7 @@ function leadQualifyMissingItems(l){
     const missing=[];
     if(!((l.services||[]).length>0||!!l.services_other))missing.push('select a service');
     const answers=l.requisitions||{};
-    if(!Object.values(answers).some(v=>Array.isArray(v)?v.length>0:!!v))missing.push('answer at least one qualification question');
+    if(!Object.values(answers).some(hasRealAnswer))missing.push('answer at least one qualification question');
     if(!(l.engagement_method||[]).length)missing.push('pick an engagement method');
     return missing;
 }
@@ -5988,6 +6002,100 @@ const ENGAGEMENT_STATUSES=['Attempted to contact','Contacted','Bad timing'];
 // lists.
 const CUSTOM_SERVICE_NEED_OPTIONS=['Website Development','Sales Intelligence Platform','Custom Software / System','Automation','Integrations / Implementation','Branding','Design / Creative','General Custom Requirement'];
 const SERVICE_QUALIFICATION_FORMS={
+    // Rapid Web (Rapid Build Website): a fixed-scope, fixed-price service, so unlike the other tabs it shows its
+    // whole playbook at every stage: the two call scripts, the demo questions, and the internal qualification
+    // fields the rep fills in after the call (rapidWebReferenceHtml() renders the script + demo questions).
+    'Rapid Web':{
+        rapid:true,
+        industry:true,
+        industryTitle:'Business / Industry',
+        defaultPrice:{amount:'999',currency:'USD'},
+        script:{
+            angles:[
+                {title:"Angle 1: You're getting the traffic, but the website isn't converting it",lines:[
+                    "Hi [Name], this is [Name] from Levata. Have I caught you at an okay time for 30 seconds?",
+                    "I was looking at your website before calling and noticed [specific issue].",
+                    "The reason I’m calling is that there are already a lot of people searching for [service/product], and your business is in a position to capture some of that demand.",
+                    "But when someone actually lands on your website, [specific issue] can make it harder for them to trust the business or understand what to do next.",
+                    "So you may be getting the opportunity, but losing some of those potential customers once they reach the website.",
+                    "We’ve built a Rapid Build Website specifically for businesses in this position. I’d like to show you what we found and what we could improve.",
+                    "It only takes about 15 minutes. Would you be open to having a quick look?",
+                ]},
+                {title:"Angle 2: You're appearing in search, but competitors may be converting the visitor",lines:[
+                    "Hi [Name], this is [Name] from Levata. Have I caught you at an okay time for 30 seconds?",
+                    "I was looking at your website because of [service/product], and I noticed you’re appearing when people search for [specific search/service].",
+                    "That’s actually why I wanted to call.",
+                    "You’ve already got the opportunity to be found, but when that person clicks through, [specific website issue].",
+                    "And if they're comparing you with two or three competitors who have a stronger website, the search visibility you've worked to earn may not translate into the enquiry.",
+                    "We build professional websites specifically to close that gap, and I’d like to show you what I mean using your own website.",
+                    "Would you be open to a 15-minute demo?",
+                ]},
+            ],
+            avoid:"“You need a better website.”",
+            say:"“You're already getting the opportunity. Your website needs to convert that opportunity.”",
+            narrative:"People are searching → You're being found → They click → They judge the business → They compare → Your website either converts the opportunity or loses it.",
+            credibility:"The specific observation is what makes the call credible. For example:",
+            observations:[
+                "I noticed your services are quite difficult to find from the homepage.",
+                "I noticed there isn't a strong call to action when someone lands on the site.",
+                "I noticed the website doesn't really communicate why someone should choose you.",
+                "I noticed the site doesn't really showcase the quality of the work you've done.",
+                "I noticed your mobile experience is quite difficult to navigate.",
+            ],
+        },
+        demoQuestions:[
+            {title:'1. Business & Website Purpose',questions:[
+                'What does the business do?',
+                'What do you want the new website to achieve?',
+                'What is the main action you want visitors to take?',
+            ]},
+            {title:'2. Website Structure & Content',questions:[
+                'What are the main pages or areas you want visitors to see?',
+                'What services or products should we feature on the website?',
+                'Do you already have the content and images you want to use?',
+                'Do you have your logo, brand assets and other visual materials available?',
+            ]},
+            {title:'3. Contact & Booking',questions:[
+                'Do you want your existing enquiry/contact form connected to the website?',
+                'Do you want your Calendly connected to the website?',
+            ]},
+            {title:'4. Domain & Launch',questions:[
+                'Do you already own the domain you want to use?',
+                'Is there anything specific we should know about the website before we start?',
+            ]},
+            {title:'5. Timeline',questions:[
+                'We work on a 10-day delivery timeline for the Rapid Build Website. Is there anything on your side that could affect your ability to provide the required content, assets, access or approvals within that timeframe?',
+            ]},
+        ],
+        demoNote:'Once the checklist is fully complete, development will start.',
+        sections:[
+            {title:'Website Brief',questions:[
+                {id:'objective',type:'text',title:'Primary website objective'},
+                {id:'primary_cta',type:'text',title:'Primary CTA'},
+                {id:'required_pages',type:'text',title:'Required pages'},
+                {id:'services_products',type:'text',title:'Services / products'},
+            ]},
+            {title:'Readiness',questions:[
+                {id:'content_ready',type:'single',title:'Content ready',options:['Yes','No']},
+                {id:'brand_assets_ready',type:'single',title:'Brand assets ready',options:['Yes','No']},
+                {id:'form_connection',type:'single',title:'Form connection',options:['Yes','No']},
+                {id:'calendly_integration',type:'single',title:'Calendly integration',options:['Yes','No']},
+                {id:'domain',type:'single',title:'Domain',options:['Yes','No']},
+                {id:'outside_scope',type:'single',title:'Anything outside Rapid Build scope',options:['Yes','No']},
+            ]},
+            {title:'Delivery & Next Step',questions:[
+                {id:'ten_day_delivery',type:'single',title:'10-day delivery',options:['Confirmed','Not confirmed']},
+                {id:'next_step',type:'single',title:'Next step',options:['Payment','Follow-up']},
+            ]},
+        ],
+        qualificationCriteria:{
+            recommended:[],
+            statusOptions:[
+                {value:'qualified',label:'Qualified',color:'success'},
+                {value:'not_qualified',label:'Not Qualified',color:'danger'},
+            ],
+        },
+    },
     'Website Development':{
         industry:true,
         sections:[
@@ -6458,7 +6566,7 @@ function _leadQualifyState(){
     // Qualification questions are answered per-service-tab; "done" just
     // needs at least one non-empty answer anywhere in requisitions.
     const answers=currentLead?.requisitions||{};
-    const questionsDone=Object.values(answers).some(v=>Array.isArray(v)?v.length:!!v);
+    const questionsDone=Object.values(answers).some(hasRealAnswer);
     // Qualify/Unqualified are driven by whichever service tab's
     // Qualification Criteria status radio was last set to the positive or
     // negative option (see _serviceQualificationStatus()).
@@ -6505,7 +6613,7 @@ function canQualifyLead(l){
     const engagement=l.engagement_method||[];
     const servicesDone=(l.services||[]).length>0||!!l.services_other;
     const answers=l.requisitions||{};
-    const questionsDone=Object.values(answers).some(v=>Array.isArray(v)?v.length:!!v);
+    const questionsDone=Object.values(answers).some(hasRealAnswer);
     const engagementDone=engagement.length>0;
     return servicesDone&&questionsDone&&engagementDone&&_allServicesHaveStatus(l)&&_serviceQualificationStatus()==='qualified';
 }
@@ -6516,7 +6624,7 @@ function leadQualifyPanelHtml(l){
     const engagementNote=l.engagement_note||'';
     const servicesDone=(l.services||[]).length>0||!!l.services_other;
     const answers=l.requisitions||{};
-    const questionsDone=Object.values(answers).some(v=>Array.isArray(v)?v.length:!!v);
+    const questionsDone=Object.values(answers).some(hasRealAnswer);
     const engagementDone=engagement.length>0;
     const allDone=servicesDone&&questionsDone&&engagementDone;
     const qualStatus=_serviceQualificationStatus();
@@ -6571,7 +6679,7 @@ function customServiceInstances(services){
 }
 function serviceTabPickerHtml(l){
     const services=l.services||[];
-    const fixedChoices=['Website Development','Sales Intelligence System'];
+    const fixedChoices=['Rapid Web','Website Development','Sales Intelligence System'];
     // Staged into currentLead.services immediately on click (not just read
     // from the DOM at Save time) — same pattern the Custom Services
     // dropdown uses. Needed because addCustomServiceWithNeed() re-renders
@@ -6633,6 +6741,12 @@ async function saveLeadServices(){
             toast(`${newlyPicked.length} new service(s) sent to Demo for feasibility checking, since this deal has already moved past Lead`,'info');
         }
     }
+    // Rapid Web staged its USD price on a deal that had no money yet: switch the deal's currency first, so the value is saved as USD (a deal has one currency).
+    if(currentLead._pendingCurrency){
+        const cr=await api('set-deal-amount','POST',{lead_id:currentLead.id,amount:dealAmount(currentLead)||0,currency:currentLead._pendingCurrency});
+        if(!cr.success){toast(cr.error||'Could not set the deal currency','error');return}
+        currentLead.deal_currency=cr.lead.deal_currency;delete currentLead._pendingCurrency;
+    }
     const r=await api('save-requisitions','POST',{lead_id:currentLead.id,requisitions:currentLead.requisitions||{}});
     if(!r.success){toast(r.error||'Could not save services','error');return}
     if(isPastLeadView&&demoServices!==currentLead.demo_services){
@@ -6648,10 +6762,24 @@ function toggleFixedService(service,checked){
     if(!currentLead)return;
     if(checked){
         currentLead.services=[...(currentLead.services||[]),service];
+        if(service==='Rapid Web')applyRapidWebDefault();
         renderLeadModal();
     }else{
         removeFixedService(service);
     }
+}
+/** Rapid Web is a fixed-price service (USD 999). Adding it stages that as the service's value, marked default:true so it never counts as an answered qualification question on its own. A deal has ONE currency, so the default is only applied when it can be honest: the deal is already in USD, or has no money on it yet (then the deal switches to USD when Services are saved). Otherwise the rep is told to enter the amount in the deal's currency; nothing is converted. */
+function applyRapidWebDefault(){
+    const key='Rapid Web::estimated_deal_value',price=SERVICE_QUALIFICATION_FORMS['Rapid Web'].defaultPrice;
+    const reqs={...(currentLead.requisitions||{})};
+    if(reqs[key]&&reqs[key].amount)return;
+    const cur=currentLead.deal_currency||DEFAULT_CURRENCY;
+    const hasMoney=dealAmount(currentLead)>0||Object.entries(reqs).some(([k,v])=>k.endsWith('::estimated_deal_value')&&v&&typeof v==='object'&&v.amount);
+    if(cur===price.currency||!hasMoney){
+        reqs[key]={amount:price.amount,currency:price.currency,default:true};
+        currentLead.requisitions=reqs;
+        if(cur!==price.currency)currentLead._pendingCurrency=price.currency;
+    }else toast(`Rapid Web is priced at ${price.currency} ${price.amount}. This deal is in ${cur}, so enter the amount in ${cur} on the Rapid Web tab.`,'info');
 }
 /** Unchecking a fixed service removes it right away — no separate "Save
  * Services" click needed, unlike adding. A straight update-lead write
@@ -6661,6 +6789,7 @@ function toggleFixedService(service,checked){
 async function removeFixedService(service){
     if(!currentLead)return;
     const services=(currentLead.services||[]).filter(s=>s!==service);
+    if(service==='Rapid Web')delete currentLead._pendingCurrency;
     await saveLeadServicesList(services);
 }
 /** Picking a need from the dropdown both CREATES a new custom-service
@@ -6795,6 +6924,7 @@ async function saveDemoServicesList(demoServices,jumpToService){
         if(tabBtn)switchTab(tabBtn,`tab-service-${jumpToService.replace(/[^a-z0-9]/gi,'-')}`);
     }
 }
+DEMO_REQUIREMENT_FORMS['Rapid Web']=SERVICE_QUALIFICATION_FORMS['Rapid Web'].demoQuestions.flatMap(g=>g.questions);
 /** Which DEMO_REQUIREMENT_FORMS list applies to a Demo tab: strip any " #2" suffix, map Lead-stage "Custom Services"/its numbered instances to "General Custom Requirement", otherwise match by name directly. */
 function demoRequirementFormFor(service){
     const base=service.replace(/ #\d+$/,'');
@@ -6872,14 +7002,38 @@ function demoRequirementGatheringHtml(service,l){
     const rows=questions.map((qText,i)=>`<div class="demo-requirement-question"><span class="demo-requirement-question-num">${i+1}.</span> ${esc(qText)}</div>`).join('');
     return `<div class="detail-section"><div class="detail-section-title">Requirement Gathering</div>${rows}</div>`;
 }
+/** Rapid Web's reference block: both call-script angles (with [Name] filled in: the lead's first name, then the rep's), the "how to open the call" guidance, and the demo questions grouped as the team uses them. Read-only: it is what the rep says and asks; the answers go in the fields below it. */
+function rwFill(text,l){
+    let n=0;
+    const lead=((l&&l.first_name)||'').trim();
+    const rep=((typeof userSettings!=='undefined'&&userSettings&&userSettings.sender_name)||(typeof user!=='undefined'&&user&&user.name)||'').trim();
+    return esc(text).replace(/\[([^\]]+)\]/g,(m,inner)=>{
+        if(inner==='Name'){n++;const v=n===1?lead:rep;return v?`<strong>${esc(v)}</strong>`:'<span class="rw-ph">[Name]</span>'}
+        return `<span class="rw-ph">[${inner}]</span>`;
+    });
+}
+function rapidWebReferenceHtml(form,l){
+    const sc=form.script;
+    const angles=sc.angles.map((a,i)=>`<details class="rw-block"${i===0?' open':''}><summary>${esc(a.title)}</summary><div class="rw-script">${a.lines.map(t=>`<p>${rwFill(t,l)}</p>`).join('')}</div></details>`).join('');
+    const guidance=`<details class="rw-block"><summary>How to open the call</summary><div class="rw-script">
+        <p><strong>Don't say:</strong> ${esc(sc.avoid)}</p>
+        <p><strong>Say:</strong> ${esc(sc.say)}</p>
+        <p>${esc(sc.narrative)}</p>
+        <p>${esc(sc.credibility)}</p>
+        <ul>${sc.observations.map(o=>`<li>${esc(o)}</li>`).join('')}</ul></div></details>`;
+    const demo=`<details class="rw-block"><summary>Demo questions</summary><div class="rw-script">${form.demoQuestions.map(g=>`<div class="rw-qgroup">${esc(g.title)}</div>${g.questions.map(q=>`<div class="demo-requirement-question">${esc(q)}</div>`).join('')}`).join('')}
+        ${form.demoNote?`<p class="rw-note">${esc(form.demoNote)}</p>`:''}</div></details>`;
+    return `<div class="detail-section"><div class="detail-section-title">Call script</div>${angles}${guidance}${demo}</div>`;
+}
 function serviceTabHtml(service,l,stage){
     // At Demo, requirement-gathering shows first, then the Lead-stage
     // qualification questions below — a service already in l.services shows
     // its own answers as history; a Demo-only add gets the same generic
     // Custom Services qualification form (see serviceFormFor's fallback),
     // since a rep can qualify a service they add at Demo too.
-    const demoReqHtml=stage==='demo'?demoRequirementGatheringHtml(service,l):'';
     const form=serviceFormFor(service,l);
+    // Rapid Web shows its whole playbook (scripts + demo questions) at every stage; the other services only show requirement gathering at Demo.
+    const demoReqHtml=(form&&form.rapid)?rapidWebReferenceHtml(form,l):(stage==='demo'?demoRequirementGatheringHtml(service,l):'');
     if(!form)return `<div class="lead-qualify-panel">${demoReqHtml}</div>`;
     const answers=l.requisitions||{};
     const key=qid=>`${service}::${qid}`;
@@ -6921,7 +7075,7 @@ function serviceTabHtml(service,l,stage){
         const isAnswered=Array.isArray(val)?val.length>0:(val&&typeof val==='object'?!!val.amount:!!val);
         return `<div class="lead-qualify-question"><div class="lead-qualify-question-title">${esc(q.title)} ${isAnswered?'<span class="q-done">✓</span>':''}</div>${inputHtml}</div>`;
     };
-    const industryHtml=form.industry?`<div class="detail-section"><div class="detail-section-title">Industry</div>${noFieldSave
+    const industryHtml=form.industry?`<div class="detail-section"><div class="detail-section-title">${esc(form.industryTitle||'Industry')}</div>${noFieldSave
         ?`<input type="text" class="form-input svc-question-input${answers[key('industry')]?' answered':''}" id="svc-input-${esc(key('industry'))}" data-key="${key('industry')}" data-qtype="text" placeholder="Industry" value="${esc(answers[key('industry')]||'')}">`
         :`<div style="display:flex;gap:6px;"><input type="text" class="form-input svc-question-input${answers[key('industry')]?' answered':''}" id="svc-input-${esc(key('industry'))}" data-key="${key('industry')}" data-qtype="text" placeholder="Industry" value="${esc(answers[key('industry')]||'')}"><button type="button" class="btn btn-primary btn-xs" onclick="saveSingleServiceField('${esc(key('industry'))}')">Save</button></div>`}</div>`:'';
     const sectionsHtml=form.sections.map(sec=>`<div class="detail-section"><div class="detail-section-title">${esc(sec.title)}</div>${sec.questions.map(renderQuestion).join('')}</div>`).join('');
@@ -6947,7 +7101,7 @@ function serviceTabHtml(service,l,stage){
 }
 /** A deal has ONE currency: service values and the client budget are always in it, so this is a fixed label (read back as the select's value by saveServiceAnswers), not a choice. Change it with the currency next to the deal value at the top. */
 function dealCurrencySelectHtml(){
-    const c=(currentLead&&currentLead.deal_currency)||DEFAULT_CURRENCY;
+    const c=(currentLead&&(currentLead._pendingCurrency||currentLead.deal_currency))||DEFAULT_CURRENCY;
     return `<select class="form-select svc-money-currency" style="max-width:100px;" disabled title="Follows the deal's currency. Change it next to the deal value at the top."><option value="${esc(c)}" selected>${esc(c)}</option></select>`;
 }
 /** Sums every selected service's "Estimated Deal Value" answer, restricted to
@@ -7252,7 +7406,7 @@ async function callLead(){
     const l=currentLead;
     if(!l)return;
     if(!l.phone){toast('Add a phone number on the Profile tab first','warning');return}
-    if(!CALL_CONFIGURED){toast('KrispCall API is not configured','warning');return}
+    if(!CALL_CONFIGURED){customAlert('KrispCall API is not configured.\n\nAdd the KrispCall API key in Settings to enable calling.','Calling not available');return}
     const who=`${l.first_name||''} ${l.last_name||''}`.trim()||'this lead';
     if(!await customConfirm(`You are about to call ${who} on ${l.phone} now. Continue?`,'Start Call',{confirmText:'Call now'}))return;
     if(!currentLead||currentLead.id!==l.id)return;
@@ -7301,7 +7455,7 @@ async function saveCallLog(){
 function openLeadMail(subject='',body=''){
     if(!currentLead)return;
     if(!currentLead.email){toast('This lead has no email address','warning');return}
-    if(!EMAIL_CONFIGURED){toast('Email API is not configured','warning');return}
+    if(!EMAIL_CONFIGURED){customAlert('Email API is not configured.\n\nAdd the Resend API key in Settings to enable sending email.','Email not available');return}
     document.getElementById('lead-mail-to').value=currentLead.email;
     document.getElementById('lead-mail-subject').value=subject;
     document.getElementById('lead-mail-body').value=body;
@@ -7320,7 +7474,7 @@ async function sendLeadMail(){
     const btn=document.getElementById('lead-mail-send');btn.disabled=true;btn.innerHTML='<span class="spinner spinner-light"></span>';
     const r=await api('send-email','POST',{lead_id:currentLead.id,type:'manual',subject,content});
     btn.disabled=false;btn.textContent='Send';
-    if(!r.success){toast(r.error||'Failed to send','error');return}
+    if(!r.success){await customAlert(r.error||'The email could not be sent.','Email not sent');return}   // stays until dismissed: the reason matters
     currentLead=r.lead;
     const idx=leads.findIndex(x=>x.id===r.lead.id);if(idx>-1)leads[idx]=r.lead;
     closeModal('lead-mail-modal');
@@ -9051,7 +9205,7 @@ const AD_STAGES=[
     {id:'sow',label:'SOW',hint:'Price agreed. Get the statement of work signed.',needs:'services and the agreed value for each'},
 ];
 const AD_ENTRY_TYPES=[['warm_lead','Warm lead (already spoken)'],['repeat_client','Repeat client'],['referral','Referral'],['other','Other']];
-const AD_FIXED_SERVICES=['Website Development','Sales Intelligence System'];
+const AD_FIXED_SERVICES=['Rapid Web','Website Development','Sales Intelligence System'];
 let ad={};
 function adReset(){ad={client:null,clientId:'',contactId:'',srcLead:'',stage:'lead',touched:false,picked:false,svcs:[],results:null,seq:0,timer:null};}
 adReset();
@@ -9207,7 +9361,12 @@ function adRenderServices(){
 }
 function adToggleFixed(name){
     const i=ad.svcs.findIndex(s=>s.type==='fixed'&&s.name===name);
-    if(i>-1)ad.svcs.splice(i,1);else ad.svcs.push({type:'fixed',name,amount:''});
+    if(i>-1)ad.svcs.splice(i,1);else{
+        // Rapid Web is fixed-price USD 999: prefill it when that is honest (first service picked, or the deal is already USD).
+        let amount='';
+        if(name==='Rapid Web'){const cur=document.getElementById('ad-currency');if(cur&&(!ad.svcs.length||cur.value==='USD')){cur.value='USD';amount='999'}}
+        ad.svcs.push({type:'fixed',name,amount});
+    }
     adRenderServices();
 }
 function adAddCustom(sel){
@@ -13786,6 +13945,7 @@ function customConfirm(message,title='Confirm',opts={}){
             selectWrap.style.display='block';
             select.innerHTML=opts.options.map(o=>`<option value="${o.value||o}">${o.label||o}</option>`).join('');
         }
+        document.getElementById('confirm-cancel-btn').style.display=opts.hideCancel?'none':'';
         const okBtn=document.getElementById('confirm-ok-btn');
         okBtn.className=`btn ${opts.danger?'btn-danger':'btn-primary'}`;
         okBtn.textContent=opts.confirmText||'Confirm';
@@ -13793,6 +13953,8 @@ function customConfirm(message,title='Confirm',opts={}){
         if(opts.input) setTimeout(()=>input.focus(),100);
     });
 }
+/** A message the person must see and dismiss (a toast in the corner is too easy to miss for "this can't be done"). */
+function customAlert(message,title='Notice'){return customConfirm(message,title,{confirmText:'OK',hideCancel:true})}
 function resolveConfirm(result){
     closeModal('confirm-modal');
     if(_confirmResolver){
