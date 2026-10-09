@@ -179,7 +179,7 @@
         .detail-title-row h1 { margin: 0; }
         .page-content { padding: 26px 32px 36px; max-width: 1400px; }
 
-        .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 15px; border-radius: var(--radius-md); font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s, box-shadow 0.15s, transform 0.08s, border-color 0.15s; border: none; font-family: inherit; white-space: nowrap; text-decoration: none; line-height: 1.2; letter-spacing: -0.01em; }
+        .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 15px; border-radius: var(--radius-md); font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s, box-shadow 0.15s, transform 0.08s, border-color 0.15s; border: 1px solid transparent; font-family: inherit; white-space: nowrap; text-decoration: none; line-height: 1.2; letter-spacing: -0.01em; }
         .btn:active { transform: scale(0.97); }
         .btn svg { width: 16px; height: 16px; flex-shrink: 0; }
         /* .btn-primary and .btn-gold are intentionally identical: the codebase mixes both
@@ -196,6 +196,22 @@
         .btn-muted { background: var(--bg-subtle); color: var(--text-secondary); border: 1px solid var(--border); }
         .btn-sm { padding: 7px 12px; font-size: 12.5px; }
         .btn-xs { padding: 5px 10px; font-size: 12px; }
+        @keyframes savePulse { 50% { box-shadow: 0 0 0 7px rgba(245,158,11,.10); } }
+        .call-btn, .mail-btn { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; padding: 3px 10px; font-size: 12px; font-weight: 600; border-radius: 999px; border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--accent-dark); cursor: pointer; vertical-align: middle; transition: background .14s; }
+        .call-btn:hover, .mail-btn:hover { background: var(--accent-line); }
+        .call-btn svg, .mail-btn svg { width: 13px; height: 13px; }
+        .call-btn.call-btn-block { margin-left: 0; align-self: center; padding: 6px 14px; background: var(--success); border-color: var(--success); color: #fff; }
+        .call-btn.call-btn-block:hover { background: #059669; }
+        .call-live { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--radius-md); background: var(--accent-softer); border: 1px solid var(--accent-line); margin-bottom: 14px; }
+        .call-live-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--success); animation: savePulse 1.2s ease-in-out infinite; }
+        .call-live-timer { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .client-docs { margin-top: 16px; }
+        .client-doc-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; }
+        .client-doc-title { color: var(--info); text-decoration: underline; word-break: break-all; }
+        .client-doc-form { display: flex; gap: 6px; align-items: center; }
+        .client-doc-form .form-input { flex: 1; min-width: 0; }
+        .client-doc-del { border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 16px; line-height: 1; }
+        .client-doc-del:hover { color: var(--danger); }
         .btn-lg { padding: 13px 20px; font-size: 15px; width: 100%; border-radius: var(--radius-lg); }
         .btn:disabled { opacity: 0.55; cursor: not-allowed; }
         .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -2095,7 +2111,12 @@
                     <div class="card"><div class="card-body">
                         <div class="upload-zone" id="upload-zone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><h4>Drop file here</h4><p>CSV, Excel (.xlsx, .xls), or tap to browse</p><input type="file" id="file-input" accept=".csv,.xlsx,.xls" style="display:none;"></div>
                         <div style="margin-top:16px;padding:12px;background:var(--bg-main);border-radius:var(--radius-md);">
-<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;"><strong>Standard Columns:</strong> first_name, last_name, email, phone, company, title, industry, country</p>
+<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;"><strong>Standard template:</strong> First Name, Last Name, Email, Phone (with country code), Company, Job Title, Industry, Country, Website, LinkedIn URL, Company Size, Notes. Use it and every column maps itself; you can still upload any other file and map its columns by hand.</p>
+<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+<button type="button" class="btn btn-secondary btn-sm" onclick="downloadLeadTemplate('xlsx')">Download template (.xlsx)</button>
+<button type="button" class="btn btn-secondary btn-sm" onclick="downloadLeadTemplate('csv')">Download template (.csv)</button>
+<span id="import-required-note" style="font-size:12px;color:var(--text-muted);"></span>
+</div>
 </div>
                     </div></div>
                     <!-- Step 2: Column Mapping -->
@@ -2165,6 +2186,7 @@
                             <div class="form-row"><div class="form-group"><label class="form-label">Email</label><input type="email" class="form-input" id="new-email"></div><div class="form-group"><label class="form-label">Phone</label><div id="new-phone-wrap"></div></div></div>
                             <div class="form-row"><div class="form-group"><label class="form-label">Company</label><input type="text" class="form-input" id="new-company"></div><div class="form-group"><label class="form-label">Title</label><input type="text" class="form-input" id="new-title"></div></div>
                             <div class="form-row"><div class="form-group"><label class="form-label">Country</label><input type="text" class="form-input" id="new-country" list="country-list" autocomplete="off" placeholder="Type to search..."></div><div class="form-group partner-hide"><label class="form-label">Owner</label><select class="form-select" id="new-owner"></select></div></div>
+                            <div class="form-row"><div class="form-group"><label class="form-label" id="new-website-label">Website</label><input type="text" class="form-input" id="new-website" placeholder="https://company.com" autocomplete="off"></div><div class="form-group"><label class="form-label" id="new-linkedin-label">LinkedIn</label><input type="text" class="form-input" id="new-linkedin" placeholder="https://linkedin.com/in/..." autocomplete="off"></div></div>
                             <div class="form-group partner-hide">
                                 <label class="form-label">Channel Partner</label>
                                 <select class="form-select deal-partner-select" id="new-partner-select" title="Direct = came to us ourselves. Otherwise, pick who referred this lead.">
@@ -2999,6 +3021,27 @@ Phone: +1 234 567 890"></textarea></div>
                             </form>
                         </div>
 
+                        <!-- ===== CARD: KRISPCALL ===== -->
+                        <div class="settings-card">
+                            <h3 class="settings-card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>KrispCall</h3>
+                            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">The Call button on a lead uses KrispCall. Until an API key is saved here, clicking it just says "KrispCall API is not configured".</p>
+                            <form id="dial-settings-form">
+                                <div class="form-group"><label class="form-label">KrispCall API key</label><input type="password" class="form-input" id="admin-krispcall-key" placeholder="Not configured" autocomplete="new-password"></div>
+                                <button type="submit" class="btn btn-primary btn-sm">Save KrispCall</button>
+                            </form>
+                        </div>
+
+                        <!-- ===== CARD: LEAD CAPTURE ===== -->
+                        <div class="settings-card">
+                            <h3 class="settings-card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Lead Capture</h3>
+                            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">LinkedIn and Website are on the Add Lead form and in the bulk-upload template. Tick a field to make it mandatory: the form will not submit without it, and a bulk-upload row missing it is rejected (and listed) instead of imported.</p>
+                            <form id="lead-capture-form">
+                                <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px;"><input type="checkbox" class="checkbox" id="admin-require-linkedin"> LinkedIn URL is mandatory</label></div>
+                                <div class="form-group"><label style="display:flex;align-items:center;gap:8px;font-size:13px;"><input type="checkbox" class="checkbox" id="admin-require-website"> Website is mandatory</label></div>
+                                <button type="submit" class="btn btn-primary btn-sm">Save Lead Capture Settings</button>
+                            </form>
+                        </div>
+
                         <!-- ===== CARD: FINANCE / CURRENCY ===== -->
                         <div class="settings-card">
                             <h3 class="settings-card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>Finance</h3>
@@ -3012,7 +3055,7 @@ Phone: +1 234 567 890"></textarea></div>
                         <!-- ===== CARD 3: EMAIL SENDING (Resend) ===== -->
                         <div class="settings-card">
                             <h3 class="settings-card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>Email Sending</h3>
-                            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">Sends Help &amp; Support ticket emails and sales emails to leads, via Resend.</p>
+                            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">Sends Help &amp; Support ticket emails, sign-in emails and sales emails to leads (the Send button on a lead), all via Resend.</p>
                             <form id="email-settings-form">
                                 <div class="form-group"><label class="form-label">Resend API Key</label><input type="password" class="form-input" id="admin-resend-key" placeholder="re_..."></div>
                                 <div class="form-group"><label class="form-label">Support Email <span style="font-weight:400;color:#888;">(where tickets are sent)</span></label><input type="email" class="form-input" id="admin-support-email" placeholder="support@levataos.com"></div>
@@ -3202,6 +3245,23 @@ Phone: +1 234 567 890"></textarea></div>
     </div></div></div>
 
     <div class="modal-overlay" id="lead-modal"><div class="modal modal-lg"><div class="modal-header"><h3 class="modal-title" id="modal-lead-name">Lead</h3><button class="modal-close" onclick="closeModal('lead-modal')">&times;</button></div><div class="modal-body" id="modal-body"></div></div></div>
+    <!-- Click-to-call: post-call log (opened when the Call button is pressed) -->
+    <div class="modal-overlay" id="call-log-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title">Call <span id="call-log-name"></span></h3><button class="modal-close" onclick="closeCallLog()">&times;</button></div><div class="modal-body">
+        <div class="call-live"><span class="call-live-dot"></span><span class="call-live-timer" id="call-log-timer">00:00</span><div style="margin-left:auto;text-align:right;"><div id="call-log-number" style="font-weight:600;"></div></div></div>
+        <p class="form-hint" style="margin:-4px 0 12px;">Make the call in KrispCall, then log how it went here.</p>
+        <div class="form-group"><label class="form-label">How did it go? *</label><div class="lead-qualify-options" id="call-log-outcomes"></div></div>
+        <div class="form-row"><div class="form-group"><label class="form-label">Duration (minutes)</label><input type="number" min="0" step="1" class="form-input" id="call-log-mins" oninput="_callMinsTouched=true"></div><div class="form-group"></div></div>
+        <div class="form-group"><label class="form-label">Call notes <span id="call-log-notes-req" style="color:var(--text-muted);font-weight:400;">(required if you spoke)</span></label><textarea class="form-textarea" id="call-log-notes" rows="4" placeholder="What was discussed, what was agreed, what happens next..."></textarea></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;"><button type="button" class="btn btn-secondary" onclick="closeCallLog()">Discard</button><button type="button" class="btn btn-primary" id="call-log-save" onclick="saveCallLog()">Save call log</button></div>
+    </div></div></div>
+    <!-- Send an email to the lead from SIP (via Resend) -->
+    <div class="modal-overlay" id="lead-mail-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title">Send email</h3><button class="modal-close" onclick="closeModal('lead-mail-modal')">&times;</button></div><div class="modal-body">
+        <div class="form-group"><label class="form-label">To</label><input type="text" class="form-input" id="lead-mail-to" readonly></div>
+        <div class="form-group"><label class="form-label">Subject</label><input type="text" class="form-input" id="lead-mail-subject"></div>
+        <div class="form-group"><label class="form-label">Message</label><textarea class="form-textarea" id="lead-mail-body" rows="10" placeholder="Write your message..."></textarea></div>
+        <p class="form-hint">Sent through Resend from the outreach address set in Admin &rarr; Settings; replies come to your own email. A copy is kept in this deal's email history.</p>
+        <div style="display:flex;justify-content:flex-end;gap:8px;"><button type="button" class="btn btn-secondary" onclick="closeModal('lead-mail-modal')">Cancel</button><button type="button" class="btn btn-primary" id="lead-mail-send" onclick="sendLeadMail()">Send</button></div>
+    </div></div></div>
     <div class="modal-overlay" id="req-modal"><div class="modal"><div class="modal-header"><h3 class="modal-title">Client Requisitions</h3><button class="modal-close" onclick="closeModal('req-modal')">&times;</button></div><div class="modal-body" id="req-modal-body"></div></div></div>
     <!-- Cost Proposal as a popup over an already-open lead modal (Demo stage's
          Feasibility Check "Create cost proposal") — #page-cost-proposals'
@@ -3580,8 +3640,23 @@ function dealAmount(l){const n=parseFloat(l?.deal_amount||0);return Number.isFin
 // Currencies the studio can quote in. Mirrors supportedCurrencies() in api.php.
 // Each deal/job/invoice stores its own code; amounts are NEVER converted between
 // currencies — totals are grouped by code instead (see moneyByCurrency).
-const CURRENCIES=['LKR','USD','EUR','GBP','AUD','AED','INR','SGD','CAD'];
+const CURRENCIES=['LKR','USD','EUR','GBP','AUD','AED','INR','SGD','CAD','NZD'];
 let DEFAULT_CURRENCY='LKR';   // overwritten from Admin settings on load
+// Which optional lead fields are mandatory at creation/import. Mirrors leadRequiredFields() in api.php,
+// seeded from the `me` endpoint (Admin → Settings → Lead Capture changes it).
+let LEAD_REQUIRED={linkedin:false,website:false};
+let CALL_CONFIGURED=false,EMAIL_CONFIGURED=false;   // from `me`; see callProvider()/outreachEmailConfigured() in api.php
+function applyLeadRequired(me){
+    if(me&&'call_configured' in me)CALL_CONFIGURED=!!me.call_configured;
+    if(me&&'email_configured' in me)EMAIL_CONFIGURED=!!me.email_configured;
+    if(me&&me.lead_required_fields)LEAD_REQUIRED={linkedin:!!me.lead_required_fields.linkedin,website:!!me.lead_required_fields.website};
+    updateImportRequiredNote();
+    [['website','new-website'],['linkedin','new-linkedin']].forEach(([k,id])=>{
+        const lab=document.getElementById(id+'-label'),inp=document.getElementById(id);
+        if(lab)lab.textContent=(k==='website'?'Website':'LinkedIn')+(LEAD_REQUIRED[k]?' *':'');
+        if(inp)inp.required=LEAD_REQUIRED[k];
+    });
+}
 function currencyOptions(selected){
     const sel=CURRENCIES.includes(selected)?selected:DEFAULT_CURRENCY;
     return CURRENCIES.map(c=>`<option value="${c}"${c===sel?' selected':''}>${c}</option>`).join('');
@@ -3887,7 +3962,7 @@ async function api(endpoint,method='GET',data=null){const opts={method,headers:{
     try{const r=await fetch(url,opts);const text=await r.text();if(!text.trim())return{success:false,error:'The server returned an empty response. The AI may have timed out, please try again.'};try{return JSON.parse(text);}catch(e){console.error('API parse error for',endpoint,text.slice(0,300));return{success:false,error:'The AI response was too long and got cut off. Try a shorter description or use Gemini as the AI provider.'};}}catch(e){return{success:false,error:e.message}}}
 async function handleLogin(e){e.preventDefault();const btn=document.getElementById('login-btn');btn.disabled=true;btn.innerHTML='<span class="spinner spinner-light"></span>';const r=await api('login','POST',{email:document.getElementById('login-email').value,password:document.getElementById('login-password').value,device_token:localStorage.deviceToken||''});
     if(r.success&&r.requires_otp){showOtpStep(r.pending_token)}
-    else if(r.success){localStorage.token=r.token;user=r.user;const me=await api('me');if(me.default_currency)DEFAULT_CURRENCY=me.default_currency;showApp()}
+    else if(r.success){localStorage.token=r.token;user=r.user;const me=await api('me');if(me.default_currency)DEFAULT_CURRENCY=me.default_currency;applyLeadRequired(me);showApp()}
     else toast(r.error||'Login failed','error');
     btn.disabled=false;btn.textContent='Sign In'}
 function showResetPassword(e){e.preventDefault();document.getElementById('reset-password-form').style.display='block'}
@@ -3935,7 +4010,7 @@ document.getElementById('otp-form').addEventListener('submit',async e=>{
     if(r.success){
         localStorage.token=r.token;user=r.user;otpPendingToken='';
         if(r.device_token)localStorage.deviceToken=r.device_token;
-        const me=await api('me');if(me.default_currency)DEFAULT_CURRENCY=me.default_currency;
+        const me=await api('me');if(me.default_currency)DEFAULT_CURRENCY=me.default_currency;applyLeadRequired(me);
         showApp();
     }else{
         toast(r.error||'Incorrect code','error');
@@ -4000,6 +4075,7 @@ async function checkAuth(){
     const r=await api('me');
     // Pick up the studio default currency before anything renders money.
     if(r.default_currency)DEFAULT_CURRENCY=r.default_currency;
+    applyLeadRequired(r);
     if(r.success){user=r.user;showApp()}
     else{localStorage.removeItem('token')} // stale/invalid token -> show login
 }
@@ -5411,12 +5487,21 @@ async function updateDealAmount(){
     const r=await api('set-deal-amount','POST',{lead_id:currentLead.id,amount:el.value,currency:curEl?curEl.value:''});
     if(r.success){
         currentLead=r.lead;
+        const idx=leads.findIndex(x=>x.id===currentLead.id);if(idx>-1)leads[idx]=currentLead;
         const amt=dealAmount(currentLead);
         el.value=amt?amt.toLocaleString():'';
         if(curEl)curEl.value=currentLead.deal_currency||DEFAULT_CURRENCY;
         loadLeads();loadStats();
-        if(r.changed)toast('Deal value updated','success');
-    }else toast(r.error||'Could not update amount','error');
+        if(r.currency_changed){
+            // Service values, the partner payout and any job all just changed their label too: redraw everything that shows money.
+            renderLeadModal();
+            toast(`Currency changed to ${currentLead.deal_currency} everywhere on this deal (amounts unchanged)`,'success');
+            (r.warnings||[]).forEach(w=>toast(w,'warning'));
+        }else if(r.changed)toast('Deal value updated','success');
+    }else{
+        if(curEl)curEl.value=currentLead.deal_currency||DEFAULT_CURRENCY;   // refused: put the selector back
+        toast(r.error||'Could not update amount','error');
+    }
 }
 /** Click handler for the Source corner's %/Fixed pill switch — flips the
  * visual state, then runs the same refresh+save onDealPartnerChange() does
@@ -5672,8 +5757,8 @@ const PROFILE_FIELDS={
     notes:{label:'Notes',type:'textarea'},
 };
 function profileFieldDisplay(key,l){
-    if(key==='email')return l.email?`<a href="mailto:${esc(l.email)}" style="color:var(--info);">${esc(l.email)}</a>`:'<span style="color:var(--text-muted);">-</span>';
-    if(key==='phone')return l.phone?`<a href="tel:${esc(l.phone)}" style="color:var(--info);">${esc(l.phone)}</a>`:'<span style="color:var(--text-muted);">-</span>';
+    if(key==='email')return l.email?`<a href="mailto:${esc(l.email)}" style="color:var(--info);">${esc(l.email)}</a><button type="button" class="mail-btn" onclick="openLeadMail()" title="Send an email to ${esc(l.email)} from here">${MAIL_ICON}Send</button>`:'<span style="color:var(--text-muted);">-</span>';
+    if(key==='phone')return l.phone?`<a href="tel:${esc(l.phone)}" style="color:var(--info);">${esc(l.phone)}</a><button type="button" class="call-btn" onclick="callLead()" title="Call ${esc(l.phone)}">${PHONE_ICON}Call</button>`:'<span style="color:var(--text-muted);">-</span>';
     if(key==='linkedin')return l.linkedin?`<a href="${esc(l.linkedin)}" target="_blank" style="color:var(--info);">${esc(l.linkedin.replace('https://www.linkedin.com/in/','').replace('https://linkedin.com/in/',''))}</a>`:'<span style="color:var(--text-muted);">Not available</span>';
     if(key==='website')return l.website?`<a href="${esc(l.website)}" target="_blank" style="color:var(--info);">${esc(l.website.replace('https://www.','').replace('https://',''))}</a>`:'<span style="color:var(--text-muted);">-</span>';
     const v=l[key];
@@ -5700,6 +5785,8 @@ function profileFieldRow(key,l){
         <div class="detail-value"><div class="profile-field-edit-row">${inputHtml}<button type="button" class="profile-field-save-btn" onclick="saveLeadProfileField('${key}')" title="Save">${CHECK_ICON}</button><button type="button" class="profile-field-cancel-btn" onclick="cancelLeadProfileField()" title="Cancel">${XMARK_ICON}</button></div></div>
     </div>`;
 }
+const PHONE_ICON=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>`;
+const MAIL_ICON=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>`;
 const PENCIL_ICON=`<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
 const CHECK_ICON=`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>`;
 const XMARK_ICON=`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
@@ -5748,6 +5835,8 @@ ${profileFieldRow('website',l)}
 ${profileFieldRow('country',l)}
 </div>
 </div>
+${callLogHtml(l)}
+${clientDocsHtml(l)}
 <div class="detail-grid-section" style="margin-top:16px;"><div class="detail-section-title">Notes</div>${profileFieldRow('notes',l)}</div>
 ${disqualifiedServicesTriggerHtml(l)}
 ${followupBlockHtml(l,stageId)}`;
@@ -6441,7 +6530,7 @@ function leadQualifyPanelHtml(l){
             <div class="lead-qualify-progress ${allDone?'all-done':''}">${[engagementDone,servicesDone].filter(Boolean).length} of 2 steps done</div>
         </div>
         ${leadQualifyStepHtml(1,'Engagement Method','How will you be reaching out?',engagementDone,`
-            <div class="lead-qualify-options" id="lead-engagement-options">${ENGAGEMENT_METHODS.map(m=>`<label class="req-option${engagement.includes(m)?' selected':''}"><input type="checkbox" class="lead-engagement-cb" value="${m}" onchange="toggleEngagementMethod('${m}',this.checked)"${engagement.includes(m)?' checked':''}>${m}</label>`).join('')}</div>
+            <div class="lead-qualify-options" id="lead-engagement-options">${ENGAGEMENT_METHODS.map(m=>`<label class="req-option${engagement.includes(m)?' selected':''}"><input type="checkbox" class="lead-engagement-cb" value="${m}" onchange="toggleEngagementMethod('${m}',this.checked)"${engagement.includes(m)?' checked':''}>${m}</label>`).join('')}<button type="button" class="call-btn call-btn-block" onclick="callLead()" ${l.phone?'':'disabled title="Add a phone number on the Profile tab first"'}>${PHONE_ICON}Call now</button></div>
             <div class="form-row" style="margin-top:10px;">
                 <div class="form-group"><label class="form-label">Initial engagement date</label><input type="date" class="form-input${engagementDate?' answered':''}" id="lead-engagement-date" value="${esc(engagementDate)}" onchange="stageEngagementField('engagement_date',this.value)"></div>
                 <div class="form-group"><label class="form-label">Engagement status</label>
@@ -6449,7 +6538,7 @@ function leadQualifyPanelHtml(l){
                 </div>
             </div>
             <div class="form-group" style="margin-top:8px;"><label class="form-label">Note</label><textarea class="form-textarea${engagementNote?' answered':''}" id="lead-engagement-note" rows="2" placeholder="What happened when you reached out..." onchange="stageEngagementField('engagement_note',this.value)">${esc(engagementNote)}</textarea></div>
-            <div style="margin-top:8px;"><button type="button" class="btn btn-secondary btn-xs" onclick="saveEngagementStep()">Save Engagement</button></div>
+            <div style="margin-top:8px;"><button type="button" class="btn btn-primary btn-xs" onclick="saveEngagementStep()">Save Engagement</button></div>
         `)}
         ${leadQualifyStepHtml(2,'Services','What are they interested in? — see the Services tab(s) next to Profile',servicesDone,serviceTabPickerHtml(l))}
         <div class="lead-qualify-actions">
@@ -6514,7 +6603,7 @@ function serviceTabPickerHtml(l){
         <div style="margin-top:8px;display:flex;gap:6px;align-items:center;">
             <select class="form-select" id="lead-custom-service-need-select" style="max-width:220px;" onchange="addCustomServiceWithNeed()"><option value="">+ Add a custom service...</option>${needOpts}</select>
         </div>
-        <div style="margin-top:8px;"><button type="button" class="btn btn-secondary btn-xs" onclick="saveLeadServices()">Save Services</button></div>`;
+        <div style="margin-top:8px;"><button type="button" class="btn btn-primary btn-xs" onclick="saveLeadServices()">Save Services</button></div>`;
 }
 /** Persists whatever is currently staged on currentLead.services/requisitions (both fixed checkboxes and Custom Services instances — see toggleFixedService()/addCustomServiceWithNeed(), which stage directly into currentLead instead of relying on DOM checkbox state) and re-renders so the service tabs next to Profile pick up the change. This is the ONLY thing that writes services to the server — every checkbox/dropdown in this picker only stages in memory, so nothing about a service selection is saved (or jumps to a new tab) until this button is actually clicked. Two calls because update-lead's services field and save-requisitions' full-replace requisitions field are separate actions — the "need" answer staged by addCustomServiceWithNeed() only needs the second one.
  *
@@ -6804,12 +6893,12 @@ function serviceTabHtml(service,l,stage){
         if(q.type==='text'){
             inputHtml=noFieldSave
                 ?`<input type="text" class="form-input svc-question-input${val?' answered':''}" id="svc-input-${esc(key(q.id))}" data-key="${key(q.id)}" data-qtype="text" placeholder="Type the answer..." value="${esc(val||'')}">`
-                :`<div style="display:flex;gap:6px;"><input type="text" class="form-input svc-question-input${val?' answered':''}" id="svc-input-${esc(key(q.id))}" data-key="${key(q.id)}" data-qtype="text" placeholder="Type the answer..." value="${esc(val||'')}"><button type="button" class="btn btn-secondary btn-xs" onclick="saveSingleServiceField('${esc(key(q.id))}')">Save</button></div>`;
+                :`<div style="display:flex;gap:6px;"><input type="text" class="form-input svc-question-input${val?' answered':''}" id="svc-input-${esc(key(q.id))}" data-key="${key(q.id)}" data-qtype="text" placeholder="Type the answer..." value="${esc(val||'')}"><button type="button" class="btn btn-primary btn-xs" onclick="saveSingleServiceField('${esc(key(q.id))}')">Save</button></div>`;
         }else if(q.type==='money'){
-            const money=(val&&typeof val==='object')?val:{amount:'',currency:DEFAULT_CURRENCY};
+            const money=(val&&typeof val==='object')?val:{amount:''};
             inputHtml=`<div class="deal-value-row svc-question-input" data-key="${key(q.id)}" data-qtype="money">
                 <input type="text" class="form-input svc-money-amount${money.amount?' answered':''}" placeholder="0" value="${esc(money.amount||'')}" style="max-width:160px;">
-                <select class="form-select svc-money-currency" style="max-width:100px;">${currencyOptions(money.currency)}</select>
+                ${dealCurrencySelectHtml()}
             </div>`;
         }else if(q.type==='date'){
             inputHtml=`<input type="date" class="form-input svc-question-input${val?' answered':''}" data-key="${key(q.id)}" data-qtype="date" value="${esc(val||'')}">`;
@@ -6834,18 +6923,18 @@ function serviceTabHtml(service,l,stage){
     };
     const industryHtml=form.industry?`<div class="detail-section"><div class="detail-section-title">Industry</div>${noFieldSave
         ?`<input type="text" class="form-input svc-question-input${answers[key('industry')]?' answered':''}" id="svc-input-${esc(key('industry'))}" data-key="${key('industry')}" data-qtype="text" placeholder="Industry" value="${esc(answers[key('industry')]||'')}">`
-        :`<div style="display:flex;gap:6px;"><input type="text" class="form-input svc-question-input${answers[key('industry')]?' answered':''}" id="svc-input-${esc(key('industry'))}" data-key="${key('industry')}" data-qtype="text" placeholder="Industry" value="${esc(answers[key('industry')]||'')}"><button type="button" class="btn btn-secondary btn-xs" onclick="saveSingleServiceField('${esc(key('industry'))}')">Save</button></div>`}</div>`:'';
+        :`<div style="display:flex;gap:6px;"><input type="text" class="form-input svc-question-input${answers[key('industry')]?' answered':''}" id="svc-input-${esc(key('industry'))}" data-key="${key('industry')}" data-qtype="text" placeholder="Industry" value="${esc(answers[key('industry')]||'')}"><button type="button" class="btn btn-primary btn-xs" onclick="saveSingleServiceField('${esc(key('industry'))}')">Save</button></div>`}</div>`:'';
     const sectionsHtml=form.sections.map(sec=>`<div class="detail-section"><div class="detail-section-title">${esc(sec.title)}</div>${sec.questions.map(renderQuestion).join('')}</div>`).join('');
     const qc=form.qualificationCriteria;
     const statusVal=answers[key('qualification_status')]||'';
     const recommendedVal=answers[key('recommended')]||'';
-    const dealValMoney=(answers[key('estimated_deal_value')]&&typeof answers[key('estimated_deal_value')]==='object')?answers[key('estimated_deal_value')]:{amount:'',currency:DEFAULT_CURRENCY};
+    const dealValMoney=(answers[key('estimated_deal_value')]&&typeof answers[key('estimated_deal_value')]==='object')?answers[key('estimated_deal_value')]:{amount:''};
     const criteriaHtml=`<div class="detail-section" style="margin-top:16px;"><div class="detail-section-title">Qualification Criteria</div>
         ${qc.recommended&&qc.recommended.length?`<div class="form-group"><label class="form-label">Recommended</label><div class="lead-qualify-options svc-question-input" data-key="${key('recommended')}" data-qtype="single">${qc.recommended.map(r=>`<label class="req-option${recommendedVal===r?' selected':''}"><input type="radio" name="svc-recommended-${esc(service)}" value="${esc(r)}"${recommendedVal===r?' checked':''}>${esc(r)}</label>`).join('')}</div></div>`:''}
         <div class="form-group"><label class="form-label">Estimated Deal Value</label>
             <div class="deal-value-row svc-question-input" data-key="${key('estimated_deal_value')}" data-qtype="money">
                 <input type="text" class="form-input svc-money-amount${dealValMoney.amount?' answered':''}" placeholder="0" value="${esc(dealValMoney.amount||'')}" style="max-width:160px;">
-                <select class="form-select svc-money-currency" style="max-width:100px;">${currencyOptions(dealValMoney.currency)}</select>
+                ${dealCurrencySelectHtml()}
             </div>
         </div>
         <div class="form-group"><label class="form-label">Lead Status</label>
@@ -6856,6 +6945,11 @@ function serviceTabHtml(service,l,stage){
         <div style="margin-top:14px;"><button type="button" class="btn btn-primary btn-sm" data-service="${esc(service)}" onclick="saveServiceAnswers(this.dataset.service)">Save Answers</button></div>
     </div>`;
 }
+/** A deal has ONE currency: service values and the client budget are always in it, so this is a fixed label (read back as the select's value by saveServiceAnswers), not a choice. Change it with the currency next to the deal value at the top. */
+function dealCurrencySelectHtml(){
+    const c=(currentLead&&currentLead.deal_currency)||DEFAULT_CURRENCY;
+    return `<select class="form-select svc-money-currency" style="max-width:100px;" disabled title="Follows the deal's currency. Change it next to the deal value at the top."><option value="${esc(c)}" selected>${esc(c)}</option></select>`;
+}
 /** Sums every selected service's "Estimated Deal Value" answer, restricted to
  * whichever currency the first one found is in — money in different
  * currencies is never added together (CLAUDE.md: a stale exchange rate would
@@ -6863,18 +6957,18 @@ function serviceTabHtml(service,l,stage){
 async function sumServiceEstimatedDealValues(services){
     if(!currentLead)return null;
     const answers=currentLead.requisitions||{};
-    let currency=null,total=0;
+    const currency=currentLead.deal_currency||DEFAULT_CURRENCY;   // the deal's currency is authoritative, never the first service's
+    let total=0,found=false;
     const skipped=[];
     for(const service of (services||currentLead.services||[])){
         const est=answers[`${service}::estimated_deal_value`];
         if(!est||typeof est!=='object'||!est.amount)continue;
         const amt=parseFloat(String(est.amount).replace(/,/g,''))||0;
         if(!amt)continue;
-        const cur=est.currency||DEFAULT_CURRENCY;
-        if(currency===null)currency=cur;
-        if(cur===currency)total+=amt;else skipped.push(service);
+        found=true;
+        if(!est.currency||est.currency===currency)total+=amt;else skipped.push(service);
     }
-    if(currency===null)return null;
+    if(!found)return null;
     return {total,currency,skipped};
 }
 /** Reads every answered field in one service tab's live DOM and saves it into the flat requisitions map (merged with whatever other tabs/services already have saved). */
@@ -6897,7 +6991,7 @@ async function saveServiceAnswers(service){
         if(qtype==='text'||qtype==='date')answers[key]=el.value.trim();
         else if(qtype==='money'){
             const amt=el.querySelector('.svc-money-amount')?.value.trim()||'';
-            const cur=el.querySelector('.svc-money-currency')?.value||DEFAULT_CURRENCY;
+            const cur=currentLead.deal_currency||el.querySelector('.svc-money-currency')?.value||DEFAULT_CURRENCY;
             answers[key]=amt?{amount:amt,currency:cur}:'';
         }else if(qtype==='multi')answers[key]=[...el.querySelectorAll('input:checked')].map(i=>i.value);
         else if(qtype==='single-select')answers[key]=el.value;
@@ -7147,6 +7241,137 @@ async function saveLeadQualifyState(state){
     currentLead.requisitions=stagedRequisitions;
     return currentLead;
 }
+/* ==================== CLICK-TO-CALL + POST-CALL LOG ==================== */
+// The Call button is KrispCall-only. Until a KrispCall API key is saved (Admin → Settings → KrispCall)
+// it just says the API is not configured. SIP does not place the call itself yet (the KrispCall API is
+// not wired in): with a key saved it opens this log, the rep calls from KrispCall, and the outcome +
+// notes are saved to the deal (log-call).
+const CALL_OUTCOMES=[['connected','Connected, spoke'],['no_answer','No answer'],['voicemail','Left voicemail'],['busy','Busy / call back later'],['wrong_number','Wrong number']];
+let _callSession=null,_callTimer=null,_callMinsTouched=false;
+async function callLead(){
+    const l=currentLead;
+    if(!l)return;
+    if(!l.phone){toast('Add a phone number on the Profile tab first','warning');return}
+    if(!CALL_CONFIGURED){toast('KrispCall API is not configured','warning');return}
+    const who=`${l.first_name||''} ${l.last_name||''}`.trim()||'this lead';
+    if(!await customConfirm(`You are about to call ${who} on ${l.phone} now. Continue?`,'Start Call',{confirmText:'Call now'}))return;
+    if(!currentLead||currentLead.id!==l.id)return;
+    _callSession={leadId:l.id,number:l.phone,startedAt:new Date()};
+    _callMinsTouched=false;
+    document.getElementById('call-log-name').textContent=`${l.first_name||''} ${l.last_name||''}`.trim();
+    document.getElementById('call-log-number').textContent=l.phone;
+    document.getElementById('call-log-notes').value='';
+    document.getElementById('call-log-mins').value='0';
+    document.getElementById('call-log-outcomes').innerHTML=CALL_OUTCOMES.map(([v,t])=>`<label class="req-option"><input type="radio" name="call-log-outcome" value="${v}" onchange="this.closest('.lead-qualify-options').querySelectorAll('.req-option').forEach(o=>o.classList.remove('selected'));this.parentElement.classList.add('selected')">${t}</label>`).join('');
+    openModal('call-log-modal');
+    clearInterval(_callTimer);
+    const tick=()=>{
+        if(!_callSession)return;
+        const sec=Math.floor((Date.now()-_callSession.startedAt.getTime())/1000);
+        document.getElementById('call-log-timer').textContent=String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0');
+        if(!_callMinsTouched)document.getElementById('call-log-mins').value=String(Math.floor(sec/60));
+    };
+    tick();_callTimer=setInterval(tick,1000);
+}
+function closeCallLog(){
+    clearInterval(_callTimer);_callTimer=null;_callSession=null;
+    closeModal('call-log-modal');
+}
+async function saveCallLog(){
+    const s=_callSession;if(!s)return;
+    const outcome=document.querySelector('input[name="call-log-outcome"]:checked')?.value;
+    if(!outcome){toast('Pick how the call went','warning');return}
+    const notes=document.getElementById('call-log-notes').value.trim();
+    if(outcome==='connected'&&!notes){toast('Add a note on what was discussed','warning');return}
+    const elapsed=Math.floor((Date.now()-s.startedAt.getTime())/1000);
+    const mins=parseInt(document.getElementById('call-log-mins').value,10);
+    const duration_seconds=_callMinsTouched&&mins>=0?mins*60:elapsed;
+    const btn=document.getElementById('call-log-save');btn.disabled=true;
+    const r=await api('log-call','POST',{lead_id:s.leadId,outcome,notes,duration_seconds,started_at:s.startedAt.toISOString(),number:s.number});
+    btn.disabled=false;
+    if(!r.success){toast(r.error||'Could not save the call log','error');return}
+    if(currentLead&&currentLead.id===s.leadId){currentLead=r.lead}
+    const idx=leads.findIndex(x=>x.id===r.lead.id);if(idx>-1)leads[idx]=r.lead;
+    closeCallLog();
+    if(currentLead&&currentLead.id===r.lead.id)renderLeadModal();
+    toast('Call logged','success');
+}
+
+/* ==================== SEND EMAIL FROM SIP ==================== */
+function openLeadMail(subject='',body=''){
+    if(!currentLead)return;
+    if(!currentLead.email){toast('This lead has no email address','warning');return}
+    if(!EMAIL_CONFIGURED){toast('Email API is not configured','warning');return}
+    document.getElementById('lead-mail-to').value=currentLead.email;
+    document.getElementById('lead-mail-subject').value=subject;
+    document.getElementById('lead-mail-body').value=body;
+    openModal('lead-mail-modal');
+    setTimeout(()=>document.getElementById(subject?'lead-mail-body':'lead-mail-subject').focus(),80);
+}
+function sendCalendlyEmailFromSip(){
+    openLeadMail(document.getElementById('qf-calendly-subject')?.textContent||'',document.getElementById('qf-calendly-body')?.innerText||'');
+}
+async function sendLeadMail(){
+    if(!currentLead)return;
+    const subject=document.getElementById('lead-mail-subject').value.trim();
+    const content=document.getElementById('lead-mail-body').value.trim();
+    if(!subject||!content){toast('Subject and message cannot be empty','warning');return}
+    if(!await customConfirm(`You are about to send this email to ${currentLead.email} now. Continue?`,'Send Email',{confirmText:'Send now'}))return;
+    const btn=document.getElementById('lead-mail-send');btn.disabled=true;btn.innerHTML='<span class="spinner spinner-light"></span>';
+    const r=await api('send-email','POST',{lead_id:currentLead.id,type:'manual',subject,content});
+    btn.disabled=false;btn.textContent='Send';
+    if(!r.success){toast(r.error||'Failed to send','error');return}
+    currentLead=r.lead;
+    const idx=leads.findIndex(x=>x.id===r.lead.id);if(idx>-1)leads[idx]=r.lead;
+    closeModal('lead-mail-modal');
+    renderLeadModal();
+    toast('Email sent','success');
+}
+
+/* ==================== CLIENT DOCUMENTS (Drive links) ==================== */
+// Documents a client sends in stay in the team's/client's own drive; the deal keeps the link,
+// a title, and who added it (add-lead-doc-link / remove-lead-doc-link).
+/** The deal's logged calls (log-call), newest first, on the Profile tab: when, how it went, how long, who, and the note. */
+function callLogHtml(l){
+    const calls=(l.call_history||[]).filter(c=>c.status==='completed'&&c.outcome_label).slice().reverse();
+    if(!calls.length)return '';
+    const fmtDur=s=>{s=Number(s)||0;return s?`${Math.floor(s/60)}m ${s%60}s`:''};
+    return `<div class="client-docs"><div class="detail-section-title">Calls</div>${calls.map(c=>`<div class="note-entry" style="margin-bottom:8px;">
+        <div class="note-entry-head"><span class="note-entry-author">${PHONE_ICON.replace('<svg','<svg style="width:12px;height:12px;vertical-align:-1px;margin-right:4px;"')}${esc(c.outcome_label)}${fmtDur(c.duration_seconds)?' &middot; '+esc(fmtDur(c.duration_seconds)):''}</span><span class="note-entry-time">${esc(c.rep_name||'')} &middot; ${esc(_fmtDT(c.completed_at||c.started_at))}</span></div>
+        ${c.notes?`<div class="note-entry-body">${esc(c.notes).replace(/\n/g,'<br>')}</div>`:''}
+    </div>`).join('')}</div>`;
+}
+let addingClientDoc=false;
+function clientDocsHtml(l){
+    const docs=l.client_documents||[];
+    const rows=docs.map((d,i)=>`<div class="client-doc-row"><a class="client-doc-title" href="${esc(d.url)}" target="_blank" rel="noopener noreferrer">${esc(d.provider&&d.provider!=='Link'?d.provider:'Drive')} link${docs.length>1?' '+(i+1):''}</a><button type="button" class="client-doc-del" onclick="removeClientDocLink('${esc(d.id)}')" title="Remove link">&times;</button></div>`).join('');
+    const form=addingClientDoc
+        ?`<div class="client-doc-form"><input type="url" class="form-input" id="client-doc-url" placeholder="Paste Drive link" onkeydown="if(event.key==='Enter'){event.preventDefault();addClientDocLink()}"><button type="button" class="btn btn-primary btn-sm" onclick="addClientDocLink()">Save</button><button type="button" class="btn btn-secondary btn-sm" onclick="addingClientDoc=false;renderLeadModal()">Cancel</button></div>`
+        :`<button type="button" class="btn btn-secondary btn-xs" onclick="addingClientDoc=true;renderLeadModal();document.getElementById('client-doc-url')?.focus()">+ Add Drive link</button>`;
+    return `<div class="client-docs"><div class="detail-section-title">Drive Link</div>${rows}${form}</div>`;
+}
+async function addClientDocLink(){
+    if(!currentLead)return;
+    const url=document.getElementById('client-doc-url')?.value.trim()||'';
+    const title='';
+    if(!/^https?:\/\/\S+\.\S+/i.test(url)){toast('Enter a valid link starting with https://','warning');return}
+    const r=await api('add-lead-doc-link','POST',{lead_id:currentLead.id,title,url});
+    if(!r.success){toast(r.error||'Could not save the link','error');return}
+    currentLead=r.lead;addingClientDoc=false;
+    const idx=leads.findIndex(x=>x.id===r.lead.id);if(idx>-1)leads[idx]=r.lead;
+    renderLeadModal();toast('Document link saved','success');
+}
+async function removeClientDocLink(docId){
+    if(!currentLead)return;
+    const ok=await customConfirm('Remove this document link from the deal? The file itself is not touched.','Remove link',{danger:true,confirmText:'Remove'});
+    if(!ok)return;
+    const r=await api('remove-lead-doc-link','POST',{lead_id:currentLead.id,doc_id:docId});
+    if(!r.success){toast(r.error||'Could not remove the link','error');return}
+    currentLead=r.lead;
+    const idx=leads.findIndex(x=>x.id===r.lead.id);if(idx>-1)leads[idx]=r.lead;
+    renderLeadModal();toast('Link removed','success');
+}
+
 /** Explicit save for the Engagement Method step. Its checkboxes/date/
  * status/note now stage into currentLead immediately on change (see
  * toggleEngagementMethod()/stageEngagementField()), so a re-render
@@ -7340,9 +7565,10 @@ function qualifiedPanelHtml(l){
                 <div class="email-subject-line" id="qf-calendly-subject" contenteditable="true">${esc(l.calendly_email_subject||'')}</div>
                 <div class="email-body-content" id="qf-calendly-body" contenteditable="true">${esc(l.calendly_email_body||'').replace(/\n/g,'<br>')}</div>
                 <div class="email-actions">
-                    <button type="button" class="btn btn-primary btn-sm" onclick="openCalendlyEmailClient()">Open in Email Client</button>
+                    <button type="button" class="btn btn-primary btn-sm" onclick="sendCalendlyEmailFromSip()">Send from here</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="openCalendlyEmailClient()">Open in Email Client</button>
                     <button type="button" class="btn btn-success btn-sm" onclick="copyCalendlyEmail()">Copy</button>
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="saveCalendlyEmailEdits()">Save Edits</button>
+                    <button type="button" class="btn btn-primary btn-sm" onclick="saveCalendlyEmailEdits()">Save Edits</button>
                 </div>
                 ${l.calendly_email_subject?`<div class="form-group" style="margin-top:10px;"><label class="form-label">Want it different? Add instructions (optional) and regenerate</label><textarea class="form-textarea" id="qf-calendly-instructions" rows="2" placeholder="e.g. mention their upcoming product launch, keep it shorter...">${esc(l.calendly_custom_instructions||'')}</textarea></div>
                 <button type="button" class="btn btn-ai btn-xs" onclick="generateCalendlyEmail()" id="qf-calendly-btn">Regenerate</button>`:''}
@@ -7552,7 +7778,7 @@ function demoFeasibilityRowHtml(service,l){
     const isFeasible=!!feasibility[service];
     const dealVal=(l.requisitions||{})[`${service}::estimated_deal_value`];
     const amount=(dealVal&&typeof dealVal==='object')?parseFloat(String(dealVal.amount||'0').replace(/,/g,''))||0:0;
-    const currency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||DEFAULT_CURRENCY):DEFAULT_CURRENCY;
+    const currency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||l.deal_currency||DEFAULT_CURRENCY):(l.deal_currency||DEFAULT_CURRENCY);
     // Each service can carry its OWN rate (different % or a different fixed
     // amount per service on the same deal) — falls back to the deal-level
     // rate until a rep overrides this specific service.
@@ -7643,7 +7869,7 @@ async function saveDemoFeasibilityDealValue(service){
     const raw=input.value.replace(/,/g,'').trim();
     const amount=parseFloat(raw)||0;
     const existing=(currentLead.requisitions||{})[`${service}::estimated_deal_value`];
-    const currency=(existing&&typeof existing==='object'&&existing.currency)?existing.currency:DEFAULT_CURRENCY;
+    const currency=(existing&&typeof existing==='object'&&existing.currency)?existing.currency:(currentLead.deal_currency||DEFAULT_CURRENCY);
     const requisitions={...(currentLead.requisitions||{}),[`${service}::estimated_deal_value`]:{amount:String(amount),currency}};
     // Same hazard as saveServiceAnswers() — save-requisitions' response
     // reflects the last-SAVED services/demo_services, not any staged pick
@@ -7728,7 +7954,7 @@ function salesMaterialsSectionHtml(l){
         </div>
         <div style="display:none;gap:6px;" id="sales-materials-edit">
             <input type="url" class="form-input${salesMaterialsLink?' answered':''}" id="sales-materials-input" placeholder="https://drive.google.com/..." value="${esc(salesMaterialsLink)}">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="saveSalesMaterialsLink()">Save</button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="saveSalesMaterialsLink()">Save</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="toggleSalesMaterialsEdit(false)">Cancel</button>
         </div>
     </div>`;
@@ -7767,7 +7993,7 @@ function demoRequirementGatheringBodyHtml(l){
             <div id="demo-clickup-picker" style="display:none;margin-top:8px;border:1px solid var(--border);border-radius:var(--radius-md);max-height:180px;overflow-y:auto;"></div>
             <div id="demo-clickup-status" style="font-size:11.5px;color:var(--text-muted);margin-top:6px;"></div>
             <div style="margin-top:8px;display:flex;gap:8px;">
-                <button type="button" class="btn btn-secondary btn-sm" onclick="saveDemoTranscript()">Save Transcript</button>
+                <button type="button" class="btn btn-primary btn-sm" onclick="saveDemoTranscript()">Save Transcript</button>
                 <button type="button" class="btn btn-secondary btn-sm" id="demo-clickup-btn" onclick="loadDemoClickupMeetings()">Pull from ClickUp</button>
             </div>
         </div>
@@ -7859,7 +8085,7 @@ document.getElementById('modal-body')?.addEventListener('change',async e=>{
         if(payoutEl&&currentLead.partner_id){
             const dealVal=(currentLead.requisitions||{})[`${service}::estimated_deal_value`];
             const svcAmount=(dealVal&&typeof dealVal==='object')?parseFloat(String(dealVal.amount||'0').replace(/,/g,''))||0:0;
-            const svcCurrency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||DEFAULT_CURRENCY):DEFAULT_CURRENCY;
+            const svcCurrency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||currentLead.deal_currency||DEFAULT_CURRENCY):(currentLead.deal_currency||DEFAULT_CURRENCY);
             const svcRate=partnerRateForService(currentLead,service);
             const svcPayout=e.target.checked?calcPartnerPayout(svcAmount,svcRate.type,svcRate.value):0;
             payoutEl.textContent=dealMoneyFmt(svcPayout,svcCurrency);
@@ -8192,7 +8418,7 @@ function costProposalNegotiationRowHtml(service,l){
     const status=cpNegotiationStatusFor(l,service);
     const dealVal=(l.requisitions||{})[`${service}::estimated_deal_value`];
     const amount=(dealVal&&typeof dealVal==='object')?parseFloat(String(dealVal.amount||'0').replace(/,/g,''))||0:0;
-    const currency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||DEFAULT_CURRENCY):DEFAULT_CURRENCY;
+    const currency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||l.deal_currency||DEFAULT_CURRENCY):(l.deal_currency||DEFAULT_CURRENCY);
     const rate=partnerRateForService(l,service);
     const payout=(l.partner_id&&status!=='lost')?calcPartnerPayout(amount,rate.type,rate.value):0;
     const svcKey=esc(service).replace(/'/g,"\\'");
@@ -8401,7 +8627,7 @@ function openCpNegotiationPopup(service){
     cpNegotiateService=service;
     const dealVal=(currentLead.requisitions||{})[`${service}::estimated_deal_value`];
     const currentAmount=(dealVal&&typeof dealVal==='object')?String(dealVal.amount||''):'';
-    const currency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||DEFAULT_CURRENCY):DEFAULT_CURRENCY;
+    const currency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||currentLead.deal_currency||DEFAULT_CURRENCY):(currentLead.deal_currency||DEFAULT_CURRENCY);
     const hasPartner=!!currentLead.partner_id;
     const rate=partnerRateForService(currentLead,service);
     document.getElementById('cp-negotiate-service-name').textContent=serviceTabLabel(service,currentLead);
@@ -8445,7 +8671,7 @@ async function saveCpNegotiation(){
     if(!currentLead||!cpNegotiateService)return;
     const service=cpNegotiateService;
     const dealVal=(currentLead.requisitions||{})[`${service}::estimated_deal_value`];
-    const currency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||DEFAULT_CURRENCY):DEFAULT_CURRENCY;
+    const currency=(dealVal&&typeof dealVal==='object')?(dealVal.currency||currentLead.deal_currency||DEFAULT_CURRENCY):(currentLead.deal_currency||DEFAULT_CURRENCY);
     // What this round is changing FROM — the amount in place right before this
     // save, so the history can show "150,000 → 130,000" instead of a bare
     // snapshot that loses the previous figure the moment a new round is saved.
@@ -9382,6 +9608,7 @@ async function loadAdminSettings(){
         document.getElementById('admin-support-email').value=r.settings.support_email||'';
         document.getElementById('admin-support-from').value=r.settings.support_from||'';
         document.getElementById('admin-outreach-from').value=r.settings.outreach_from||'';
+        document.getElementById('admin-krispcall-key').value=r.settings.krispcall_api_key||'';
         document.getElementById('admin-auth-from').value=r.settings.auth_from||'';
         document.getElementById('admin-otp-enabled').checked=!!r.settings.otp_enabled;
         // Studio default currency — also refreshes the client-side default used
@@ -9389,6 +9616,9 @@ async function loadAdminSettings(){
         if(r.settings.default_currency)DEFAULT_CURRENCY=r.settings.default_currency;
         const curSel=document.getElementById('admin-default-currency');
         if(curSel)curSel.innerHTML=currencyOptions(DEFAULT_CURRENCY);
+        const lrf=r.settings.lead_required_fields||{};
+        document.getElementById('admin-require-linkedin').checked=!!lrf.linkedin;
+        document.getElementById('admin-require-website').checked=!!lrf.website;
         document.getElementById('admin-pusher-app-id').value=r.settings.pusher_app_id||'';
         document.getElementById('admin-pusher-key').value=r.settings.pusher_key||'';
         document.getElementById('admin-pusher-secret').value=r.settings.pusher_secret||'';
@@ -9620,7 +9850,13 @@ document.getElementById('login-form').addEventListener('submit',handleLogin);
 const uz=document.getElementById('upload-zone'),fi=document.getElementById('file-input');uz.addEventListener('click',()=>fi.click());uz.addEventListener('dragover',e=>{e.preventDefault();uz.classList.add('dragover')});uz.addEventListener('dragleave',()=>uz.classList.remove('dragover'));uz.addEventListener('drop',e=>{e.preventDefault();uz.classList.remove('dragover');handleFile(e.dataTransfer.files[0])});fi.addEventListener('change',e=>handleFile(e.target.files[0]));
 document.getElementById('confirm-import').addEventListener('click',confirmImport);
 document.getElementById('confirm-mapping').addEventListener('click',applyMapping);
-document.getElementById('add-lead-form').addEventListener('submit',async e=>{e.preventDefault();const phone=readPhoneInputValue('new');if(phone&&!isValidLeadPhone(phone)){toast('Invalid phone number. Please enter a valid phone number.','warning');return}const r=await api('lead','POST',{first_name:document.getElementById('new-first-name').value,last_name:document.getElementById('new-last-name').value,email:document.getElementById('new-email').value,phone,company:document.getElementById('new-company').value,title:document.getElementById('new-title').value,country:document.getElementById('new-country').value,owner_id:document.getElementById('new-owner').value,notes:document.getElementById('new-notes').value,partner_id:document.getElementById('new-partner-select').value});if(r.success){toast('Lead added','success');e.target.reset();document.getElementById('new-phone-wrap').innerHTML=phoneInputHtml('new','');showPage('leads');showingTrash=false;const sf=document.getElementById('status-filter');if(sf)sf.value='all';loadLeads(1);loadStats()}else toast(r.error||'Failed','error')});
+document.getElementById('add-lead-form').addEventListener('submit',async e=>{e.preventDefault();const phone=readPhoneInputValue('new');if(phone&&!isValidLeadPhone(phone)){toast('Invalid phone number. Please enter a valid phone number.','warning');return}
+const website=document.getElementById('new-website').value.trim(),linkedin=document.getElementById('new-linkedin').value.trim();
+if(LEAD_REQUIRED.website&&!website){toast('Website is required for new leads','warning');return}
+if(LEAD_REQUIRED.linkedin&&!linkedin){toast('LinkedIn URL is required for new leads','warning');return}
+if(website&&!isValidLeadWebsite(website)){toast('Invalid website. Please enter a valid website address.','warning');return}
+if(linkedin&&!/linkedin\.com/i.test(linkedin)){toast('Invalid LinkedIn URL. Please enter a valid LinkedIn profile URL.','warning');return}
+const r=await api('lead','POST',{first_name:document.getElementById('new-first-name').value,last_name:document.getElementById('new-last-name').value,email:document.getElementById('new-email').value,phone,company:document.getElementById('new-company').value,title:document.getElementById('new-title').value,country:document.getElementById('new-country').value,website:website,linkedin:linkedin,owner_id:document.getElementById('new-owner').value,notes:document.getElementById('new-notes').value,partner_id:document.getElementById('new-partner-select').value});if(r.success){toast('Lead added','success');e.target.reset();document.getElementById('new-phone-wrap').innerHTML=phoneInputHtml('new','');showPage('leads');showingTrash=false;const sf=document.getElementById('status-filter');if(sf)sf.value='all';loadLeads(1);loadStats()}else toast(r.error||'Failed','error')});
 function populateNewLeadPartnerSelect(){
     const sel=document.getElementById('new-partner-select');
     if(!sel)return;
@@ -13156,8 +13392,23 @@ document.getElementById('admin-settings-form').addEventListener('submit',async e
 // Card 2 — ClickUp only
 document.getElementById('fireflies-form').addEventListener('submit',async e=>{e.preventDefault();const r=await api('admin-settings','POST',{clickup_token:document.getElementById('admin-clickup-token').value,clickup_workspace_id:document.getElementById('admin-clickup-workspace-id').value,clickup_list_id:document.getElementById('admin-clickup-list-id').value});toast(r.success?'ClickUp settings saved!':(r.error||'Save failed'),r.success?'success':'error')});
 // Card 3 — Email sending only
-document.getElementById('email-settings-form').addEventListener('submit',async e=>{e.preventDefault();const r=await api('admin-settings','POST',{resend_key:document.getElementById('admin-resend-key').value,support_email:document.getElementById('admin-support-email').value,support_from:document.getElementById('admin-support-from').value,outreach_from:document.getElementById('admin-outreach-from').value,auth_from:document.getElementById('admin-auth-from').value});toast(r.success?'Email settings saved!':(r.error||'Save failed'),r.success?'success':'error')});
+document.getElementById('email-settings-form').addEventListener('submit',async e=>{e.preventDefault();const r=await api('admin-settings','POST',{resend_key:document.getElementById('admin-resend-key').value,support_email:document.getElementById('admin-support-email').value,support_from:document.getElementById('admin-support-from').value,outreach_from:document.getElementById('admin-outreach-from').value,auth_from:document.getElementById('admin-auth-from').value});if(r.success)applyLeadRequired(await api('me'));toast(r.success?'Email settings saved!':(r.error||'Save failed'),r.success?'success':'error')});
 document.getElementById('login-security-form').addEventListener('submit',async e=>{e.preventDefault();const r=await api('admin-settings','POST',{otp_enabled:document.getElementById('admin-otp-enabled').checked});toast(r.success?'Login security saved!':(r.error||'Save failed'),r.success?'success':'error')});
+// KrispCall API key.
+document.getElementById('dial-settings-form')?.addEventListener('submit',async e=>{
+    e.preventDefault();
+    const r=await api('admin-settings','POST',{krispcall_api_key:document.getElementById('admin-krispcall-key').value});
+    if(r.success){applyLeadRequired(await api('me'));toast('KrispCall saved','success');}
+    else toast(r.error||'Save failed','error');
+});
+// Lead capture: which of LinkedIn / Website are mandatory.
+document.getElementById('lead-capture-form')?.addEventListener('submit',async e=>{
+    e.preventDefault();
+    const lead_required_fields={linkedin:document.getElementById('admin-require-linkedin').checked,website:document.getElementById('admin-require-website').checked};
+    const r=await api('admin-settings','POST',{lead_required_fields});
+    if(r.success){applyLeadRequired({lead_required_fields});toast('Lead capture settings saved','success');}
+    else toast(r.error||'Save failed','error');
+});
 // Default currency for new deals and jobs.
 document.getElementById('finance-settings-form')?.addEventListener('submit',async e=>{
     e.preventDefault();
@@ -13173,7 +13424,7 @@ document.getElementById('ticket-sync-form').addEventListener('submit',async e=>{
 document.querySelectorAll('.provider-card').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.provider-card').forEach(x=>x.classList.remove('selected'));c.classList.add('selected');document.getElementById('admin-provider').value=c.dataset.provider}));
 document.getElementById('add-req-form').addEventListener('submit',async e=>{e.preventDefault();const idx=document.getElementById('edit-req-id').value;const type=document.getElementById('req-type-input').value;const options=type==='text'?[]:document.getElementById('req-options-input').value.split('\n').map(o=>o.trim()).filter(o=>o);if(type!=='text'&&!options.length){toast('Add at least one option','warning');return;}const newReq={id:idx!==''?reqConfig[idx].id:'req_'+Date.now(),title:document.getElementById('req-title-input').value,subtitle:document.getElementById('req-subtitle-input').value,type,options,enabled:true};if(idx!=='')reqConfig[idx]=newReq;else reqConfig.push(newReq);await api('admin-settings','POST',{requisitions:reqConfig});renderReqList();closeModal('add-req-modal');toast('Saved!','success')});
 document.getElementById('create-user-form').addEventListener('submit',async e=>{e.preventDefault();const typedPass=document.getElementById('new-user-pass').value;const _nr=document.getElementById('new-user-role').value;const r=await api('create-user','POST',{name:document.getElementById('new-user-name').value,title:document.getElementById('new-user-title').value,email:document.getElementById('new-user-email').value,password:typedPass,is_admin:_nr==='admin'||_nr==='super_admin',is_super_admin:_nr==='super_admin',is_channel_partner:_nr==='channel_partner'});if(r.success){const box=document.getElementById('new-user-password');box.innerHTML='';box.style.display='none';e.target.reset();loadUsers();closeModal('create-user-modal');toast('User created','success')}else toast(r.error||'Failed','error')});
-document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m&&m.id!=='confirm-modal')m.classList.remove('active')}));
+document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m&&!['confirm-modal','call-log-modal','lead-mail-modal'].includes(m.id))m.classList.remove('active')}));
 document.querySelectorAll('#ec-type-tabs .email-type-tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('#ec-type-tabs .email-type-tab').forEach(x=>x.classList.remove('active'));t.classList.add('active')}));
 // Expose internal functions needed by global sowOpenDoc / cpOpenDoc / loadSavedDocuments
 window._sowFill=sowFill; window._sowRenderPreview=sowRenderPreview; window._sowGoStep=sowGoStep; window._sowLoadCpOptions=sowLoadCpOptions;
@@ -13186,6 +13437,7 @@ window.arGoStep=arGoStep;
 }
 const SYSTEM_FIELDS = [
     {value:'',label:'Skip'},
+    {value:'full_name',label:'Full Name (split into first / last)'},
     {value:'first_name',label:'First Name'},
     {value:'last_name',label:'Last Name'},
     {value:'email',label:'Email'},
@@ -13201,6 +13453,50 @@ const SYSTEM_FIELDS = [
     {value:'zoho_id',label:'Zoho Record ID'},
 ];
 
+// The standard bulk-upload template. Headers are chosen so guessField() maps every one of them
+// automatically; the order is the order shown on the Add Lead form.
+const LEAD_TEMPLATE_COLUMNS=['First Name','Last Name','Email','Phone','Company','Job Title','Industry','Country','Website','LinkedIn URL','Company Size','Notes'];
+function leadTemplateInstructions(){
+    const req=k=>LEAD_REQUIRED[k]?'REQUIRED':'Optional';
+    return [
+        ['Column','Required?','What to enter'],
+        ['First Name','Required*','Given name. (*Each row needs at least one of First Name, Last Name, Email, Company or Phone.)'],
+        ['Last Name','Optional','Family name'],
+        ['Email','Optional','Used to detect duplicates, so include it where you can'],
+        ['Phone','Optional','With country code, e.g. +94 77 123 4567 or +64 21 123 4567'],
+        ['Company','Optional','Company or organisation name'],
+        ['Job Title','Optional','e.g. Operations Manager'],
+        ['Industry','Optional',''],
+        ['Country','Optional',''],
+        ['Website',req('website'),'e.g. https://company.com (https:// is added if you leave it off)'],
+        ['LinkedIn URL',req('linkedin'),'Must be a linkedin.com address, e.g. https://linkedin.com/in/name'],
+        ['Company Size','Optional','e.g. 11-50'],
+        ['Notes','Optional','Anything worth keeping about how this lead came in'],
+        [],
+        ['Delete this sheet if you like. Only the "Leads" sheet is read, and its first row must stay as the headers.'],
+    ];
+}
+function downloadLeadTemplate(fmt){
+    if(fmt==='xlsx'&&typeof XLSX!=='undefined'){
+        const wb=XLSX.utils.book_new();
+        const ws=XLSX.utils.aoa_to_sheet([LEAD_TEMPLATE_COLUMNS]);
+        ws['!cols']=LEAD_TEMPLATE_COLUMNS.map(c=>({wch:Math.max(14,c.length+4)}));
+        XLSX.utils.book_append_sheet(wb,ws,'Leads');
+        const wi=XLSX.utils.aoa_to_sheet(leadTemplateInstructions());
+        wi['!cols']=[{wch:16},{wch:12},{wch:90}];
+        XLSX.utils.book_append_sheet(wb,wi,'Instructions');
+        XLSX.writeFile(wb,'levata-lead-upload-template.xlsx');
+        return;
+    }
+    const blob=new Blob([LEAD_TEMPLATE_COLUMNS.join(',')+'\n'],{type:'text/csv'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='levata-lead-upload-template.csv';
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+function updateImportRequiredNote(){
+    const el=document.getElementById('import-required-note');if(!el)return;
+    const req=['linkedin','website'].filter(k=>LEAD_REQUIRED[k]).map(k=>k==='linkedin'?'LinkedIn URL':'Website');
+    el.textContent=req.length?`Mandatory on every row: ${req.join(' and ')}.`:'';
+}
 // Auto-guess system field from a raw column header
 function guessField(col) {
     const c = col.toLowerCase().replace(/[\s_\-\.]+/g,'');
@@ -13232,7 +13528,16 @@ function guessField(col) {
         // Zoho
         zohoid:            'zoho_id', recordid: 'zoho_id',
     };
-    return map[c] || '';
+    if (map[c]) return map[c];
+    // Headers the exact list doesn't know ("Company Website", "Website URL", "Mobile Phone"...): match on what they contain.
+    if (c.includes('linkedin')) return 'linkedin';
+    if (c.includes('website') || c.includes('webaddress') || c.includes('homepage') || c === 'site' || c === 'companysite' || c.endsWith('domain') || c.endsWith('url')) return 'website';
+    if (c.includes('email')) return 'email';
+    if (c.includes('phone') || c.includes('mobile') || c.includes('telephone')) return 'phone';
+    if (c.includes('employee') || c.includes('headcount')) return 'company_size';
+    if (c.includes('organisation') || c.includes('organization') || c.startsWith('company')) return 'company';
+    if (c === 'fullname' || c === 'name' || c === 'contactname') return 'full_name';
+    return '';
 }
 
 let rawCsvRows = [];
@@ -13292,10 +13597,13 @@ function handleFile(f) {
 }
 
 function showMappingStep(headers) {
-    document.getElementById('mapping-rows').innerHTML = headers.map((h) => {
-        const guess = guessField(h);
+    const _taken = new Set();   // two columns can't both default to the same field: the first one wins, the rest start as Skip
+    const guesses = headers.map(h => { const g = guessField(h); if (!g || _taken.has(g)) return ''; _taken.add(g); return g; });
+    updateImportRequiredNote();
+    document.getElementById('mapping-rows').innerHTML = headers.map((h, hi) => {
+        const guess = guesses[hi];
         const matched = !!guess;
-        const opts = SYSTEM_FIELDS.map(f => `<option value="${f.value}"${f.value === guess ? ' selected' : ''}>${f.label}</option>`).join('');
+        const opts = SYSTEM_FIELDS.map(f => `<option value="${f.value}"${f.value === guess ? ' selected' : ''}>${f.label}${LEAD_REQUIRED[f.value] ? ' (required)' : ''}</option>`).join('');
         const sample = rawCsvRows.slice(0, 3).map(r => r[h]).filter(x => x && x.length < 60).join(', ');
         const dot = matched
             ? `<span style="width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block;flex-shrink:0;"></span>`
@@ -13319,19 +13627,40 @@ function showMappingStep(headers) {
     document.getElementById('import-mapping').scrollIntoView({behavior:'smooth', block:'start'});
 }
 
+/** Turns raw file rows + {column: field} into the lead objects sent to `import`. A blank cell never overwrites a value another column already supplied to the same field, and Full Name is split into first/last. */
+function buildImportRows(rows, mapping) {
+    return rows.map(row => {
+        const out = {};
+        Object.entries(mapping).forEach(([col, field]) => {
+            const v = String(row[col] ?? '').trim();
+            if (!(field in out) || (v && !out[field])) out[field] = v;   // first non-empty column wins
+        });
+        if (out.full_name !== undefined) {
+            const full = out.full_name; delete out.full_name;
+            if (full && !out.first_name) {
+                const i = full.indexOf(' ');
+                out.first_name = i < 0 ? full : full.slice(0, i);
+                if (!out.last_name && i >= 0) out.last_name = full.slice(i + 1).trim();
+            }
+        }
+        return out;
+    }).filter(r => Object.values(r).some(x => x));
+}
 function applyMapping() {
     const selects = document.querySelectorAll('.mapping-select');
     const mapping = {};
     selects.forEach(s => { if (s.value) mapping[s.dataset.col] = s.value; });
-    if (!Object.values(mapping).includes('first_name') && !Object.values(mapping).includes('email') && !Object.values(mapping).includes('company')) {
-        return toast('Map at least one of: First Name, Email, or Company', 'error');
+    if (!['first_name','full_name','email','company'].some(f => Object.values(mapping).includes(f))) {
+        return toast('Map at least one of: First Name, Full Name, Email, or Company', 'error');
     }
-    importData = rawCsvRows.map(row => {
-        const out = {};
-        Object.entries(mapping).forEach(([col, field]) => { out[field] = row[col] || ''; });
-        return out;
-    }).filter(r => Object.values(r).some(x => x));
+    const mappedFields = Object.values(mapping);
+    const missingCols = ['linkedin','website'].filter(k => LEAD_REQUIRED[k] && !mappedFields.includes(k));
+    if (missingCols.length) return toast('Map a column to: ' + missingCols.map(k => k === 'linkedin' ? 'LinkedIn URL' : 'Website').join(' and ') + ' (mandatory)', 'error');
+    importData = buildImportRows(rawCsvRows, mapping);
     if (!importData.length) return toast('No data after mapping', 'error');
+    // Rows missing a mandatory value will be rejected by the server; say so before importing.
+    const gaps = ['linkedin','website'].filter(k => LEAD_REQUIRED[k]).map(k => [k, importData.filter(r => !(r[k]||'').trim()).length]).filter(([,n]) => n);
+    if (gaps.length) toast(gaps.map(([k,n]) => `${n} row${n===1?'':'s'} missing ${k === 'linkedin' ? 'LinkedIn URL' : 'Website'}`).join(', ') + ': those rows will be rejected', 'warning');
     document.getElementById('import-preview').style.display = 'block';
     document.getElementById('preview-count').textContent = importData.length;
     document.getElementById('preview-table-body').innerHTML = importData.slice(0, 8).map(x =>
@@ -13360,7 +13689,11 @@ if(r.success){
     if (r.skipped > 0) {
         msg += `, skipped ${r.skipped} duplicates`;
     }
-    toast(msg, 'success');
+    if (r.rejected > 0) {
+        msg += `, rejected ${r.rejected} (${(r.rejected_rows||[]).slice(0,3).map(x=>`row ${x.row}: ${x.reason}`).join('; ')}${r.rejected>3?'...':''})`;
+        console.log('Rejected rows:', r.rejected_rows);
+    }
+    toast(msg, r.rejected > 0 ? 'warning' : 'success');
 
     // Show duplicate details if any
     if (r.duplicates && r.duplicates.length > 0) {
@@ -13404,6 +13737,8 @@ function showPage(p){
     const nav=[...document.querySelectorAll(`.nav-item[data-page="${p}"]`)].find(x=>!x.hidden);
     nav?.classList.add('active');
     if(p==='command-center'){loadCommandCenter();loadStats();}
+    if(p==='add-lead')applyLeadRequired();
+    if(p==='import')updateImportRequiredNote();
     if(p==='add-lead'&&!user?.is_channel_partner){populateOwnerSelect();ensurePartnersLoaded().then(populateNewLeadPartnerSelect);}
     // Documents: default to the Create wizard at step 1 unless a document is open in the preview.
     if(p==='sow'&&typeof window.sowOnEnter==='function')window.sowOnEnter();

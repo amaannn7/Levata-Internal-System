@@ -464,7 +464,7 @@ function extractDocumentInvestmentAmount($docInput) {
  * finance figures wrong.
  */
 function supportedCurrencies() {
-    return ['LKR', 'USD', 'EUR', 'GBP', 'AUD', 'AED', 'INR', 'SGD', 'CAD'];
+    return ['LKR', 'USD', 'EUR', 'GBP', 'AUD', 'AED', 'INR', 'SGD', 'CAD', 'NZD'];
 }
 
 /** The studio's default currency (Admin → Settings), used for new records. */
@@ -477,6 +477,40 @@ function defaultCurrency() {
 function normalizeCurrency($c) {
     $c = strtoupper(trim((string) $c));
     return in_array($c, supportedCurrencies(), true) ? $c : defaultCurrency();
+}
+
+/**
+ * Which optional lead fields the studio has made mandatory at creation
+ * (Admin → Settings → Lead Capture). Both default to optional. Enforced by the
+ * `lead` create action and the bulk `import` action; the frontend mirrors it
+ * (`LEAD_REQUIRED`, seeded from `me`) so the form can mark the fields up front.
+ */
+function leadRequiredFields() {
+    $r = getAdmin()['lead_required_fields'] ?? [];
+    return ['linkedin' => !empty($r['linkedin']), 'website' => !empty($r['website'])];
+}
+
+/** KrispCall is the only calling service. The Call button counts as configured only once an API key is saved (Admin → Settings → KrispCall). */
+function callConfigured() {
+    return trim(getAdmin()['krispcall_api_key'] ?? '') !== '';
+}
+/** Whether sales email can be sent (needs the Resend API key, same as support email). */
+function outreachEmailConfigured() {
+    return trim(getAdmin()['resend_key'] ?? '') !== '';
+}
+
+/** Non-fatal twin of validateLeadContactFields' LinkedIn/website rules, for bulk import (a bad row is reported, not a 400). Returns [normalisedWebsite, linkedinError|null, websiteError|null]. */
+function checkLeadLinkWebsite($linkedin, $website) {
+    $linkedin = trim((string) $linkedin);
+    $website = trim((string) $website);
+    $websiteErr = null;
+    if ($website !== '') {
+        if (!preg_match('/^https?:\/\/|^www\./i', $website)) $website = 'https://' . $website;
+        $host = parse_url($website, PHP_URL_HOST);
+        if (!$host || strpos($host, '.') === false) $websiteErr = 'Website is not a valid address';
+    }
+    $linkedinErr = ($linkedin !== '' && stripos($linkedin, 'linkedin.com') === false) ? 'LinkedIn is not a linkedin.com URL' : null;
+    return [$website, $linkedinErr, $websiteErr];
 }
 
 /**
@@ -527,6 +561,88 @@ function setDealAmount(&$lead, $amount, $stage = '', $actor = null) {
             (trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? ''))) . ': ' . $cur . ' ' . number_format($new));
     }
     return true;
+}
+
+/**
+ * One currency per deal. Every money answer on a deal ({service}::estimated_deal_value, Client budget...
+ * anything stored as {amount, currency} in requisitions) is labelled in the DEAL's currency, so the
+ * roll-up can never skip or relabel a service because it carries a stale code. Numbers are never
+ * converted, only the code is aligned (CLAUDE.md: money is never converted between currencies).
+ */
+function syncDealMoneyCurrencies(&$lead) {
+    if (!is_array($lead['requisitions'] ?? null)) return;
+    $cur = normalizeCurrency($lead['deal_currency'] ?? '');
+    foreach ($lead['requisitions'] as $k => $v) {
+        if (is_array($v) && array_key_exists('amount', $v) && array_key_exists('currency', $v)) {
+            $lead['requisitions'][$k]['currency'] = $cur;
+        }
+    }
+}
+
+/**
+ * Changes a deal's currency and carries it everywhere the deal's money is labelled: the deal total, every
+ * service value / budget answer, and (for a won deal) the jobs registered from it, whose invoices take the
+ * job's currency. The amounts stay as typed. Refused for a won deal that already has a PAID invoice, since
+ * relabelling money that was actually received would corrupt finance. Returns
+ * ['ok'=>bool, 'error'=>?string, 'changed'=>bool, 'warnings'=>string[]].
+ */
+function changeDealCurrency(&$lead, $newCurrency, $actor = null) {
+    $old = normalizeCurrency($lead['deal_currency'] ?? '');
+    $new = normalizeCurrency($newCurrency);
+    if ($old === $new) {
+        syncDealMoneyCurrencies($lead);
+        return ['ok' => true, 'error' => null, 'changed' => false, 'warnings' => []];
+    }
+
+    // A won deal's jobs follow it, unless money has already been received against them.
+    $jobIds = array_values(array_filter((array) ($lead['job_ids'] ?? [])));
+    if (!empty($lead['job_id']) && !in_array($lead['job_id'], $jobIds, true)) $jobIds[] = $lead['job_id'];
+    $jobStore = null; $touched = [];
+    if ($jobIds) {
+        $jobStore = getJobsStore();
+        foreach ($jobStore['jobs'] as $i => $j) {
+            if (!in_array($j['id'] ?? '', $jobIds, true) && ($j['lead_id'] ?? '') !== ($lead['id'] ?? '')) continue;
+            foreach (($j['invoices'] ?? []) as $inv) {
+                if (($inv['status'] ?? '') === 'paid') {
+                    return ['ok' => false, 'changed' => false, 'warnings' => [], 'error' =>
+                        'This deal has already been invoiced and paid on ' . ($j['job_no'] ?? 'its job') . ' in ' . normalizeCurrency($j['currency'] ?? '')
+                        . ', so its currency can no longer be changed here.'];
+                }
+            }
+            $touched[] = $i;
+        }
+    }
+    foreach ($touched as $i) {
+        $jobStore['jobs'][$i]['currency'] = $new;
+        $jobStore['jobs'][$i]['updated_at'] = date('c');
+    }
+    if ($touched) saveJobsStore($jobStore);
+
+    $lead['deal_currency'] = $new;
+    syncDealMoneyCurrencies($lead);
+    $lead['updated_at'] = date('c');
+    logActivity($lead, 'currency_change', "Deal currency changed from $old to $new" . ($touched ? ' (' . count($touched) . ' job' . (count($touched) === 1 ? '' : 's') . ' updated)' : '') . '. Amounts are unchanged.',
+        ['actor' => $actor]);
+    if (!empty($lead['partner_id'])) {
+        partnerNotifyLead($lead, 'leads', 'Deal currency changed',
+            (trim($lead['company'] ?? '') ?: trim(($lead['first_name'] ?? '') . ' ' . ($lead['last_name'] ?? ''))) . ": $old to $new");
+    }
+
+    // Generated documents carry their currency as text and can't be rewritten: say which ones to regenerate.
+    $warnings = [];
+    $docIds = array_filter(array_merge(
+        [$lead['cost_proposal_id'] ?? '', $lead['sow_id'] ?? ''],
+        array_values((array) ($lead['cost_proposal_by_service'] ?? [])),
+        array_values((array) ($lead['sow_by_service'] ?? []))
+    ));
+    if ($docIds) {
+        $nos = [];
+        foreach (getAllDocuments() as $d) {
+            if (in_array($d['id'] ?? '', $docIds, true)) $nos[] = $d['doc_no'] ?? $d['id'];
+        }
+        if ($nos) $warnings[] = 'Already-generated documents (' . implode(', ', array_unique($nos)) . ") still show $old: regenerate or edit them to show $new.";
+    }
+    return ['ok' => true, 'error' => null, 'changed' => true, 'warnings' => $warnings];
 }
 
 /**
@@ -3847,11 +3963,15 @@ case 'set-deal-amount':
     }
     if ($targetIdx === null) respond(['success' => false, 'error' => 'Lead not found'], 404);
     $lead = $leadsStore['leads'][$targetIdx];
+    $curChange = ['ok' => true, 'changed' => false, 'warnings' => []];
+    if (isset($input['currency']) && trim($input['currency']) !== '') {
+        $curChange = changeDealCurrency($lead, $input['currency'], $u['name'] ?? ($u['id'] ?? null));
+        if (!$curChange['ok']) respond(['success' => false, 'error' => $curChange['error']], 409);
+    }
     $changed = setDealAmount($lead, $input['amount'] ?? 0, '', $u['id'] ?? null);
-    if (isset($input['currency']) && trim($input['currency']) !== '') $lead['deal_currency'] = normalizeCurrency($input['currency']);
     $leadsStore['leads'][$targetIdx] = $lead;
     saveLeadsStore($leadsStore);
-    respond(['success' => true, 'lead' => $lead, 'changed' => $changed]);
+    respond(['success' => true, 'lead' => $lead, 'changed' => $changed, 'currency_changed' => $curChange['changed'], 'warnings' => $curChange['warnings']]);
     break;
 
 /** Link a generated CP/SOW document back to the deal it came from. */
@@ -5309,7 +5429,7 @@ case 'me':
             'is_super_admin' => $user['is_super_admin'] ?? false,
             'is_channel_partner' => !empty($user['is_channel_partner']),
             'onboarding_completed' => $userData['onboarding_completed'] ?? true
-        ], 'default_currency' => defaultCurrency(), 'currencies' => supportedCurrencies()]);
+        ], 'default_currency' => defaultCurrency(), 'currencies' => supportedCurrencies(), 'lead_required_fields' => leadRequiredFields(), 'call_configured' => callConfigured(), 'email_configured' => outreachEmailConfigured()]);
     }
     respond(['success' => false, 'error' => 'Not authenticated'], 401);
     break;
@@ -5330,7 +5450,7 @@ case 'admin-settings':
         $masked = [];
         foreach ($admin as $k => $v) {
             // Mask API keys and secrets
-            if ((strpos($k, '_key') !== false || strpos($k, '_secret') !== false || strpos($k, '_token') !== false) && $v && is_string($v)) {
+            if ((strpos($k, '_key') !== false || strpos($k, '_secret') !== false || strpos($k, '_token') !== false ) && $v && is_string($v)) {
                 $masked[$k] = '********' . substr($v, -4);
             } else {
                 $masked[$k] = $v;
@@ -5354,6 +5474,13 @@ case 'admin-settings':
             if (isset($input[$k])) $admin[$k] = trim($input[$k]);
         }
         if (isset($input['default_provider'])) $admin['default_provider'] = $input['default_provider'];
+        // Lead capture: which optional fields are mandatory when a lead is created or imported.
+        if (isset($input['lead_required_fields']) && is_array($input['lead_required_fields'])) {
+            $admin['lead_required_fields'] = [
+                'linkedin' => !empty($input['lead_required_fields']['linkedin']),
+                'website' => !empty($input['lead_required_fields']['website']),
+            ];
+        }
         // Studio default currency — what new deals and jobs start as.
         if (isset($input['default_currency'])) {
             $c = strtoupper(trim($input['default_currency']));
@@ -5385,6 +5512,8 @@ case 'admin-settings':
         // Internal tickets: staff and channel partners raise tickets inside this system, handled under the closing SOP.
         if (array_key_exists('ticket_internal', $input)) $admin['ticket_internal'] = !empty($input['ticket_internal']);
         if (isset($input['ticket_raisers'])) $admin['ticket_raisers'] = $input['ticket_raisers'] === 'all' ? 'all' : 'partners';
+        // KrispCall (click-to-call). No key saved = the Call button says the API is not configured.
+        if (isset($input['krispcall_api_key']) && strpos($input['krispcall_api_key'], '****') === false) $admin['krispcall_api_key'] = trim($input['krispcall_api_key']);
         // Sales outreach: verified From address for emails sent to leads from the system.
         if (isset($input['outreach_from'])) $admin['outreach_from'] = trim($input['outreach_from']);
         // Auth emails: sign-in codes + password reset links (see sendAuthEmail()).
@@ -5875,6 +6004,9 @@ case 'lead':
         $website = trim($input['website'] ?? '');
         $phone = trim($input['phone'] ?? '');
         $website = validateLeadContactFields($email, $linkedin, $website, $phone);
+        $required = leadRequiredFields();
+        if ($required['linkedin'] && $linkedin === '') respond(['success' => false, 'error' => 'LinkedIn URL is required for new leads.'], 400);
+        if ($required['website'] && $website === '') respond(['success' => false, 'error' => 'Website is required for new leads.'], 400);
 
         // A channel partner's new deal is always their own: credited to them, owned by their
         // login (so the team can tell it came from a partner), never assignable elsewhere.
@@ -6034,6 +6166,7 @@ case 'save-requisitions':
     foreach ($leadsStore['leads'] as &$lead) {
         if ($lead['id'] === $leadId) {
             $lead['requisitions'] = $requisitions;
+            syncDealMoneyCurrencies($lead);   // service values/budget are always in the deal's currency
             $lead['updated_at'] = date('c');
             saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
@@ -6057,6 +6190,7 @@ case 'save-call-outcome':
             }
             $lead['call_outcome'] = $outcome;
             $lead['requisitions'] = $input['requisitions'] ?? $lead['requisitions'];
+            syncDealMoneyCurrencies($lead);
             $lead['call_notes'] = $input['notes'] ?? '';
             $lead['next_action'] = $input['next_action'] ?? $outcomeConfig['next_action'];
             $lead['followup_date'] = $input['followup_date'] ?? null;
@@ -6126,6 +6260,148 @@ case 'add-lead-note':
             saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead]);
         }
+    }
+    respond(['success' => false, 'error' => 'Lead not found'], 404);
+    break;
+
+/**
+ * Post-call logging for the click-to-call button (lead modal Profile tab + Engagement step).
+ * The call itself is made in KrispCall; this records what
+ * happened. It is activity within the stage, NOT a stage move (unlike save-call-outcome, which
+ * is the old outbound outcome picker and moves the deal): it appends to call_history, writes the
+ * call note into the deal's notes history, and ticks Call as an engagement method.
+ */
+case 'log-call':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $leadsStore = getLeadsStore();
+    $leadId = $input['lead_id'] ?? '';
+    $callOutcomes = [
+        'connected' => 'Connected, spoke',
+        'no_answer' => 'No answer',
+        'voicemail' => 'Left voicemail',
+        'busy' => 'Busy / call back later',
+        'wrong_number' => 'Wrong number',
+    ];
+    $outcome = trim($input['outcome'] ?? '');
+    if (!isset($callOutcomes[$outcome])) respond(['success' => false, 'error' => 'Pick how the call went'], 400);
+    $callNotes = trim((string) ($input['notes'] ?? ''));
+    if ($outcome === 'connected' && $callNotes === '') respond(['success' => false, 'error' => 'Add a note on what was discussed'], 400);
+    $duration = max(0, min(86400, intval($input['duration_seconds'] ?? 0)));
+    $callNotes = mb_substr($callNotes, 0, 4000);
+
+    foreach ($leadsStore['leads'] as &$lead) {
+        if ($lead['id'] !== $leadId) continue;
+        $who = $user['name'] ?? $user['email'] ?? '';
+        $startedAt = trim($input['started_at'] ?? '');
+        $ts = strtotime($startedAt);
+        $entry = [
+            'id' => 'call_' . bin2hex(random_bytes(8)),
+            'started_at' => $ts ? date('c', $ts) : date('c'),
+            'completed_at' => date('c'),
+            'status' => 'completed',
+            'via' => 'krispcall',
+            'outcome' => $outcome,
+            'outcome_label' => $callOutcomes[$outcome],
+            'duration_seconds' => $duration,
+            'number' => sanitizeInput($input['number'] ?? ($lead['phone'] ?? '')),
+            'notes' => $callNotes,
+            'rep_id' => $user['id'],
+            'rep_name' => $who,
+        ];
+        $lead['call_history'] = array_merge($lead['call_history'] ?? [], [$entry]);
+        $lead['calls_made'] = ($lead['calls_made'] ?? 0) + 1;
+        if ($callNotes !== '') $lead['call_notes'] = $callNotes;
+
+        // A logged call is engagement: tick Call, stamp the first-engagement date, and mark the
+        // status Contacted when the person was actually reached (never downgrade an existing status).
+        $methods = $lead['engagement_method'] ?? [];
+        if (!in_array('Call', $methods, true)) $methods[] = 'Call';
+        $lead['engagement_method'] = $methods;
+        if (empty($lead['engagement_date'])) $lead['engagement_date'] = date('Y-m-d');
+        if ($outcome === 'connected') $lead['engagement_status'] = 'Contacted';
+        elseif (empty($lead['engagement_status'])) $lead['engagement_status'] = 'Attempted to contact';
+
+        $mins = floor($duration / 60);
+        $durLabel = $duration > 0 ? ($mins > 0 ? $mins . 'm ' : '') . ($duration % 60) . 's' : '';
+        $detail = "\u{1F4DE} Call: " . $callOutcomes[$outcome] . ($durLabel !== '' ? " ($durLabel)" : '') . ($callNotes !== '' ? "\n" . $callNotes : '');
+        logActivity($lead, 'note', $detail, ['actor' => $who, 'kind' => 'call']);
+        $lead['last_action'] = 'call_logged';
+        $lead['last_action_at'] = date('c');
+        $lead['updated_at'] = date('c');
+        saveLeadsStore($leadsStore);
+        respond(['success' => true, 'lead' => $lead]);
+    }
+    respond(['success' => false, 'error' => 'Lead not found'], 404);
+    break;
+
+/**
+ * Inbound client documents on a deal, kept as links (Google Drive, OneDrive, Dropbox, SharePoint...)
+ * rather than uploads: the files stay in the team's/client's own drive, SIP holds the pointer, a
+ * title and who added it. Shown on the lead modal's Profile tab.
+ */
+case 'add-lead-doc-link':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $leadsStore = getLeadsStore();
+    $leadId = $input['lead_id'] ?? '';
+    $docUrl = trim($input['url'] ?? '');
+    if (!filter_var($docUrl, FILTER_VALIDATE_URL) || !preg_match('/^https?:\/\//i', $docUrl)) {
+        respond(['success' => false, 'error' => 'Enter a valid link starting with https://'], 400);
+    }
+    $host = strtolower((string) parse_url($docUrl, PHP_URL_HOST));
+    $provider = 'Link';
+    foreach (['drive.google.com' => 'Google Drive', 'docs.google.com' => 'Google Drive', 'onedrive.live.com' => 'OneDrive', '1drv.ms' => 'OneDrive',
+              'sharepoint.com' => 'SharePoint', 'dropbox.com' => 'Dropbox', 'box.com' => 'Box', 'notion.so' => 'Notion', 'figma.com' => 'Figma'] as $needle => $label) {
+        if ($host === $needle || substr($host, -strlen('.' . $needle)) === '.' . $needle) { $provider = $label; break; }
+    }
+    $docTitle = mb_substr(trim(sanitizeInput($input['title'] ?? '')), 0, 120);
+    if ($docTitle === '') $docTitle = $provider . ' document';
+
+    foreach ($leadsStore['leads'] as &$lead) {
+        if ($lead['id'] !== $leadId) continue;
+        $docs = $lead['client_documents'] ?? [];
+        if (count($docs) >= 50) respond(['success' => false, 'error' => 'A deal can hold up to 50 document links'], 400);
+        foreach ($docs as $d) {
+            if (strcasecmp($d['url'] ?? '', $docUrl) === 0) respond(['success' => false, 'error' => 'That link is already saved on this deal'], 409);
+        }
+        $docs[] = [
+            'id' => 'doclink_' . bin2hex(random_bytes(6)),
+            'title' => $docTitle,
+            'url' => $docUrl,
+            'provider' => $provider,
+            'added_by' => $user['name'] ?? $user['email'] ?? '',
+            'added_by_id' => $user['id'],
+            'added_at' => date('c'),
+        ];
+        $lead['client_documents'] = $docs;
+        logActivity($lead, 'doc_link', 'Client document linked: ' . $docTitle, ['actor' => $user['name'] ?? '']);
+        $lead['updated_at'] = date('c');
+        saveLeadsStore($leadsStore);
+        respond(['success' => true, 'lead' => $lead]);
+    }
+    respond(['success' => false, 'error' => 'Lead not found'], 404);
+    break;
+
+case 'remove-lead-doc-link':
+    if ($method !== 'POST') break;
+    $user = requireAuth();
+    $leadsStore = getLeadsStore();
+    $leadId = $input['lead_id'] ?? '';
+    $docId = $input['doc_id'] ?? '';
+    foreach ($leadsStore['leads'] as &$lead) {
+        if ($lead['id'] !== $leadId) continue;
+        $before = $lead['client_documents'] ?? [];
+        $removed = null;
+        $lead['client_documents'] = array_values(array_filter($before, function ($d) use ($docId, &$removed) {
+            if (($d['id'] ?? '') === $docId) { $removed = $d; return false; }
+            return true;
+        }));
+        if (!$removed) respond(['success' => false, 'error' => 'Document link not found'], 404);
+        logActivity($lead, 'doc_link', 'Client document link removed: ' . ($removed['title'] ?? ''), ['actor' => $user['name'] ?? '']);
+        $lead['updated_at'] = date('c');
+        saveLeadsStore($leadsStore);
+        respond(['success' => true, 'lead' => $lead]);
     }
     respond(['success' => false, 'error' => 'Lead not found'], 404);
     break;
@@ -6203,10 +6479,12 @@ case 'update-lead':
                     if ($u['id'] === $input['owner_id']) { $lead['owner_id'] = $input['owner_id']; break; }
                 }
             }
+            $curChange = ['ok' => true, 'changed' => false, 'warnings' => []];
             // The deal amount can be changed at any stage.
             if (isset($input['deal_amount'])) setDealAmount($lead, $input['deal_amount'], '', $user['id']);
             if (isset($input['deal_currency']) && trim($input['deal_currency']) !== '') {
-                $lead['deal_currency'] = normalizeCurrency($input['deal_currency']);
+                $curChange = changeDealCurrency($lead, $input['deal_currency'], $user['name'] ?? ($user['id'] ?? null));
+                if (!$curChange['ok']) respond(['success' => false, 'error' => $curChange['error']], 409);
             }
             $requestedStage = trim($input['stage'] ?? $input['status'] ?? '');
             if ($requestedStage !== '') {
@@ -6275,9 +6553,10 @@ case 'update-lead':
                 setLeadStage($lead, $requestedStage, 'manual_update', $user['id']);
             }
             $lead = normalizeLeadForMapping($lead);
+            syncDealMoneyCurrencies($lead);
             $lead['updated_at'] = date('c');
             saveLeadsStore($leadsStore);
-            respond(['success' => true, 'lead' => $lead]);
+            respond(['success' => true, 'lead' => $lead, 'currency_changed' => !empty($curChange['changed']), 'warnings' => $curChange['warnings'] ?? []]);
         }
     }
     respond(['success' => false, 'error' => 'Lead not found'], 404);
@@ -6309,8 +6588,12 @@ case 'import':
     $imported = 0;
     $skipped = 0;
     $duplicates = [];
+    $rejected = [];   // rows refused for a missing mandatory field (Admin → Settings → Lead Capture)
+    $requiredFields = leadRequiredFields();
+    $rowNo = 0;
 
     foreach ($csvData as $row) {
+        $rowNo++;
         if (!is_array($row)) continue;
         $email = trim(str_replace(['"', "'"], '', $row['email'] ?? $row['Email'] ?? $row['EMAIL'] ?? ''));
         if ($email && !filter_var($email, FILTER_VALIDATE_EMAIL)) $email = '';
@@ -6321,6 +6604,28 @@ case 'import':
         $company = trim($row['company'] ?? $row['Company'] ?? $row['company_name'] ?? $row['Company name'] ?? '');
         $phone = trim($row['phone'] ?? $row['Phone'] ?? $row['mobile'] ?? $row['Mobile'] ?? '');
         if (!$email && !$firstName && !$lastName && !$company && !$phone) continue;
+
+        // LinkedIn / website: a mandatory one that is missing or malformed rejects the row (reported
+        // back by row number); an optional one that is malformed is dropped rather than losing the lead.
+        $rowLinkedin = trim($row['linkedin'] ?? $row['LinkedIn'] ?? $row['LinkedIn_URL'] ?? '');
+        $rowWebsite = trim($row['website'] ?? $row['Website'] ?? $row['Company_Website'] ?? '');
+        [$rowWebsite, $liErr, $webErr] = checkLeadLinkWebsite($rowLinkedin, $rowWebsite);
+        foreach ([['linkedin', $liErr], ['website', $webErr]] as [$badField, $badMsg]) {
+            if ($badMsg === null) continue;
+            if (!empty($requiredFields[$badField])) {
+                $rejected[] = ['row' => $rowNo + 1, 'name' => trim($firstName . ' ' . $lastName) ?: $company ?: $email, 'reason' => $badMsg];
+                continue 2;
+            }
+            if ($badField === 'linkedin') $rowLinkedin = ''; else $rowWebsite = '';
+        }
+        if (!empty($requiredFields['linkedin']) && $rowLinkedin === '') {
+            $rejected[] = ['row' => $rowNo + 1, 'name' => trim($firstName . ' ' . $lastName) ?: $company ?: $email, 'reason' => 'LinkedIn URL is required'];
+            continue;
+        }
+        if (!empty($requiredFields['website']) && $rowWebsite === '') {
+            $rejected[] = ['row' => $rowNo + 1, 'name' => trim($firstName . ' ' . $lastName) ?: $company ?: $email, 'reason' => 'Website is required'];
+            continue;
+        }
 
         // Extract Zoho ID if present (common Zoho export fields)
         $zohoId = trim($row['zoho_id'] ?? $row['ZOHO_ID'] ?? $row['Record Id'] ?? $row['RECORDID'] ?? $row['id'] ?? '');
@@ -6371,8 +6676,8 @@ case 'import':
             'title' => sanitizeInput($row['title'] ?? $row['Title'] ?? $row['job_title'] ?? $row['Designation'] ?? ''),
             'industry' => sanitizeInput($row['industry'] ?? $row['Industry'] ?? ''),
             'country' => sanitizeInput($row['country'] ?? $row['Country'] ?? $row['location'] ?? $row['Mailing_Country'] ?? ''),
-            'website' => trim($row['website'] ?? $row['Website'] ?? $row['Company_Website'] ?? ''),
-            'linkedin' => trim($row['linkedin'] ?? $row['LinkedIn'] ?? $row['LinkedIn_URL'] ?? ''),
+            'website' => $rowWebsite,
+            'linkedin' => $rowLinkedin,
             'company_size' => sanitizeInput($row['company_size'] ?? $row['employees'] ?? $row['No_of_Employees'] ?? ''),
             'notes' => sanitizeInput($row['notes'] ?? $row['Notes'] ?? $row['Description'] ?? ''),
             'enrichment' => '',
@@ -6427,7 +6732,9 @@ case 'import':
         'success' => true,
         'imported' => $imported,
         'skipped' => $skipped,
-        'message' => "Imported $imported leads" . ($skipped > 0 ? ", skipped $skipped duplicates" : "")
+        'rejected' => count($rejected),
+        'rejected_rows' => array_slice($rejected, 0, 50),
+        'message' => "Imported $imported leads" . ($skipped > 0 ? ", skipped $skipped duplicates" : "") . (count($rejected) ? ', ' . count($rejected) . ' rejected' : '')
     ];
 
     if ($skipped > 0 && count($duplicates) <= 10) {
@@ -7143,7 +7450,7 @@ case 'send-email':
     // account email so replies land in their inbox, not a shared mailbox.
     $resendKey = trim($admin['resend_key'] ?? '');
     if ($resendKey === '') {
-        respond(['success' => false, 'error' => 'Email sending is not configured (no Resend API key)'], 400);
+        respond(['success' => false, 'error' => 'Email is not configured yet (no Resend API key in Admin → Settings → Email Sending).'], 400);
     }
     $settings = $userData['settings'] ?? [];
     $repName = trim($settings['sender_name'] ?? '') ?: trim($user['name'] ?? '') ?: 'Levata';
@@ -7169,6 +7476,7 @@ case 'send-email':
         . $htmlBody . $footer . '</div>';
     $textWithFooter = $bodyText . "\n\n--\nSent by " . $repName . '. Reply "unsubscribe" to opt out.';
 
+    $messageId = null;
     // Send via Resend over HTTPS (self-contained; the lead system does not share
     // any sending code with Help & Support).
     $payload = [

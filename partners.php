@@ -168,6 +168,7 @@ function partnerMayCall($user, $action, $method, $input) {
             'activity-ping' => [], 'notifications' => [],
             'lead' => [], // create: the handler pins it to the partner
             'update-lead' => [$L('id')], 'add-lead-note' => [$L('id')], 'delete-lead' => [$L('id')], 'restore-lead' => [$L('id')],
+            'log-call' => [$L('lead_id')], 'send-email' => [$L('lead_id')], 'add-lead-doc-link' => [$L('lead_id')], 'remove-lead-doc-link' => [$L('lead_id')],
             'permanent-delete' => [$L('id')], 'set-service-partner-rate' => [$L('id')], 'bulk-delete' => [$L('ids')],
             'set-deal-amount' => [$L('lead_id')], 'save-requisitions' => [$L('lead_id')], 'save-call-outcome' => [$L('lead_id')],
             'log-activity' => [$L('lead_id')], 'drop-lead' => [$L('lead_id')], 'win-deal' => [$L('lead_id')],
@@ -350,6 +351,7 @@ function partnerActionSummary($user, $action, $args) {
     $kinds = [
         'update-lead' => ['edited a deal', 'lead'], 'set-deal-amount' => ['changed a deal value', 'lead'],
         'set-service-partner-rate' => ['changed their commission on a deal', 'lead'], 'add-lead-note' => ['added a note to a deal', 'lead'],
+        'log-call' => ['logged a call on a deal', 'lead'], 'send-email' => ['emailed a lead', 'lead'], 'add-lead-doc-link' => ['linked a client document to a deal', 'lead'], 'remove-lead-doc-link' => ['removed a client document link from a deal', 'lead'],
         'save-requisitions' => ['updated a deal\'s details', 'lead'], 'save-call-outcome' => ['logged a call on a deal', 'lead'],
         'log-activity' => ['logged activity on a deal', 'lead'], 'drop-lead' => ['dropped a deal', 'lead'],
         'delete-lead' => ['deleted a deal', 'lead'], 'restore-lead' => ['restored a deal', 'lead'], 'permanent-delete' => ['permanently deleted a deal', 'lead'],
