@@ -197,16 +197,46 @@
         .btn-sm { padding: 7px 12px; font-size: 12.5px; }
         .btn-xs { padding: 5px 10px; font-size: 12px; }
         @keyframes savePulse { 50% { box-shadow: 0 0 0 7px rgba(245,158,11,.10); } }
-        .rw-block { border: 1px solid var(--border-light); border-radius: var(--radius-md); margin-bottom: 8px; background: var(--bg-white); }
-        .rw-block > summary { cursor: pointer; padding: 10px 14px; font-size: 13px; font-weight: 600; color: var(--text-primary); list-style: none; }
-        .rw-block > summary::before { content: '▸'; display: inline-block; width: 14px; color: var(--text-muted); }
-        .rw-block[open] > summary::before { content: '▾'; }
-        .rw-script { padding: 2px 16px 12px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
-        .rw-script p { margin: 0 0 8px; }
-        .rw-script ul { margin: 0 0 6px 18px; padding: 0; }
+        /* Rapid Web tab: switcher + three views */
+        .rw-seg { display: flex; gap: 4px; padding: 4px; background: var(--bg-subtle); border-radius: var(--radius-md); margin-bottom: 16px; }
+        .rw-seg button { flex: 1; border: none; background: none; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--text-secondary); cursor: pointer; font-family: inherit; }
+        .rw-seg button.on { background: var(--bg-white); color: var(--accent-dark); box-shadow: var(--shadow-xs); }
+        .rw-count { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 9px; background: var(--accent-soft); color: var(--accent-dark); font-size: 11px; }
+        .rw-view, .rw-angle { display: none; }
+        .rw-view.on, .rw-angle.on { display: block; }
+        .rw-angles { display: flex; gap: 8px; margin-bottom: 12px; }
+        .rw-angles button { padding: 6px 16px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-white); font-size: 12.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer; font-family: inherit; }
+        .rw-angles button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .rw-card { border: 1px solid var(--border-light); border-radius: var(--radius-lg); padding: 16px 18px; margin-bottom: 14px; background: var(--bg-white); }
+        .rw-card .detail-section { margin: 0; }
+        .rw-card-title { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); margin-bottom: 12px; }
+        .rw-angle-title { font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px; }
+        .rw-lines { border-left: 3px solid var(--accent); padding-left: 16px; }
+        .rw-lines p { margin: 0 0 10px; font-size: 14px; line-height: 1.7; color: var(--text-primary); }
+        .rw-lines p:last-child { margin-bottom: 0; }
         .rw-ph { background: var(--accent-soft); color: var(--accent-dark); border-radius: 4px; padding: 0 4px; font-weight: 600; }
-        .rw-qgroup { font-size: 12px; font-weight: 700; color: var(--text-primary); margin: 10px 0 4px; }
-        .rw-note { font-style: italic; color: var(--text-muted); margin-top: 10px; }
+        .rw-do-dont { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+        .rw-do-dont > div { border-radius: var(--radius-md); padding: 10px 14px; font-size: 13px; }
+        .rw-do-dont p { margin: 4px 0 0; line-height: 1.5; }
+        .rw-dont { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+        .rw-do { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+        .rw-sub { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin: 14px 0 8px; }
+        .rw-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+        .rw-flow .step { padding: 4px 11px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-dark); font-size: 12px; font-weight: 600; }
+        .rw-flow .arrow { color: var(--text-muted); font-size: 12px; }
+        .rw-obs { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
+        .rw-qhead { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 8px; }
+        .rw-num { width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-dark); font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .rw-q { font-size: 13.5px; line-height: 1.6; color: var(--text-secondary); padding: 6px 0 6px 34px; border-top: 1px solid var(--border-light); }
+        .rw-q:first-of-type { border-top: none; }
+        .rw-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 20px; }
+        .rw-span2 { grid-column: 1 / -1; }
+        .rw-grid2 .lead-qualify-question { margin-bottom: 8px; }
+        .rw-ready .lead-qualify-question { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; margin: 0; border-bottom: 1px solid var(--border-light); }
+        .rw-ready .lead-qualify-question-title { margin: 0; }
+        .rw-hint { margin-top: 10px; padding: 8px 12px; border-radius: var(--radius-md); background: #fffbeb; border: 1px solid #fde68a; color: #92400e; font-size: 12.5px; line-height: 1.5; }
+        .rw-save { display: flex; justify-content: flex-end; margin-top: 4px; }
+        @media (max-width: 700px) { .rw-grid2, .rw-do-dont { grid-template-columns: 1fr; } }
         .call-btn, .mail-btn { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; padding: 3px 10px; font-size: 12px; font-weight: 600; border-radius: 999px; border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--accent-dark); cursor: pointer; vertical-align: middle; transition: background .14s; }
         .call-btn:hover, .mail-btn:hover { background: var(--accent-line); }
         .call-btn svg, .mail-btn svg { width: 13px; height: 13px; }
@@ -1026,6 +1056,16 @@
         .lead-qualify-actions { display: flex; gap: 10px; padding-top: 16px; border-top: 1px solid var(--border-light); margin-top: 4px; }
         .lead-qualify-actions .btn { flex: 1 1 auto; }
         .lead-qualify-actions .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .btn-blocked { opacity: .5; cursor: not-allowed; }
+        .btn-blocked:active { transform: none; }
+        .qualify-checklist { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg-subtle); }
+        .qc-title { font-size: 12px; font-weight: 700; color: var(--text-primary); margin-bottom: 8px; }
+        .qc-row { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; line-height: 1.5; padding: 2px 0; }
+        .qc-mark { width: 14px; flex-shrink: 0; font-weight: 700; }
+        .qc-row.done { color: var(--text-muted); } .qc-row.done .qc-mark { color: var(--success); }
+        .qc-row.todo { color: var(--text-primary); } .qc-row.todo .qc-mark { color: #d97706; }
+        .qc-hint { color: var(--text-muted); }
+        .qc-go { margin-left: 4px; color: var(--accent-dark); font-weight: 600; text-decoration: underline; }
         .lead-qualify-gate-msg { font-size: 11.5px; color: var(--text-muted); text-align: center; margin-top: 8px; }
 
         /* Viewing an earlier, already-completed stage's panel (clicked from
@@ -6004,11 +6044,13 @@ const CUSTOM_SERVICE_NEED_OPTIONS=['Website Development','Sales Intelligence Pla
 const SERVICE_QUALIFICATION_FORMS={
     // Rapid Web (Rapid Build Website): a fixed-scope, fixed-price service, so unlike the other tabs it shows its
     // whole playbook at every stage: the two call scripts, the demo questions, and the internal qualification
-    // fields the rep fills in after the call (rapidWebReferenceHtml() renders the script + demo questions).
+    // fields the rep fills in after the call (rapidWebPanelHtml() renders the script, demo questions and fields as three views).
     'Rapid Web':{
         rapid:true,
         industry:true,
         industryTitle:'Business / Industry',
+        criteriaTitle:'Investment & lead status',
+        investmentLabel:'Investment',
         defaultPrice:{amount:'999',currency:'USD'},
         script:{
             angles:[
@@ -6067,7 +6109,6 @@ const SERVICE_QUALIFICATION_FORMS={
                 'We work on a 10-day delivery timeline for the Rapid Build Website. Is there anything on your side that could affect your ability to provide the required content, assets, access or approvals within that timeframe?',
             ]},
         ],
-        demoNote:'Once the checklist is fully complete, development will start.',
         sections:[
             {title:'Website Brief',questions:[
                 {id:'objective',type:'text',title:'Primary website objective'},
@@ -6617,6 +6658,39 @@ function canQualifyLead(l){
     const engagementDone=engagement.length>0;
     return servicesDone&&questionsDone&&engagementDone&&_allServicesHaveStatus(l)&&_serviceQualificationStatus()==='qualified';
 }
+/** Everything that has to be true before a Lead can be Qualified, as one list (the panel's checklist, the progress count and the "why can't I click Qualify" dialog all read it, so they can never disagree). `st` is the live panel state from _leadQualifyState(). */
+function qualifyRequirements(l,st){
+    const missingStatus=st.servicesDone?_servicesMissingStatus(l):[];
+    const names=missingStatus.map(s=>serviceTabLabel(s,l));
+    return [
+        {done:st.engagementDone,text:'Pick an Engagement Method',hint:'then click Save Engagement'},
+        {done:st.servicesDone,text:'Select at least one Service',hint:'then click Save Services'},
+        {done:st.questionsDone,text:'Answer at least one question on a service tab',hint:'then click Save Answers',tab:(l.services||[])[0]},
+        {done:st.servicesDone&&!missingStatus.length,text:missingStatus.length?`Set a Lead Status on: ${names.join(', ')}`:'Give every service a Lead Status',hint:'on its tab, then click Save Answers',tab:missingStatus[0]||(l.services||[])[0]},
+        {done:st.qualStatus==='qualified',text:'Mark at least one service Qualified',hint:'choose Qualified under Lead Status on its tab',tab:(l.services||[])[0]},
+    ];
+}
+function qualifyBlockers(l,st){return qualifyRequirements(l,st).filter(r=>!r.done)}
+function qualifyChecklistHtml(l,st){
+    const reqs=qualifyRequirements(l,st),left=reqs.filter(r=>!r.done).length;
+    const rows=reqs.map(r=>`<div class="qc-row ${r.done?'done':'todo'}"><span class="qc-mark">${r.done?'✓':'○'}</span><span class="qc-text">${esc(r.text)}${r.done?'':` <span class="qc-hint">${esc(r.hint)}</span>`}${(!r.done&&r.tab)?` <a href="#" class="qc-go" onclick="goToServiceTab('${esc(r.tab).replace(/'/g,"\\'")}');return false;">Go to ${esc(serviceTabLabel(r.tab,l))}</a>`:''}</span></div>`).join('');
+    return `<div class="qualify-checklist"><div class="qc-title">${left?`To qualify this lead (${left} left)`:'All set: click Qualify'}</div>${rows}</div>`;
+}
+function goToServiceTab(service){
+    const btn=document.querySelector(`.tab-btn[data-service-tab="${CSS.escape(service)}"]`);
+    if(btn)switchTab(btn,`tab-service-${service.replace(/[^a-z0-9]/gi,'-')}`);
+}
+/** Clicking a blocked Qualify / Unqualified says exactly why, in a dialog the rep has to read (a disabled button just swallowed the click). */
+async function explainQualifyBlock(){
+    const st=_leadQualifyState();
+    const b=qualifyBlockers(currentLead,st);
+    if(!b.length)return false;
+    await customAlert('To qualify this lead you still need to:\n\n'+b.map(r=>`•  ${r.text} (${r.hint})`).join('\n'),'Not ready to qualify yet');
+    return true;
+}
+async function explainUnqualifyBlock(){
+    await customAlert('To mark this lead Unqualified, set Lead Status to "Not Qualified" on a service tab and click Save Answers.\n\nOr finish the checklist above, then choose Unqualified.','Not ready yet');
+}
 function leadQualifyPanelHtml(l){
     const engagement=l.engagement_method||[];
     const engagementDate=l.engagement_date||'';
@@ -6631,11 +6705,13 @@ function leadQualifyPanelHtml(l){
     const missingStatus=_servicesMissingStatus(l);
     const canQualify=allDone&&qualStatus==='qualified'&&!missingStatus.length;
     const canUnqualify=qualStatus==='not_qualified'||allDone;
+    const liveSt={engagementDone,servicesDone,questionsDone,qualStatus};
+    const reqsDone=qualifyRequirements(l,liveSt).filter(r=>r.done).length;
 
     return `<div class="lead-qualify-panel">
         <div class="lead-qualify-header">
             <div class="lead-qualify-heading">Qualify this lead</div>
-            <div class="lead-qualify-progress ${allDone?'all-done':''}">${[engagementDone,servicesDone].filter(Boolean).length} of 2 steps done</div>
+            <div class="lead-qualify-progress ${canQualify?'all-done':''}">${reqsDone} of 5 done</div>
         </div>
         ${leadQualifyStepHtml(1,'Engagement Method','How will you be reaching out?',engagementDone,`
             <div class="lead-qualify-options" id="lead-engagement-options">${ENGAGEMENT_METHODS.map(m=>`<label class="req-option${engagement.includes(m)?' selected':''}"><input type="checkbox" class="lead-engagement-cb" value="${m}" onchange="toggleEngagementMethod('${m}',this.checked)"${engagement.includes(m)?' checked':''}>${m}</label>`).join('')}<button type="button" class="call-btn call-btn-block" onclick="callLead()" ${l.phone?'':'disabled title="Add a phone number on the Profile tab first"'}>${PHONE_ICON}Call now</button></div>
@@ -6650,12 +6726,10 @@ function leadQualifyPanelHtml(l){
         `)}
         ${leadQualifyStepHtml(2,'Services','What are they interested in? — see the Services tab(s) next to Profile',servicesDone,serviceTabPickerHtml(l))}
         <div class="lead-qualify-actions">
-            <button type="button" class="btn btn-success" onclick="qualifyLead()" id="lead-qualify-btn" ${canQualify?'':'disabled'}>Qualify</button>
-            <button type="button" class="btn btn-danger" onclick="unqualifyLead()" ${canUnqualify?'':'disabled'}>Unqualified</button>
+            <button type="button" class="btn btn-success${canQualify?'':' btn-blocked'}" onclick="qualifyLead()" id="lead-qualify-btn">Qualify</button>
+            <button type="button" class="btn btn-danger${canUnqualify?'':' btn-blocked'}" id="lead-unqualify-btn" onclick="unqualifyLead()">Unqualified</button>
         </div>
-        ${!allDone?'<div class="lead-qualify-gate-msg">Complete both steps above, then set a Qualification status on the service tab to qualify or reject this lead.</div>'
-            :missingStatus.length?`<div class="lead-qualify-gate-msg">Set a Qualification status for ${missingStatus.map(s=>`"${esc(serviceTabLabel(s,l))}"`).join(', ')} before qualifying this lead — every service needs a status, not just one.</div>`
-            :''}
+        <div id="qualify-checklist-wrap">${qualifyChecklistHtml(l,liveSt)}</div>
     </div>`;
 }
 
@@ -6688,7 +6762,9 @@ function serviceTabPickerHtml(l){
     // and silently drop whatever the rep had just checked here but hadn't
     // saved yet, making it look like adding a custom service was
     // unchecking the others.
-    const opts=fixedChoices.map(s=>`<label class="req-option${services.includes(s)?' selected':''}"><input type="checkbox" class="lead-service-cb" value="${esc(s)}"${services.includes(s)?' checked':''} onchange="toggleFixedService('${esc(s).replace(/'/g,"\\'")}',this.checked)">${esc(s)}</label>`).join('');
+    // A fixed service picked while viewing an earlier stage waits in the Demo queue (demo_services): it reads as ticked here, not as "nothing happened", and unticking it removes it from that queue.
+    const queued=s=>(l.demo_services||[]).includes(s);
+    const opts=fixedChoices.map(s=>{const on=services.includes(s)||queued(s);return `<label class="req-option${on?' selected':''}"${queued(s)?' title="Added from an earlier stage: waiting for Demo feasibility checking"':''}><input type="checkbox" class="lead-service-cb" value="${esc(s)}"${on?' checked':''} onchange="toggleFixedService('${esc(s).replace(/'/g,"\\'")}',this.checked)">${esc(s)}</label>`}).join('');
     const customInstances=customServiceInstances(services);
     // Every custom-service instance renders as a named pill with its own
     // remove button — none are ever unnamed, since picking a need from the
@@ -6705,7 +6781,7 @@ function serviceTabPickerHtml(l){
     // clear where each one came from; removal still goes through
     // removeDemoServiceTab() (writes to demo_services, not services) since
     // that's still where the record actually lives.
-    const demoAddedPillsHtml=(l.demo_services||[]).map(s=>`<span class="req-option selected custom-service-pill" title="Added at Demo stage">${esc(serviceTabLabel(s,l))}<button type="button" class="custom-service-pill-remove" onclick="removeDemoServiceTab('${esc(s).replace(/'/g,"\\'")}')" title="Remove">&times;</button></span>`).join('');
+    const demoAddedPillsHtml=(l.demo_services||[]).filter(s=>!fixedChoices.includes(s)).map(s=>`<span class="req-option selected custom-service-pill" title="Added at Demo stage">${esc(serviceTabLabel(s,l))}<button type="button" class="custom-service-pill-remove" onclick="removeDemoServiceTab('${esc(s).replace(/'/g,"\\'")}')" title="Remove">&times;</button></span>`).join('');
     const needOpts=CUSTOM_SERVICE_NEED_OPTIONS.map(o=>`<option value="${esc(o)}">${esc(o)}</option>`).join('');
     return `<div class="lead-qualify-options" id="lead-services-options">${opts}${instancePillsHtml}${demoAddedPillsHtml}</div>
         <div style="margin-top:8px;display:flex;gap:6px;align-items:center;">
@@ -6732,8 +6808,11 @@ async function saveLeadServices(){
     const staged=currentLead.services||[];
     const isPastLeadView=!!viewingStage&&viewingStage==='lead'&&viewingStage!==getStage(currentLead);
     let services=staged,demoServices=currentLead.demo_services||[];
+    // The service(s) being added by this save: after saving, open the first of them rather than whichever service happens to be listed first.
+    const savedBefore=isPastLeadView?null:await freshSavedServices();
+    const justAdded=savedBefore?staged.filter(s=>!savedBefore.includes(s)):[];
     if(isPastLeadView){
-        const alreadySaved=lastSavedServicesSnapshot;
+        const alreadySaved=await freshSavedServices();
         const newlyPicked=staged.filter(s=>!alreadySaved.includes(s));
         if(newlyPicked.length){
             services=alreadySaved;
@@ -6755,15 +6834,18 @@ async function saveLeadServices(){
         currentLead=dr.lead;
     }
     window.forceLeadModalScrollTop=true;
-    await saveLeadServicesList(services,services.length?services[0]:null);
+    await saveLeadServicesList(services,justAdded.length?justAdded[0]:(services.length?services[0]:null));
 }
 /** Checking a fixed service (Website Development / Sales Intelligence System) STAGES it into currentLead.services — same pattern as addCustomServiceWithNeed() — so a re-render from any other picker control never loses it. Adding stays gated behind "Save Services" so a new pick can't skip straight past feasibility checking (see the past-Lead-view routing in saveLeadServices()). Unchecking is different: removing something already on the deal should take effect right away, not sit staged waiting for a separate Save click — so that path saves immediately instead (see removeFixedService()). */
-function toggleFixedService(service,checked){
+async function toggleFixedService(service,checked){
     if(!currentLead)return;
     if(checked){
         currentLead.services=[...(currentLead.services||[]),service];
         if(service==='Rapid Web')applyRapidWebDefault();
         renderLeadModal();
+    }else if((currentLead.demo_services||[]).includes(service)){
+        await removeDemoServiceTab(service);   // it was only queued for Demo from an earlier-stage view
+        renderLeadModal();                     // (also puts the tick back if the removal was cancelled)
     }else{
         removeFixedService(service);
     }
@@ -6774,7 +6856,8 @@ function applyRapidWebDefault(){
     const reqs={...(currentLead.requisitions||{})};
     if(reqs[key]&&reqs[key].amount)return;
     const cur=currentLead.deal_currency||DEFAULT_CURRENCY;
-    const hasMoney=dealAmount(currentLead)>0||Object.entries(reqs).some(([k,v])=>k.endsWith('::estimated_deal_value')&&v&&typeof v==='object'&&v.amount);
+    // Any money answer already on the deal counts (a client budget as much as a service value): switching the deal's currency would relabel it.
+    const hasMoney=dealAmount(currentLead)>0||Object.values(reqs).some(v=>v&&typeof v==='object'&&!Array.isArray(v)&&v.amount&&!v.default);
     if(cur===price.currency||!hasMoney){
         reqs[key]={amount:price.amount,currency:price.currency,default:true};
         currentLead.requisitions=reqs;
@@ -6788,9 +6871,33 @@ function applyRapidWebDefault(){
  * feasibility gate the way adding one could. */
 async function removeFixedService(service){
     if(!currentLead)return;
-    const services=(currentLead.services||[]).filter(s=>s!==service);
     if(service==='Rapid Web')delete currentLead._pendingCurrency;
-    await saveLeadServicesList(services);
+    await persistServiceRemoval(service);
+}
+/** What the server actually holds as this deal's services right now. The page's own picture of "already saved" (lastSavedServicesSnapshot, taken when the deal was opened) goes stale as soon as another flow (Demo feasibility, a removal, a promotion) changes the list, and every decision below (is this pick NEW? what do I write back?) was being made from it: a service removed earlier came back, one added earlier got bounced to the Demo queue. Falls back to the snapshot only if the fetch fails. */
+async function freshSavedServices(){
+    if(!currentLead)return [];
+    const r=await api(`lead&id=${encodeURIComponent(currentLead.id)}`);
+    if(r.success&&r.lead){lastSavedServicesSnapshot=[...(r.lead.services||[])];return lastSavedServicesSnapshot}
+    return lastSavedServicesSnapshot;
+}
+/** Takes one service off the deal right away. Viewing a past stage, picks made there but not yet saved must stay UNSAVED (saving routes them to the Demo queue, see saveLeadServices): the write is the server's own list minus this service, and the unsaved picks (with their staged answers, e.g. Rapid Web's default price) are put back on screen afterwards. At the Lead stage itself the old behaviour is kept: the staged list is written. */
+async function persistServiceRemoval(name){
+    const staged=currentLead.services||[];
+    const pastView=!!viewingStage&&viewingStage==='lead'&&viewingStage!==getStage(currentLead);
+    if(!pastView){await saveLeadServicesList(staged.filter(s=>s!==name));return}
+    const saved=await freshSavedServices();
+    const picks=staged.filter(s=>!saved.includes(s)&&s!==name);
+    const keepReq={};
+    Object.entries(currentLead.requisitions||{}).forEach(([k,v])=>{if(picks.some(p=>k.startsWith(p+'::')))keepReq[k]=v});
+    const pendingCur=currentLead._pendingCurrency;
+    await saveLeadServicesList(saved.filter(s=>s!==name));
+    if(picks.length&&currentLead){
+        currentLead.services=[...(currentLead.services||[]),...picks];
+        currentLead.requisitions={...keepReq,...(currentLead.requisitions||{})};
+        if(pendingCur&&picks.includes('Rapid Web'))currentLead._pendingCurrency=pendingCur;
+        renderLeadModal();
+    }
 }
 /** Picking a need from the dropdown both CREATES a new custom-service
  * instance and NAMES it in the same action — the instance never sits
@@ -6824,12 +6931,11 @@ function addCustomServiceWithNeed(){
  * never tell the two cases apart. */
 async function removeCustomServiceInstance(name){
     if(!currentLead)return;
-    const alreadySaved=lastSavedServicesSnapshot.includes(name);
+    const alreadySaved=(await freshSavedServices()).includes(name);
     if(alreadySaved){
         const ok=await customConfirm(`Remove this custom service? Its answers will be discarded.`,'Remove Service',{confirmText:'Remove',danger:true});
         if(!ok)return;
-        const services=(currentLead.services||[]).filter(s=>s!==name);
-        await saveLeadServicesList(services);
+        await persistServiceRemoval(name);
         return;
     }
     currentLead.services=(currentLead.services||[]).filter(s=>s!==name);
@@ -7002,7 +7108,7 @@ function demoRequirementGatheringHtml(service,l){
     const rows=questions.map((qText,i)=>`<div class="demo-requirement-question"><span class="demo-requirement-question-num">${i+1}.</span> ${esc(qText)}</div>`).join('');
     return `<div class="detail-section"><div class="detail-section-title">Requirement Gathering</div>${rows}</div>`;
 }
-/** Rapid Web's reference block: both call-script angles (with [Name] filled in: the lead's first name, then the rep's), the "how to open the call" guidance, and the demo questions grouped as the team uses them. Read-only: it is what the rep says and asks; the answers go in the fields below it. */
+/** [Name] in the Rapid Web script: the lead's first name, then the rep's own; every other [fill-in] is highlighted. */
 function rwFill(text,l){
     let n=0;
     const lead=((l&&l.first_name)||'').trim();
@@ -7012,18 +7118,58 @@ function rwFill(text,l){
         return `<span class="rw-ph">[${inner}]</span>`;
     });
 }
-function rapidWebReferenceHtml(form,l){
-    const sc=form.script;
-    const angles=sc.angles.map((a,i)=>`<details class="rw-block"${i===0?' open':''}><summary>${esc(a.title)}</summary><div class="rw-script">${a.lines.map(t=>`<p>${rwFill(t,l)}</p>`).join('')}</div></details>`).join('');
-    const guidance=`<details class="rw-block"><summary>How to open the call</summary><div class="rw-script">
-        <p><strong>Don't say:</strong> ${esc(sc.avoid)}</p>
-        <p><strong>Say:</strong> ${esc(sc.say)}</p>
-        <p>${esc(sc.narrative)}</p>
-        <p>${esc(sc.credibility)}</p>
-        <ul>${sc.observations.map(o=>`<li>${esc(o)}</li>`).join('')}</ul></div></details>`;
-    const demo=`<details class="rw-block"><summary>Demo questions</summary><div class="rw-script">${form.demoQuestions.map(g=>`<div class="rw-qgroup">${esc(g.title)}</div>${g.questions.map(q=>`<div class="demo-requirement-question">${esc(q)}</div>`).join('')}`).join('')}
-        ${form.demoNote?`<p class="rw-note">${esc(form.demoNote)}</p>`:''}</div></details>`;
-    return `<div class="detail-section"><div class="detail-section-title">Call script</div>${angles}${guidance}${demo}</div>`;
+// Rapid Web's tab is three views behind a switcher (Call script / Demo questions / Qualification), not one long scroll.
+// The selected view and angle are remembered per deal so a save (which redraws the modal) doesn't jump back.
+const rwViewByLead={},rwAngleByLead={};
+function rwDefaultView(stage){return stage==='demo'?'demo':(stage==='lead'||stage==='qualified'?'script':'qual')}
+function rwSetView(v){
+    if(!currentLead)return;
+    rwViewByLead[currentLead.id]=v;
+    document.querySelectorAll('.rw-panel .rw-seg button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+    document.querySelectorAll('.rw-panel .rw-view').forEach(d=>d.classList.toggle('on',d.dataset.v===v));
+}
+function rwSetAngle(i){
+    if(!currentLead)return;
+    rwAngleByLead[currentLead.id]=i;
+    document.querySelectorAll('.rw-panel .rw-angles button').forEach((b,j)=>b.classList.toggle('on',j===i));
+    document.querySelectorAll('.rw-panel .rw-angle').forEach((d,j)=>d.classList.toggle('on',j===i));
+}
+function rapidWebPanelHtml(c){
+    const {form,l,stage,service,answers,key,renderQuestion,industryInput,criteriaHtml}=c;
+    const sc=form.script,view=rwViewByLead[l.id]||rwDefaultView(stage),angle=rwAngleByLead[l.id]||0;
+    const q=id=>renderQuestion(form.sections.flatMap(s=>s.questions).find(x=>x.id===id));
+    // how many of the 13 fields have a real answer, for the badge on the Qualification button
+    const fieldIds=form.sections.flatMap(s=>s.questions.map(x=>x.id)).concat(['industry']);
+    const done=fieldIds.filter(id=>{const v=answers[key(id)];return Array.isArray(v)?v.length>0:!!v}).length;
+
+    const angles=`<div class="rw-angles">${sc.angles.map((a,i)=>`<button type="button" class="${i===angle?'on':''}" onclick="rwSetAngle(${i})">Angle ${i+1}</button>`).join('')}</div>
+        ${sc.angles.map((a,i)=>`<div class="rw-angle${i===angle?' on':''}"><div class="rw-card"><div class="rw-angle-title">${esc(a.title.replace(/^Angle \d+:\s*/,''))}</div><div class="rw-lines">${a.lines.map(t=>`<p>${rwFill(t,l)}</p>`).join('')}</div></div></div>`).join('')}`;
+    const flow=sc.narrative.split('→').map(t=>`<span class="step">${esc(t.trim())}</span>`).join('<span class="arrow">→</span>');
+    const opening=`<div class="rw-card"><div class="rw-card-title">How to open the call</div>
+        <div class="rw-do-dont"><div class="rw-dont"><b>Don't say</b><p>${esc(sc.avoid)}</p></div><div class="rw-do"><b>Say</b><p>${esc(sc.say)}</p></div></div>
+        <div class="rw-sub">The story to tell</div><div class="rw-flow">${flow}</div>
+        <div class="rw-sub">${esc(sc.credibility)}</div><ul class="rw-obs">${sc.observations.map(o=>`<li>${esc(o)}</li>`).join('')}</ul></div>`;
+    const demo=form.demoQuestions.map(g=>{const m=g.title.match(/^(\d+)\.\s*(.*)$/);return `<div class="rw-card"><div class="rw-qhead"><span class="rw-num">${m?m[1]:''}</span>${esc(m?m[2]:g.title)}</div>${g.questions.map(t=>`<div class="rw-q">${esc(t)}</div>`).join('')}</div>`}).join('')
+;
+    const qual=`
+        <div class="rw-card"><div class="rw-card-title">Business &amp; website brief</div><div class="rw-grid2">
+            <div class="lead-qualify-question"><div class="lead-qualify-question-title">${esc(form.industryTitle||'Industry')}</div>${industryInput}</div>
+            ${q('objective')}${q('primary_cta')}${q('required_pages')}<div class="rw-span2">${q('services_products')}</div></div></div>
+        <div class="rw-card"><div class="rw-card-title">Readiness checklist</div><div class="rw-grid2 rw-ready">
+            ${['content_ready','brand_assets_ready','form_connection','calendly_integration','domain','outside_scope'].map(q).join('')}</div></div>
+        <div class="rw-card"><div class="rw-card-title">Delivery &amp; next step</div><div class="rw-grid2">${q('ten_day_delivery')}${q('next_step')}</div></div>
+        <div class="rw-card">${criteriaHtml}${(()=>{const ev=answers[key('estimated_deal_value')],cur=(l._pendingCurrency||l.deal_currency||DEFAULT_CURRENCY),p=form.defaultPrice;return (!ev||!ev.amount)&&cur!==p.currency?`<div class="rw-hint">Rapid Web's fixed price is ${esc(p.currency)} ${esc(p.amount)}. This deal is in ${esc(cur)} (a deal has one currency), so enter the ${esc(cur)} amount above.</div>`:''})()}</div>
+        <div class="rw-save"><button type="button" class="btn btn-primary btn-sm" data-service="${esc(service)}" onclick="saveServiceAnswers(this.dataset.service)">Save Answers</button></div>`;
+    return `<div class="lead-qualify-panel rw-panel">
+        <div class="rw-seg">
+            <button type="button" data-v="script" class="${view==='script'?'on':''}" onclick="rwSetView('script')">Call script</button>
+            <button type="button" data-v="demo" class="${view==='demo'?'on':''}" onclick="rwSetView('demo')">Demo questions</button>
+            <button type="button" data-v="qual" class="${view==='qual'?'on':''}" onclick="rwSetView('qual')">Qualification <span class="rw-count">${done}/${fieldIds.length}</span></button>
+        </div>
+        <div class="rw-view${view==='script'?' on':''}" data-v="script">${angles}${opening}</div>
+        <div class="rw-view${view==='demo'?' on':''}" data-v="demo">${demo}</div>
+        <div class="rw-view${view==='qual'?' on':''}" data-v="qual">${qual}</div>
+    </div>`;
 }
 function serviceTabHtml(service,l,stage){
     // At Demo, requirement-gathering shows first, then the Lead-stage
@@ -7032,8 +7178,8 @@ function serviceTabHtml(service,l,stage){
     // Custom Services qualification form (see serviceFormFor's fallback),
     // since a rep can qualify a service they add at Demo too.
     const form=serviceFormFor(service,l);
-    // Rapid Web shows its whole playbook (scripts + demo questions) at every stage; the other services only show requirement gathering at Demo.
-    const demoReqHtml=(form&&form.rapid)?rapidWebReferenceHtml(form,l):(stage==='demo'?demoRequirementGatheringHtml(service,l):'');
+    // Rapid Web has its own three-view panel (rapidWebPanelHtml); the other services only show requirement gathering at Demo.
+    const demoReqHtml=(form&&form.rapid)?'':(stage==='demo'?demoRequirementGatheringHtml(service,l):'');
     if(!form)return `<div class="lead-qualify-panel">${demoReqHtml}</div>`;
     const answers=l.requisitions||{};
     const key=qid=>`${service}::${qid}`;
@@ -7083,9 +7229,9 @@ function serviceTabHtml(service,l,stage){
     const statusVal=answers[key('qualification_status')]||'';
     const recommendedVal=answers[key('recommended')]||'';
     const dealValMoney=(answers[key('estimated_deal_value')]&&typeof answers[key('estimated_deal_value')]==='object')?answers[key('estimated_deal_value')]:{amount:''};
-    const criteriaHtml=`<div class="detail-section" style="margin-top:16px;"><div class="detail-section-title">Qualification Criteria</div>
+    const criteriaHtml=`<div class="detail-section" style="margin-top:16px;"><div class="detail-section-title">${esc(form.criteriaTitle||'Qualification Criteria')}</div>
         ${qc.recommended&&qc.recommended.length?`<div class="form-group"><label class="form-label">Recommended</label><div class="lead-qualify-options svc-question-input" data-key="${key('recommended')}" data-qtype="single">${qc.recommended.map(r=>`<label class="req-option${recommendedVal===r?' selected':''}"><input type="radio" name="svc-recommended-${esc(service)}" value="${esc(r)}"${recommendedVal===r?' checked':''}>${esc(r)}</label>`).join('')}</div></div>`:''}
-        <div class="form-group"><label class="form-label">Estimated Deal Value</label>
+        <div class="form-group"><label class="form-label">${esc(form.investmentLabel||'Estimated Deal Value')}</label>
             <div class="deal-value-row svc-question-input" data-key="${key('estimated_deal_value')}" data-qtype="money">
                 <input type="text" class="form-input svc-money-amount${dealValMoney.amount?' answered':''}" placeholder="0" value="${esc(dealValMoney.amount||'')}" style="max-width:160px;">
                 ${dealCurrencySelectHtml()}
@@ -7095,6 +7241,10 @@ function serviceTabHtml(service,l,stage){
             <div class="lead-qualify-options svc-qual-status" data-key="${key('qualification_status')}">${qc.statusOptions.map(o=>`<label class="req-option req-option-${o.color}${statusVal===o.value?' selected':''}"><input type="radio" name="svc-qual-status-${esc(service)}" value="${o.value}"${statusVal===o.value?' checked':''}>${esc(o.label)}</label>`).join('')}</div>
         </div>
     </div>`;
+    if(form.rapid){
+        const industryInput=`<input type="text" class="form-input svc-question-input${answers[key('industry')]?' answered':''}" id="svc-input-${esc(key('industry'))}" data-key="${key('industry')}" data-qtype="text" placeholder="Type the answer..." value="${esc(answers[key('industry')]||'')}">`;
+        return rapidWebPanelHtml({form,l,stage,service,answers,key,renderQuestion,industryInput,criteriaHtml});
+    }
     return `<div class="lead-qualify-panel">${demoReqHtml}${industryHtml}${sectionsHtml}${criteriaHtml}
         <div style="margin-top:14px;"><button type="button" class="btn btn-primary btn-sm" data-service="${esc(service)}" onclick="saveServiceAnswers(this.dataset.service)">Save Answers</button></div>
     </div>`;
@@ -7241,20 +7391,22 @@ async function saveSingleServiceOtherField(fieldKey){
 
 /** Live-updates step "done" markers, progress count and the Qualify/Unqualified buttons as the rep fills the Engagement panel in — no full re-render, so focus/scroll position survives typing. */
 function refreshLeadQualifyGate(){
-    const panel=document.querySelector('.lead-qualify-panel');
+    const panel=document.getElementById('lead-qualify-btn')?.closest('.lead-qualify-panel')||document.querySelector('.lead-qualify-panel');
     if(!panel)return;
     const state=_leadQualifyState();
     const steps=panel.querySelectorAll('.lead-qualify-step');
     const flags=[state.engagementDone,state.servicesDone];
     steps.forEach((step,i)=>step.classList.toggle('done',flags[i]));
+    const reqs=qualifyRequirements(currentLead,state);
+    const canQualify=reqs.every(r=>r.done)&&!_servicesMissingStatus(currentLead).length;
     const progress=panel.querySelector('.lead-qualify-progress');
-    if(progress){progress.textContent=`${flags.filter(Boolean).length} of 2 steps done`;progress.classList.toggle('all-done',state.allDone)}
+    if(progress){progress.textContent=`${reqs.filter(r=>r.done).length} of 5 done`;progress.classList.toggle('all-done',canQualify)}
     const qualifyBtn=document.getElementById('lead-qualify-btn');
-    if(qualifyBtn)qualifyBtn.disabled=!(state.allDone&&state.qualStatus==='qualified');
-    const unqualifyBtn=document.querySelector('.lead-qualify-actions .btn-danger');
-    if(unqualifyBtn)unqualifyBtn.disabled=!(state.qualStatus==='not_qualified'||state.allDone);
-    const gateMsg=panel.querySelector('.lead-qualify-gate-msg');
-    if(gateMsg)gateMsg.style.display=state.allDone?'none':'block';
+    if(qualifyBtn)qualifyBtn.classList.toggle('btn-blocked',!canQualify);
+    const unqualifyBtn=document.getElementById('lead-unqualify-btn');
+    if(unqualifyBtn)unqualifyBtn.classList.toggle('btn-blocked',!(state.qualStatus==='not_qualified'||state.allDone));
+    const wrap=document.getElementById('qualify-checklist-wrap');
+    if(wrap)wrap.innerHTML=qualifyChecklistHtml(currentLead,state);
 }
 // Single-choice (radio) fields throughout the qualify panels — Engagement
 // Status, every "single" question, Lead Status, Recommended — behave as a
@@ -7546,17 +7698,13 @@ async function saveEngagementStep(){
 async function qualifyLead(){
     if(!currentLead)return;
     const state=_leadQualifyState();
-    if(!state.allDone||state.qualStatus!=='qualified'){toast("Complete both steps and set a service tab's status to the qualified option first",'warning');return}
+    if(await explainQualifyBlock())return;
     // Every service on the deal needs its own status set, not just one —
     // previously a second/third service left completely untouched (no
     // status ever picked) rode along silently, since only ONE service had
     // to be "qualified" for the gate above to pass. Block with a clear
     // message rather than letting it through unnoticed.
-    const missingStatus=_servicesMissingStatus(currentLead);
-    if(missingStatus.length){
-        toast(`Set a Qualification status for ${missingStatus.map(s=>serviceTabLabel(s,currentLead)).join(', ')} first — every service needs a status`,'warning');
-        return;
-    }
+    // (a service with no Lead Status is already covered by explainQualifyBlock() above)
     // A service marked Not Qualified on its own tab must not ride along past
     // this point — same rule dealSentFromDemo() enforces at Demo, applied
     // one stage earlier so a disqualified service never reaches Qualified/
@@ -7618,6 +7766,7 @@ async function qualifyLead(){
 }
 async function unqualifyLead(){
     if(!currentLead)return;
+    {const st=_leadQualifyState();if(!(st.qualStatus==='not_qualified'||st.allDone)){await explainUnqualifyBlock();return}}
     const remark=await customConfirm('Why is this lead unqualified?','Mark Unqualified',{input:true,placeholder:'Reason...',confirmText:'Mark Unqualified',danger:true});
     if(remark===false)return;
     const state=_leadQualifyState();

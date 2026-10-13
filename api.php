@@ -516,7 +516,7 @@ function checkLeadLinkWebsite($linkedin, $website) {
     $website = trim((string) $website);
     $websiteErr = null;
     if ($website !== '') {
-        if (!preg_match('/^https?:\/\/|^www\./i', $website)) $website = 'https://' . $website;
+        if (!preg_match('/^https?:\/\//i', $website)) $website = 'https://' . $website;   // a bare "www.x.com" needs the scheme too, or its host can't be read
         $host = parse_url($website, PHP_URL_HOST);
         if (!$host || strpos($host, '.') === false) $websiteErr = 'Website is not a valid address';
     }
@@ -629,6 +629,13 @@ function changeDealCurrency(&$lead, $newCurrency, $actor = null) {
     }
     if ($touched) saveJobsStore($jobStore);
 
+    // An untouched default (Rapid Web's USD 999) is a suggested price in ITS currency, not an answer: relabelling it
+    // as 999 of the new currency would misstate the price, so it is dropped (the rep enters the real amount).
+    if (is_array($lead['requisitions'] ?? null)) {
+        foreach ($lead['requisitions'] as $k => $v) {
+            if (is_array($v) && !empty($v['default']) && strtoupper((string) ($v['currency'] ?? '')) !== $new) unset($lead['requisitions'][$k]);
+        }
+    }
     $lead['deal_currency'] = $new;
     syncDealMoneyCurrencies($lead);
     $lead['updated_at'] = date('c');
@@ -843,8 +850,8 @@ function validateLeadContactFields($email, $linkedin, $website, $phone = null) {
             respond(['success' => false, 'error' => 'Invalid phone number. Include the country code, e.g. +1 555 123 4567.'], 400);
         }
     }
-    if ($website !== '' && !preg_match('/^https?:\/\/|^www\./i', $website)) {
-        $website = 'https://' . $website;
+    if ($website !== '' && !preg_match('/^https?:\/\//i', $website)) {
+        $website = 'https://' . $website;   // includes a bare "www.x.com": without the scheme its host can't be read and it was rejected
     }
     // A website must resolve to a real host with a dot (a TLD) once the
     // scheme is normalized above — catches plain typed garbage ("asdf")
@@ -6073,7 +6080,7 @@ case 'lead':
         }
         // Auto-prepend https:// to website if missing
         if (isset($input['website']) && !empty($input['website'])) {
-            if (!preg_match('/^https?:\/\/|^www\./i', $input['website'])) {
+            if (!preg_match('/^https?:\/\//i', $input['website'])) {
                 $input['website'] = 'https://' . $input['website'];
             }
         }
@@ -6440,7 +6447,9 @@ case 'update-lead':
         $emailToCheck = trim($input['email'] ?? ($leadForValidation['email'] ?? ''));
         $linkedinToCheck = trim($input['linkedin'] ?? ($leadForValidation['linkedin'] ?? ''));
         $websiteToCheck = trim($input['website'] ?? ($leadForValidation['website'] ?? ''));
-        $phoneToCheck = trim($input['phone'] ?? ($leadForValidation['phone'] ?? ''));
+        // Only a phone the person is actually changing gets checked: re-validating the stored one made an unrelated edit
+        // (a website, an email) fail with a phone error on any lead whose number came from an import (Excel drops the "+").
+        $phoneToCheck = isset($input['phone']) ? trim($input['phone']) : null;
         $normalizedWebsite = validateLeadContactFields($emailToCheck, $linkedinToCheck, $websiteToCheck, $phoneToCheck);
         if (isset($input['website'])) $input['website'] = $normalizedWebsite;
     }
