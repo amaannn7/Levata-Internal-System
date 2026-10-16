@@ -1004,6 +1004,26 @@ function leadQualifyChecklistDone($lead) {
 }
 
 /**
+ * Rapid Web is a fixed price, so once a deal is Qualified (or at Demo) its price is the deal's value without anyone
+ * typing it: if the deal has no total yet and Rapid Web carries a price (the default list price, converted if the
+ * deal is in another currency), the total becomes what the services' values add up to. Never overwrites a total
+ * someone has already set. Returns true when it set one.
+ */
+function rollRapidWebDefaultIntoDeal(&$lead, $actor = null) {
+    if (!in_array(getLeadStage($lead), ['qualified', 'demo'], true)) return false;
+    if (dealMoney($lead['deal_amount'] ?? 0) > 0) return false;
+    $services = array_values(array_unique(array_merge($lead['services'] ?? [], $lead['demo_services'] ?? [])));
+    if (!in_array('Rapid Web', $services, true)) return false;
+    $total = 0.0;
+    foreach ($services as $svc) {
+        $v = ($lead['requisitions'] ?? [])["{$svc}::estimated_deal_value"] ?? null;
+        if (is_array($v) && !empty($v['amount'])) $total += dealMoney($v['amount']);
+    }
+    if ($total <= 0) return false;
+    return setDealAmount($lead, $total, '', $actor);
+}
+
+/**
  * Rapid Web has no qualification questions, so a deal made only of it qualifies by itself: as soon as it has an
  * engagement method and the service (the rest of leadQualifyChecklistDone()), a Lead-stage deal moves to Qualified
  * without anyone pressing Qualify. Returns true when it moved the deal.
@@ -6433,6 +6453,7 @@ case 'log-call':
         $lead['last_action_at'] = date('c');
         $lead['updated_at'] = date('c');
         $autoQualified = maybeAutoQualifyRapidWeb($lead, $user['id']);   // logging a call can be what completes the engagement method
+        rollRapidWebDefaultIntoDeal($lead, $user['id']);
         saveLeadsStore($leadsStore);
         respond(['success' => true, 'lead' => $lead, 'auto_qualified' => $autoQualified]);
     }
@@ -6661,6 +6682,7 @@ case 'update-lead':
             $lead = normalizeLeadForMapping($lead);
             syncDealMoneyCurrencies($lead);
             $autoQualified = $requestedStage === '' ? maybeAutoQualifyRapidWeb($lead, $user['id']) : false;
+            rollRapidWebDefaultIntoDeal($lead, $user['id']);
             $lead['updated_at'] = date('c');
             saveLeadsStore($leadsStore);
             respond(['success' => true, 'lead' => $lead, 'currency_changed' => !empty($curChange['changed']), 'warnings' => $curChange['warnings'] ?? [], 'auto_qualified' => $autoQualified]);
