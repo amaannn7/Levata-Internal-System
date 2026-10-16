@@ -198,12 +198,13 @@
         .btn-xs { padding: 5px 10px; font-size: 12px; }
         @keyframes savePulse { 50% { box-shadow: 0 0 0 7px rgba(245,158,11,.10); } }
         /* Rapid Web tab: switcher + three views */
+        .rw-angle { display: none; }
+        .rw-angle.on { display: block; }
         .rw-seg { display: flex; gap: 4px; padding: 4px; background: var(--bg-subtle); border-radius: var(--radius-md); margin-bottom: 16px; }
         .rw-seg button { flex: 1; border: none; background: none; padding: 9px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--text-secondary); cursor: pointer; font-family: inherit; }
         .rw-seg button.on { background: var(--bg-white); color: var(--accent-dark); box-shadow: var(--shadow-xs); }
-        .rw-count { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 9px; background: var(--accent-soft); color: var(--accent-dark); font-size: 11px; }
-        .rw-view, .rw-angle { display: none; }
-        .rw-view.on, .rw-angle.on { display: block; }
+        .rw-view { display: none; }
+        .rw-view.on { display: block; }
         .rw-angles { display: flex; gap: 8px; margin-bottom: 12px; }
         .rw-angles button { padding: 6px 16px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-white); font-size: 12.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer; font-family: inherit; }
         .rw-angles button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -229,14 +230,7 @@
         .rw-num { width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-dark); font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
         .rw-q { font-size: 13.5px; line-height: 1.6; color: var(--text-secondary); padding: 6px 0 6px 34px; border-top: 1px solid var(--border-light); }
         .rw-q:first-of-type { border-top: none; }
-        .rw-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 20px; }
-        .rw-span2 { grid-column: 1 / -1; }
-        .rw-grid2 .lead-qualify-question { margin-bottom: 8px; }
-        .rw-ready .lead-qualify-question { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; margin: 0; border-bottom: 1px solid var(--border-light); }
-        .rw-ready .lead-qualify-question-title { margin: 0; }
-        .rw-hint { margin-top: 10px; padding: 8px 12px; border-radius: var(--radius-md); background: #fffbeb; border: 1px solid #fde68a; color: #92400e; font-size: 12.5px; line-height: 1.5; }
-        .rw-save { display: flex; justify-content: flex-end; margin-top: 4px; }
-        @media (max-width: 700px) { .rw-grid2, .rw-do-dont { grid-template-columns: 1fr; } }
+        @media (max-width: 700px) { .rw-do-dont { grid-template-columns: 1fr; } }
         .call-btn, .mail-btn { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px; padding: 3px 10px; font-size: 12px; font-weight: 600; border-radius: 999px; border: 1px solid var(--accent-line); background: var(--accent-soft); color: var(--accent-dark); cursor: pointer; vertical-align: middle; transition: background .14s; }
         .call-btn:hover, .mail-btn:hover { background: var(--accent-line); }
         .call-btn svg, .mail-btn svg { width: 13px; height: 13px; }
@@ -4004,11 +3998,20 @@ function applyRoleNavigation(){
     document.querySelectorAll('.manager-nav, .rep-nav').forEach(el=>{el.hidden=false});
 }
 function defaultLandingPage(){return 'command-center'}
+/** Anything every API reply should react to. A Rapid Web-only deal has nothing to qualify, so the server moves it to Qualified on its own once it has an engagement method and the service: tell the rep, refresh the lists, and stop viewing the old stage. */
+function _apiHooks(j){
+    if(j&&j.auto_qualified){
+        toast('Rapid Web has no qualification questions, so this deal moved to Qualified automatically','success');
+        if(typeof viewingStage!=='undefined')viewingStage=null;
+        setTimeout(()=>{try{loadLeads();loadStats()}catch(e){}},0);
+    }
+    return j;
+}
 async function api(endpoint,method='GET',data=null){const opts={method,headers:{'Content-Type':'application/json'},cache:'no-store'};if(localStorage.token)opts.headers['X-User-Token']=localStorage.token;if(data)opts.body=JSON.stringify(data);
     // Cache-bust GET requests so lists (documents, jobs, leads...) always reflect the
     // latest server state immediately after create/delete — no manual refresh needed.
     let url=`${API_BASE}?action=${endpoint}`;if(method==='GET')url+=(url.includes('?')?'&':'?')+'_ts='+Date.now();
-    try{const r=await fetch(url,opts);const text=await r.text();if(!text.trim())return{success:false,error:'The server returned an empty response. The AI may have timed out, please try again.'};try{return JSON.parse(text);}catch(e){console.error('API parse error for',endpoint,text.slice(0,300));return{success:false,error:'The AI response was too long and got cut off. Try a shorter description or use Gemini as the AI provider.'};}}catch(e){return{success:false,error:e.message}}}
+    try{const r=await fetch(url,opts);const text=await r.text();if(!text.trim())return{success:false,error:'The server returned an empty response. The AI may have timed out, please try again.'};try{return _apiHooks(JSON.parse(text));}catch(e){console.error('API parse error for',endpoint,text.slice(0,300));return{success:false,error:'The AI response was too long and got cut off. Try a shorter description or use Gemini as the AI provider.'};}}catch(e){return{success:false,error:e.message}}}
 async function handleLogin(e){e.preventDefault();const btn=document.getElementById('login-btn');btn.disabled=true;btn.innerHTML='<span class="spinner spinner-light"></span>';const r=await api('login','POST',{email:document.getElementById('login-email').value,password:document.getElementById('login-password').value,device_token:localStorage.deviceToken||''});
     if(r.success&&r.requires_otp){showOtpStep(r.pending_token)}
     else if(r.success){localStorage.token=r.token;user=r.user;const me=await api('me');if(me.default_currency)DEFAULT_CURRENCY=me.default_currency;applyLeadRequired(me);showApp()}
@@ -5282,11 +5285,11 @@ document.getElementById('modal-body').innerHTML=`
 ${aiRecBannerHtml}
 <div class="deal-head">
     <div class="deal-head-top">
-        ${stage==='lead'?'':`<div class="deal-value-block">
+        ${`<div class="deal-value-block">
             <div class="deal-value-label">Deal value</div>
             <div class="deal-value-row">
                 <input type="text" class="deal-amount-input" id="lead-deal-amount" value="${dealAmount(l)?dealAmount(l).toLocaleString():''}" placeholder="0" onchange="updateDealAmount()" title="The deal value can change at any stage. Every change is recorded">
-                <select class="deal-currency-select" id="lead-deal-currency" onchange="updateDealAmount()" title="Currency for this deal">${currencyOptions(l.deal_currency)}</select>
+                <select class="deal-currency-select" id="lead-deal-currency" onchange="changeDealCurrencyUI(this.value)" title="A deal has ONE currency. Changing it here changes it for the whole deal: every service follows.">${currencyOptions(l.deal_currency)}</select>
             </div>
         </div>`}
         <div class="deal-head-actions">
@@ -5527,6 +5530,62 @@ async function saveLeadProfileField(key){
         toast(`${PROFILE_FIELDS[key].label} saved`,'success');
     }else toast(r.error||'Could not save','error');
 }
+/** Takes a lead returned by the server as the current one WITHOUT losing what is only staged on screen (picked services not yet saved, staged answers). A server reply reflects the last SAVED state, and swapping it in used to drop those picks. Untouched defaults (Rapid Web's price) are not carried over: they are recomputed for the new currency by the caller. */
+function adoptSavedLead(saved){
+    const staged={services:currentLead.services,demo:currentLead.demo_services,req:currentLead.requisitions||{}};
+    const keep={};
+    Object.entries(staged.req).forEach(([k,v])=>{if(!(k in (saved.requisitions||{}))&&!(v&&typeof v==='object'&&v.default))keep[k]=v});
+    currentLead=saved;
+    currentLead.services=staged.services;currentLead.demo_services=staged.demo;
+    currentLead.requisitions={...keep,...(saved.requisitions||{})};
+    const i=leads.findIndex(x=>x.id===currentLead.id);if(i>-1)leads[i]=currentLead;
+}
+/** The one place a deal's currency changes from the screen (the deal-value box at every stage, and the currency box on a service tab). A deal has ONE currency: every service follows it, so amounts are never added across currencies. Rapid Web's USD 999 list price is converted at today's rate; everything else keeps its number (relabelled, never converted). */
+function snapshotServiceInputs(){
+    const snap=[];
+    document.querySelectorAll('#modal-body [id^="tab-service-"] .svc-question-input').forEach(el=>{
+        const key=el.dataset.key,t=el.dataset.qtype;
+        if(!key)return;
+        if(t==='money')snap.push({key,t,v:el.querySelector('.svc-money-amount')?.value||''});
+        else if(t==='text'||t==='date'||t==='single-select')snap.push({key,t,v:el.value});
+        else snap.push({key,t,v:[...el.querySelectorAll('input:checked')].map(i=>i.value)});
+    });
+    document.querySelectorAll('#modal-body .svc-qual-status').forEach(el=>snap.push({key:el.dataset.key,t:'status',v:[...el.querySelectorAll('input:checked')].map(i=>i.value)}));
+    return snap;
+}
+function restoreServiceInputs(snap){
+    snap.forEach(({key,t,v})=>{
+        const el=document.querySelector(`#modal-body [data-key="${CSS.escape(key)}"]`);
+        if(!el)return;
+        if(t==='money'){const i=el.querySelector('.svc-money-amount');if(i)i.value=v}
+        else if(t==='text'||t==='date'||t==='single-select')el.value=v;
+        else el.querySelectorAll('input').forEach(i=>{const on=v.includes(i.value);i.checked=on;i.closest('label')?.classList.toggle('selected',on)});
+    });
+}
+async function changeDealCurrencyUI(code){
+    if(!currentLead||!code)return;
+    const was=currentLead._pendingCurrency||currentLead.deal_currency||DEFAULT_CURRENCY;
+    if(code===was)return;
+    const typed=snapshotServiceInputs();   // answers typed on a service tab but not saved yet must survive the redraw
+    delete currentLead._pendingCurrency;   // a staged USD switch is superseded by this explicit choice
+    const r=await api('set-deal-amount','POST',{lead_id:currentLead.id,amount:dealAmount(currentLead)||0,currency:code});
+    if(!r.success){toast(r.error||'Could not change the currency','error');renderLeadModal();return}
+    adoptSavedLead(r.lead);
+    renderLeadModal();restoreServiceInputs(typed);   // everything on screen is in the new currency straight away
+    loadLeads();loadStats();
+    // A Rapid Web picked but not saved yet has no stored price to convert: stage its price in the new currency.
+    if((currentLead.services||[]).includes('Rapid Web')&&!((currentLead.requisitions||{})['Rapid Web::estimated_deal_value']||{}).amount){await applyRapidWebDefault({keepCurrency:true});renderLeadModal();restoreServiceInputs(typed)}
+    toast(`Everything is now in ${currentLead.deal_currency}`,'success');
+    (r.warnings||[]).filter(w=>!/^Rapid Web's price/.test(w)).forEach(w=>toast(w,'warning'));   // the Rapid Web conversion is visible in the deal value; only real problems (no rate, generated documents) interrupt
+}
+/** At the Lead stage the deal's value is just what its services add up to (they all share the deal's currency), so it shows up on its own (Rapid Web's 999 included) instead of staying 0. */
+async function rollupLeadStageAmount(){
+    if(!currentLead||getStage(currentLead)!=='lead')return;
+    const sumR=await sumServiceEstimatedDealValues(currentLead.services||[]);
+    if(!sumR||sumR.total===dealAmount(currentLead))return;
+    const r=await api('set-deal-amount','POST',{lead_id:currentLead.id,amount:sumR.total,currency:currentLead.deal_currency});
+    if(r.success)adoptSavedLead(r.lead);
+}
 async function updateDealAmount(){
     const el=document.getElementById('lead-deal-amount');
     if(!el||!currentLead)return;
@@ -5535,8 +5594,7 @@ async function updateDealAmount(){
     // separators itself, and we re-format from the saved value afterwards.
     const r=await api('set-deal-amount','POST',{lead_id:currentLead.id,amount:el.value,currency:curEl?curEl.value:''});
     if(r.success){
-        currentLead=r.lead;
-        const idx=leads.findIndex(x=>x.id===currentLead.id);if(idx>-1)leads[idx]=currentLead;
+        adoptSavedLead(r.lead);
         const amt=dealAmount(currentLead);
         el.value=amt?amt.toLocaleString():'';
         if(curEl)curEl.value=currentLead.deal_currency||DEFAULT_CURRENCY;
@@ -5694,7 +5752,7 @@ function leadQualifyChecklistDone(l){
     const services=l.services||[];
     if(!(services.length>0||!!l.services_other))return false;
     const answers=l.requisitions||{};
-    if(!Object.values(answers).some(hasRealAnswer))return false;
+    if(!leadAnswerDone(l))return false;
     if(!(l.engagement_method||[]).length)return false;
     return true;
 }
@@ -5703,7 +5761,7 @@ function leadQualifyMissingItems(l){
     const missing=[];
     if(!((l.services||[]).length>0||!!l.services_other))missing.push('select a service');
     const answers=l.requisitions||{};
-    if(!Object.values(answers).some(hasRealAnswer))missing.push('answer at least one qualification question');
+    if(!leadAnswerDone(l))missing.push('answer at least one qualification question');
     if(!(l.engagement_method||[]).length)missing.push('pick an engagement method');
     return missing;
 }
@@ -5866,6 +5924,8 @@ function serviceQualDotHtml(l,service,stageContext){
         const statusLabel=!decided?'Feasibility not checked yet':isFeasible?'Feasible':'Not Feasible';
         return `<span class="qual-dot ${dotClass}" title="${esc(statusLabel)}"></span>`;
     }
+    // Before Demo the dot means "qualified". Rapid Web has no questions and always qualifies, so its dot is green from the start. From Demo on (branch above) it reads like every other service: feasibility checked or not.
+    if(serviceIsRapid(service))return `<span class="qual-dot qual-dot-green" title="Qualified: Rapid Web always qualifies"></span>`;
     const status=serviceQualStatusFor(l,service);
     const dotClass=status==='qualified'?'qual-dot-green':status==='not_qualified'?'qual-dot-red':status==='further_discovery'?'qual-dot-amber':'qual-dot-gray';
     const statusLabel=status==='qualified'?'Qualified':status==='not_qualified'?'Not Qualified':status==='further_discovery'?'Further Discovery':'Not decided yet';
@@ -6042,15 +6102,10 @@ const ENGAGEMENT_STATUSES=['Attempted to contact','Contacted','Bad timing'];
 // lists.
 const CUSTOM_SERVICE_NEED_OPTIONS=['Website Development','Sales Intelligence Platform','Custom Software / System','Automation','Integrations / Implementation','Branding','Design / Creative','General Custom Requirement'];
 const SERVICE_QUALIFICATION_FORMS={
-    // Rapid Web (Rapid Build Website): a fixed-scope, fixed-price service, so unlike the other tabs it shows its
-    // whole playbook at every stage: the two call scripts, the demo questions, and the internal qualification
-    // fields the rep fills in after the call (rapidWebPanelHtml() renders the script, demo questions and fields as three views).
+    // Rapid Web (Rapid Build Website): a fixed-scope, fixed-price service with NO qualification form. Its tab shows
+    // the call script while the deal is before Demo, and the demo questions from Demo on (rapidWebPanelHtml()).
     'Rapid Web':{
         rapid:true,
-        industry:true,
-        industryTitle:'Business / Industry',
-        criteriaTitle:'Investment & lead status',
-        investmentLabel:'Investment',
         defaultPrice:{amount:'999',currency:'USD'},
         script:{
             angles:[
@@ -6109,33 +6164,6 @@ const SERVICE_QUALIFICATION_FORMS={
                 'We work on a 10-day delivery timeline for the Rapid Build Website. Is there anything on your side that could affect your ability to provide the required content, assets, access or approvals within that timeframe?',
             ]},
         ],
-        sections:[
-            {title:'Website Brief',questions:[
-                {id:'objective',type:'text',title:'Primary website objective'},
-                {id:'primary_cta',type:'text',title:'Primary CTA'},
-                {id:'required_pages',type:'text',title:'Required pages'},
-                {id:'services_products',type:'text',title:'Services / products'},
-            ]},
-            {title:'Readiness',questions:[
-                {id:'content_ready',type:'single',title:'Content ready',options:['Yes','No']},
-                {id:'brand_assets_ready',type:'single',title:'Brand assets ready',options:['Yes','No']},
-                {id:'form_connection',type:'single',title:'Form connection',options:['Yes','No']},
-                {id:'calendly_integration',type:'single',title:'Calendly integration',options:['Yes','No']},
-                {id:'domain',type:'single',title:'Domain',options:['Yes','No']},
-                {id:'outside_scope',type:'single',title:'Anything outside Rapid Build scope',options:['Yes','No']},
-            ]},
-            {title:'Delivery & Next Step',questions:[
-                {id:'ten_day_delivery',type:'single',title:'10-day delivery',options:['Confirmed','Not confirmed']},
-                {id:'next_step',type:'single',title:'Next step',options:['Payment','Follow-up']},
-            ]},
-        ],
-        qualificationCriteria:{
-            recommended:[],
-            statusOptions:[
-                {value:'qualified',label:'Qualified',color:'success'},
-                {value:'not_qualified',label:'Not Qualified',color:'danger'},
-            ],
-        },
     },
     'Website Development':{
         industry:true,
@@ -6595,6 +6623,11 @@ function stageEngagementField(field,value){
  * above) when the DOM elements aren't present, e.g. this function being
  * called right after a re-render moved focus elsewhere. Services live in
  * their own tabs, read separately by _serviceTabState(). */
+/** Rapid Web has no qualification form (no questions, no Lead Status), so it can't be asked for either. A deal made only of such services needs just an engagement method and a service; on a mixed deal the other services still need their answers and statuses. */
+function serviceIsRapid(s){const f=SERVICE_QUALIFICATION_FORMS[s];return !!(f&&f.rapid)}
+function leadRapidOnly(l){const sv=(l&&l.services)||[];return sv.length>0&&sv.every(serviceIsRapid)}
+/** "At least one qualification question answered": satisfied outright by a Rapid Web-only deal. */
+function leadAnswerDone(l){return leadRapidOnly(l)||Object.values((l&&l.requisitions)||{}).some(hasRealAnswer)}
 function _leadQualifyState(){
     const engagementCbs=document.querySelectorAll('.lead-engagement-cb');
     const engagement_method=engagementCbs.length?[...engagementCbs].filter(cb=>cb.checked).map(cb=>cb.value):(currentLead?.engagement_method||[]);
@@ -6607,7 +6640,7 @@ function _leadQualifyState(){
     // Qualification questions are answered per-service-tab; "done" just
     // needs at least one non-empty answer anywhere in requisitions.
     const answers=currentLead?.requisitions||{};
-    const questionsDone=Object.values(answers).some(hasRealAnswer);
+    const questionsDone=leadAnswerDone(currentLead);
     // Qualify/Unqualified are driven by whichever service tab's
     // Qualification Criteria status radio was last set to the positive or
     // negative option (see _serviceQualificationStatus()).
@@ -6622,7 +6655,9 @@ function _leadQualifyState(){
  * was rejected, qualifying a different one afterward never flipped it. */
 function _serviceQualificationStatus(){
     const answers=currentLead?.requisitions||{};
-    const statuses=(currentLead?.services||[]).map(s=>answers[`${s}::qualification_status`]).filter(Boolean);
+    const svcs=currentLead?.services||[];
+    if(leadRapidOnly(currentLead))return 'qualified';   // nothing to qualify on a Rapid Web-only deal
+    const statuses=svcs.filter(s=>!serviceIsRapid(s)).map(s=>answers[`${s}::qualification_status`]).filter(Boolean);
     if(statuses.includes('qualified'))return 'qualified';
     return statuses[0]||'';
 }
@@ -6635,14 +6670,14 @@ function _serviceQualificationStatus(){
  * Qualified (which does get caught and asked for a reason). */
 function _allServicesHaveStatus(l){
     const answers=l?.requisitions||{};
-    return (l?.services||[]).every(s=>!!answers[`${s}::qualification_status`]);
+    return (l?.services||[]).filter(s=>!serviceIsRapid(s)).every(s=>!!answers[`${s}::qualification_status`]);
 }
 /** Which of this deal's services still have no status picked at all —
  * distinct from Not Qualified, which is a real decision; this is "nobody
  * has looked at this one yet." */
 function _servicesMissingStatus(l){
     const answers=l?.requisitions||{};
-    return (l?.services||[]).filter(s=>!answers[`${s}::qualification_status`]);
+    return (l?.services||[]).filter(s=>!serviceIsRapid(s)&&!answers[`${s}::qualification_status`]);
 }
 /** One service's own Lead Status answer (qualified/further_discovery/not_qualified/''), for the dot indicator next to it on Profile. */
 function serviceQualStatusFor(l,service){
@@ -6654,7 +6689,7 @@ function canQualifyLead(l){
     const engagement=l.engagement_method||[];
     const servicesDone=(l.services||[]).length>0||!!l.services_other;
     const answers=l.requisitions||{};
-    const questionsDone=Object.values(answers).some(hasRealAnswer);
+    const questionsDone=leadAnswerDone(l);
     const engagementDone=engagement.length>0;
     return servicesDone&&questionsDone&&engagementDone&&_allServicesHaveStatus(l)&&_serviceQualificationStatus()==='qualified';
 }
@@ -6662,6 +6697,11 @@ function canQualifyLead(l){
 function qualifyRequirements(l,st){
     const missingStatus=st.servicesDone?_servicesMissingStatus(l):[];
     const names=missingStatus.map(s=>serviceTabLabel(s,l));
+    const first2=[
+        {done:st.engagementDone,text:'Pick an Engagement Method',hint:'then click Save Engagement'},
+        {done:st.servicesDone,text:'Select at least one Service',hint:'then click Save Services'},
+    ];
+    if(leadRapidOnly(l))return first2;   // Rapid Web has no questions or Lead Status to ask for
     return [
         {done:st.engagementDone,text:'Pick an Engagement Method',hint:'then click Save Engagement'},
         {done:st.servicesDone,text:'Select at least one Service',hint:'then click Save Services'},
@@ -6674,7 +6714,8 @@ function qualifyBlockers(l,st){return qualifyRequirements(l,st).filter(r=>!r.don
 function qualifyChecklistHtml(l,st){
     const reqs=qualifyRequirements(l,st),left=reqs.filter(r=>!r.done).length;
     const rows=reqs.map(r=>`<div class="qc-row ${r.done?'done':'todo'}"><span class="qc-mark">${r.done?'✓':'○'}</span><span class="qc-text">${esc(r.text)}${r.done?'':` <span class="qc-hint">${esc(r.hint)}</span>`}${(!r.done&&r.tab)?` <a href="#" class="qc-go" onclick="goToServiceTab('${esc(r.tab).replace(/'/g,"\\'")}');return false;">Go to ${esc(serviceTabLabel(r.tab,l))}</a>`:''}</span></div>`).join('');
-    return `<div class="qualify-checklist"><div class="qc-title">${left?`To qualify this lead (${left} left)`:'All set: click Qualify'}</div>${rows}</div>`;
+    const auto=leadRapidOnly(l);
+    return `<div class="qualify-checklist"><div class="qc-title">${auto?(left?`Rapid Web qualifies automatically once these are done (${left} left)`:'Qualified automatically'):(left?`To qualify this lead (${left} left)`:'All set: click Qualify')}</div>${rows}</div>`;
 }
 function goToServiceTab(service){
     const btn=document.querySelector(`.tab-btn[data-service-tab="${CSS.escape(service)}"]`);
@@ -6698,7 +6739,7 @@ function leadQualifyPanelHtml(l){
     const engagementNote=l.engagement_note||'';
     const servicesDone=(l.services||[]).length>0||!!l.services_other;
     const answers=l.requisitions||{};
-    const questionsDone=Object.values(answers).some(hasRealAnswer);
+    const questionsDone=leadAnswerDone(l);
     const engagementDone=engagement.length>0;
     const allDone=servicesDone&&questionsDone&&engagementDone;
     const qualStatus=_serviceQualificationStatus();
@@ -6711,7 +6752,7 @@ function leadQualifyPanelHtml(l){
     return `<div class="lead-qualify-panel">
         <div class="lead-qualify-header">
             <div class="lead-qualify-heading">Qualify this lead</div>
-            <div class="lead-qualify-progress ${canQualify?'all-done':''}">${reqsDone} of 5 done</div>
+            <div class="lead-qualify-progress ${canQualify?'all-done':''}">${reqsDone} of ${qualifyRequirements(l,liveSt).length} done</div>
         </div>
         ${leadQualifyStepHtml(1,'Engagement Method','How will you be reaching out?',engagementDone,`
             <div class="lead-qualify-options" id="lead-engagement-options">${ENGAGEMENT_METHODS.map(m=>`<label class="req-option${engagement.includes(m)?' selected':''}"><input type="checkbox" class="lead-engagement-cb" value="${m}" onchange="toggleEngagementMethod('${m}',this.checked)"${engagement.includes(m)?' checked':''}>${m}</label>`).join('')}<button type="button" class="call-btn call-btn-block" onclick="callLead()" ${l.phone?'':'disabled title="Add a phone number on the Profile tab first"'}>${PHONE_ICON}Call now</button></div>
@@ -6841,7 +6882,7 @@ async function toggleFixedService(service,checked){
     if(!currentLead)return;
     if(checked){
         currentLead.services=[...(currentLead.services||[]),service];
-        if(service==='Rapid Web')applyRapidWebDefault();
+        if(service==='Rapid Web')await applyRapidWebDefault();
         renderLeadModal();
     }else if((currentLead.demo_services||[]).includes(service)){
         await removeDemoServiceTab(service);   // it was only queued for Demo from an earlier-stage view
@@ -6851,18 +6892,22 @@ async function toggleFixedService(service,checked){
     }
 }
 /** Rapid Web is a fixed-price service (USD 999). Adding it stages that as the service's value, marked default:true so it never counts as an answered qualification question on its own. A deal has ONE currency, so the default is only applied when it can be honest: the deal is already in USD, or has no money on it yet (then the deal switches to USD when Services are saved). Otherwise the rep is told to enter the amount in the deal's currency; nothing is converted. */
-function applyRapidWebDefault(){
+async function applyRapidWebDefault(opts={}){
     const key='Rapid Web::estimated_deal_value',price=SERVICE_QUALIFICATION_FORMS['Rapid Web'].defaultPrice;
     const reqs={...(currentLead.requisitions||{})};
     if(reqs[key]&&reqs[key].amount)return;
-    const cur=currentLead.deal_currency||DEFAULT_CURRENCY;
-    // Any money answer already on the deal counts (a client budget as much as a service value): switching the deal's currency would relabel it.
+    let cur=currentLead._pendingCurrency||currentLead.deal_currency||DEFAULT_CURRENCY;
+    // Clicking Rapid Web puts the whole deal in dollars (its list price is USD 999): the rep can change the currency afterwards and everything follows. The one exception is a deal that already has amounts the rep entered in another currency: those are never relabelled as dollars, so the deal keeps its currency and Rapid Web is shown converted into it.
     const hasMoney=dealAmount(currentLead)>0||Object.values(reqs).some(v=>v&&typeof v==='object'&&!Array.isArray(v)&&v.amount&&!v.default);
-    if(cur===price.currency||!hasMoney){
-        reqs[key]={amount:price.amount,currency:price.currency,default:true};
-        currentLead.requisitions=reqs;
-        if(cur!==price.currency)currentLead._pendingCurrency=price.currency;
-    }else toast(`Rapid Web is priced at ${price.currency} ${price.amount}. This deal is in ${cur}, so enter the amount in ${cur} on the Rapid Web tab.`,'info');
+    if(!opts.keepCurrency&&!hasMoney&&cur!==price.currency){currentLead._pendingCurrency=price.currency;cur=price.currency}
+    let amount=price.amount;
+    if(cur!==price.currency){
+        // 999 dollars is not 999 of another currency: convert the list price at today's rate (server-side rates).
+        const r=await api('rapid-web-price&currency='+encodeURIComponent(cur));
+        if(!r.success||!r.price){toast(`No exchange rate is available for ${cur}: enter Rapid Web's ${cur} price in the Demo Feasibility Check.`,'warning');return}
+        amount=String(r.price.amount);
+    }
+    currentLead.requisitions={...reqs,[key]:{amount:String(amount),currency:cur,default:true}};
 }
 /** Unchecking a fixed service removes it right away — no separate "Save
  * Services" click needed, unlike adding. A straight update-lead write
@@ -6952,6 +6997,7 @@ async function saveLeadServicesList(services,jumpToService){
     currentLead=r.lead;
     const idx=leads.findIndex(x=>x.id===currentLead.id);if(idx>-1)leads[idx]=currentLead;
     lastSavedServicesSnapshot=[...(currentLead.services||[])];
+    await rollupLeadStageAmount();
     renderLeadModal();
     toast('Services saved','success');
     // Take the rep straight to the relevant service's questions — otherwise
@@ -7118,13 +7164,15 @@ function rwFill(text,l){
         return `<span class="rw-ph">[${inner}]</span>`;
     });
 }
-// Rapid Web's tab is three views behind a switcher (Call script / Demo questions / Qualification), not one long scroll.
-// The selected view and angle are remembered per deal so a save (which redraws the modal) doesn't jump back.
+// Rapid Web's tab (nothing to fill in): before Demo it is just the call script; from Demo on it is two views behind a
+// switcher, Call script | Demo questions, opening on the questions. The choice is remembered per deal so a redraw
+// doesn't jump back.
 const rwViewByLead={},rwAngleByLead={};
-function rwDefaultView(stage){return stage==='demo'?'demo':(stage==='lead'||stage==='qualified'?'script':'qual')}
+function rwPhase(stage){return stageOrder(stage)>=stageOrder('demo')?'demo':'script'}
+function rwViewKey(l,stage){return l.id+'|'+rwPhase(stage)}
 function rwSetView(v){
     if(!currentLead)return;
-    rwViewByLead[currentLead.id]=v;
+    rwViewByLead[rwViewKey(currentLead,activePanelStage())]=v;
     document.querySelectorAll('.rw-panel .rw-seg button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
     document.querySelectorAll('.rw-panel .rw-view').forEach(d=>d.classList.toggle('on',d.dataset.v===v));
 }
@@ -7134,14 +7182,8 @@ function rwSetAngle(i){
     document.querySelectorAll('.rw-panel .rw-angles button').forEach((b,j)=>b.classList.toggle('on',j===i));
     document.querySelectorAll('.rw-panel .rw-angle').forEach((d,j)=>d.classList.toggle('on',j===i));
 }
-function rapidWebPanelHtml(c){
-    const {form,l,stage,service,answers,key,renderQuestion,industryInput,criteriaHtml}=c;
-    const sc=form.script,view=rwViewByLead[l.id]||rwDefaultView(stage),angle=rwAngleByLead[l.id]||0;
-    const q=id=>renderQuestion(form.sections.flatMap(s=>s.questions).find(x=>x.id===id));
-    // how many of the 13 fields have a real answer, for the badge on the Qualification button
-    const fieldIds=form.sections.flatMap(s=>s.questions.map(x=>x.id)).concat(['industry']);
-    const done=fieldIds.filter(id=>{const v=answers[key(id)];return Array.isArray(v)?v.length>0:!!v}).length;
-
+function rapidWebPanelHtml(form,l,stage){
+    const sc=form.script,view=rwViewByLead[rwViewKey(l,stage)]||rwPhase(stage),angle=rwAngleByLead[l.id]||0;
     const angles=`<div class="rw-angles">${sc.angles.map((a,i)=>`<button type="button" class="${i===angle?'on':''}" onclick="rwSetAngle(${i})">Angle ${i+1}</button>`).join('')}</div>
         ${sc.angles.map((a,i)=>`<div class="rw-angle${i===angle?' on':''}"><div class="rw-card"><div class="rw-angle-title">${esc(a.title.replace(/^Angle \d+:\s*/,''))}</div><div class="rw-lines">${a.lines.map(t=>`<p>${rwFill(t,l)}</p>`).join('')}</div></div></div>`).join('')}`;
     const flow=sc.narrative.split('→').map(t=>`<span class="step">${esc(t.trim())}</span>`).join('<span class="arrow">→</span>');
@@ -7149,37 +7191,27 @@ function rapidWebPanelHtml(c){
         <div class="rw-do-dont"><div class="rw-dont"><b>Don't say</b><p>${esc(sc.avoid)}</p></div><div class="rw-do"><b>Say</b><p>${esc(sc.say)}</p></div></div>
         <div class="rw-sub">The story to tell</div><div class="rw-flow">${flow}</div>
         <div class="rw-sub">${esc(sc.credibility)}</div><ul class="rw-obs">${sc.observations.map(o=>`<li>${esc(o)}</li>`).join('')}</ul></div>`;
-    const demo=form.demoQuestions.map(g=>{const m=g.title.match(/^(\d+)\.\s*(.*)$/);return `<div class="rw-card"><div class="rw-qhead"><span class="rw-num">${m?m[1]:''}</span>${esc(m?m[2]:g.title)}</div>${g.questions.map(t=>`<div class="rw-q">${esc(t)}</div>`).join('')}</div>`}).join('')
-;
-    const qual=`
-        <div class="rw-card"><div class="rw-card-title">Business &amp; website brief</div><div class="rw-grid2">
-            <div class="lead-qualify-question"><div class="lead-qualify-question-title">${esc(form.industryTitle||'Industry')}</div>${industryInput}</div>
-            ${q('objective')}${q('primary_cta')}${q('required_pages')}<div class="rw-span2">${q('services_products')}</div></div></div>
-        <div class="rw-card"><div class="rw-card-title">Readiness checklist</div><div class="rw-grid2 rw-ready">
-            ${['content_ready','brand_assets_ready','form_connection','calendly_integration','domain','outside_scope'].map(q).join('')}</div></div>
-        <div class="rw-card"><div class="rw-card-title">Delivery &amp; next step</div><div class="rw-grid2">${q('ten_day_delivery')}${q('next_step')}</div></div>
-        <div class="rw-card">${criteriaHtml}${(()=>{const ev=answers[key('estimated_deal_value')],cur=(l._pendingCurrency||l.deal_currency||DEFAULT_CURRENCY),p=form.defaultPrice;return (!ev||!ev.amount)&&cur!==p.currency?`<div class="rw-hint">Rapid Web's fixed price is ${esc(p.currency)} ${esc(p.amount)}. This deal is in ${esc(cur)} (a deal has one currency), so enter the ${esc(cur)} amount above.</div>`:''})()}</div>
-        <div class="rw-save"><button type="button" class="btn btn-primary btn-sm" data-service="${esc(service)}" onclick="saveServiceAnswers(this.dataset.service)">Save Answers</button></div>`;
+    // Before Demo the tab is just the call script: the demo questions (and the switcher to reach them) only exist from the Demo stage on.
+    if(stageOrder(stage)<stageOrder('demo'))return `<div class="lead-qualify-panel rw-panel">${angles}${opening}</div>`;
+    const questions=form.demoQuestions.map(g=>{const m=g.title.match(/^(\d+)\.\s*(.*)$/);return `<div class="rw-card"><div class="rw-qhead"><span class="rw-num">${m?m[1]:''}</span>${esc(m?m[2]:g.title)}</div>${g.questions.map(t=>`<div class="rw-q">${esc(t)}</div>`).join('')}</div>`}).join('');
     return `<div class="lead-qualify-panel rw-panel">
         <div class="rw-seg">
             <button type="button" data-v="script" class="${view==='script'?'on':''}" onclick="rwSetView('script')">Call script</button>
             <button type="button" data-v="demo" class="${view==='demo'?'on':''}" onclick="rwSetView('demo')">Demo questions</button>
-            <button type="button" data-v="qual" class="${view==='qual'?'on':''}" onclick="rwSetView('qual')">Qualification <span class="rw-count">${done}/${fieldIds.length}</span></button>
         </div>
         <div class="rw-view${view==='script'?' on':''}" data-v="script">${angles}${opening}</div>
-        <div class="rw-view${view==='demo'?' on':''}" data-v="demo">${demo}</div>
-        <div class="rw-view${view==='qual'?' on':''}" data-v="qual">${qual}</div>
+        <div class="rw-view${view==='demo'?' on':''}" data-v="demo">${questions}</div>
     </div>`;
 }
 function serviceTabHtml(service,l,stage){
+    {const rf=serviceFormFor(service,l);if(rf&&rf.rapid)return rapidWebPanelHtml(rf,l,stage);}
     // At Demo, requirement-gathering shows first, then the Lead-stage
     // qualification questions below — a service already in l.services shows
     // its own answers as history; a Demo-only add gets the same generic
     // Custom Services qualification form (see serviceFormFor's fallback),
     // since a rep can qualify a service they add at Demo too.
     const form=serviceFormFor(service,l);
-    // Rapid Web has its own three-view panel (rapidWebPanelHtml); the other services only show requirement gathering at Demo.
-    const demoReqHtml=(form&&form.rapid)?'':(stage==='demo'?demoRequirementGatheringHtml(service,l):'');
+    const demoReqHtml=stage==='demo'?demoRequirementGatheringHtml(service,l):'';
     if(!form)return `<div class="lead-qualify-panel">${demoReqHtml}</div>`;
     const answers=l.requisitions||{};
     const key=qid=>`${service}::${qid}`;
@@ -7221,7 +7253,7 @@ function serviceTabHtml(service,l,stage){
         const isAnswered=Array.isArray(val)?val.length>0:(val&&typeof val==='object'?!!val.amount:!!val);
         return `<div class="lead-qualify-question"><div class="lead-qualify-question-title">${esc(q.title)} ${isAnswered?'<span class="q-done">✓</span>':''}</div>${inputHtml}</div>`;
     };
-    const industryHtml=form.industry?`<div class="detail-section"><div class="detail-section-title">${esc(form.industryTitle||'Industry')}</div>${noFieldSave
+    const industryHtml=form.industry?`<div class="detail-section"><div class="detail-section-title">Industry</div>${noFieldSave
         ?`<input type="text" class="form-input svc-question-input${answers[key('industry')]?' answered':''}" id="svc-input-${esc(key('industry'))}" data-key="${key('industry')}" data-qtype="text" placeholder="Industry" value="${esc(answers[key('industry')]||'')}">`
         :`<div style="display:flex;gap:6px;"><input type="text" class="form-input svc-question-input${answers[key('industry')]?' answered':''}" id="svc-input-${esc(key('industry'))}" data-key="${key('industry')}" data-qtype="text" placeholder="Industry" value="${esc(answers[key('industry')]||'')}"><button type="button" class="btn btn-primary btn-xs" onclick="saveSingleServiceField('${esc(key('industry'))}')">Save</button></div>`}</div>`:'';
     const sectionsHtml=form.sections.map(sec=>`<div class="detail-section"><div class="detail-section-title">${esc(sec.title)}</div>${sec.questions.map(renderQuestion).join('')}</div>`).join('');
@@ -7229,9 +7261,9 @@ function serviceTabHtml(service,l,stage){
     const statusVal=answers[key('qualification_status')]||'';
     const recommendedVal=answers[key('recommended')]||'';
     const dealValMoney=(answers[key('estimated_deal_value')]&&typeof answers[key('estimated_deal_value')]==='object')?answers[key('estimated_deal_value')]:{amount:''};
-    const criteriaHtml=`<div class="detail-section" style="margin-top:16px;"><div class="detail-section-title">${esc(form.criteriaTitle||'Qualification Criteria')}</div>
+    const criteriaHtml=`<div class="detail-section" style="margin-top:16px;"><div class="detail-section-title">Qualification Criteria</div>
         ${qc.recommended&&qc.recommended.length?`<div class="form-group"><label class="form-label">Recommended</label><div class="lead-qualify-options svc-question-input" data-key="${key('recommended')}" data-qtype="single">${qc.recommended.map(r=>`<label class="req-option${recommendedVal===r?' selected':''}"><input type="radio" name="svc-recommended-${esc(service)}" value="${esc(r)}"${recommendedVal===r?' checked':''}>${esc(r)}</label>`).join('')}</div></div>`:''}
-        <div class="form-group"><label class="form-label">${esc(form.investmentLabel||'Estimated Deal Value')}</label>
+        <div class="form-group"><label class="form-label">Estimated Deal Value</label>
             <div class="deal-value-row svc-question-input" data-key="${key('estimated_deal_value')}" data-qtype="money">
                 <input type="text" class="form-input svc-money-amount${dealValMoney.amount?' answered':''}" placeholder="0" value="${esc(dealValMoney.amount||'')}" style="max-width:160px;">
                 ${dealCurrencySelectHtml()}
@@ -7241,18 +7273,14 @@ function serviceTabHtml(service,l,stage){
             <div class="lead-qualify-options svc-qual-status" data-key="${key('qualification_status')}">${qc.statusOptions.map(o=>`<label class="req-option req-option-${o.color}${statusVal===o.value?' selected':''}"><input type="radio" name="svc-qual-status-${esc(service)}" value="${o.value}"${statusVal===o.value?' checked':''}>${esc(o.label)}</label>`).join('')}</div>
         </div>
     </div>`;
-    if(form.rapid){
-        const industryInput=`<input type="text" class="form-input svc-question-input${answers[key('industry')]?' answered':''}" id="svc-input-${esc(key('industry'))}" data-key="${key('industry')}" data-qtype="text" placeholder="Type the answer..." value="${esc(answers[key('industry')]||'')}">`;
-        return rapidWebPanelHtml({form,l,stage,service,answers,key,renderQuestion,industryInput,criteriaHtml});
-    }
     return `<div class="lead-qualify-panel">${demoReqHtml}${industryHtml}${sectionsHtml}${criteriaHtml}
         <div style="margin-top:14px;"><button type="button" class="btn btn-primary btn-sm" data-service="${esc(service)}" onclick="saveServiceAnswers(this.dataset.service)">Save Answers</button></div>
     </div>`;
 }
-/** A deal has ONE currency: service values and the client budget are always in it, so this is a fixed label (read back as the select's value by saveServiceAnswers), not a choice. Change it with the currency next to the deal value at the top. */
+/** A deal has ONE currency: service values and the client budget are always in it. This box is the same control as the one next to the deal value at the top: picking another currency changes it for the whole deal (changeDealCurrencyUI). */
 function dealCurrencySelectHtml(){
     const c=(currentLead&&(currentLead._pendingCurrency||currentLead.deal_currency))||DEFAULT_CURRENCY;
-    return `<select class="form-select svc-money-currency" style="max-width:100px;" disabled title="Follows the deal's currency. Change it next to the deal value at the top."><option value="${esc(c)}" selected>${esc(c)}</option></select>`;
+    return `<select class="form-select svc-money-currency" style="max-width:100px;" onchange="changeDealCurrencyUI(this.value)" title="A deal has ONE currency. Changing it here changes it for the whole deal: every service follows.">${currencyOptions(c)}</select>`;
 }
 /** Sums every selected service's "Estimated Deal Value" answer, restricted to
  * whichever currency the first one found is in — money in different
@@ -7400,7 +7428,7 @@ function refreshLeadQualifyGate(){
     const reqs=qualifyRequirements(currentLead,state);
     const canQualify=reqs.every(r=>r.done)&&!_servicesMissingStatus(currentLead).length;
     const progress=panel.querySelector('.lead-qualify-progress');
-    if(progress){progress.textContent=`${reqs.filter(r=>r.done).length} of 5 done`;progress.classList.toggle('all-done',canQualify)}
+    if(progress){progress.textContent=`${reqs.filter(r=>r.done).length} of ${reqs.length} done`;progress.classList.toggle('all-done',canQualify)}
     const qualifyBtn=document.getElementById('lead-qualify-btn');
     if(qualifyBtn)qualifyBtn.classList.toggle('btn-blocked',!canQualify);
     const unqualifyBtn=document.getElementById('lead-unqualify-btn');
@@ -7752,6 +7780,14 @@ async function qualifyLead(){
     });
     if(!r.success){toast(r.error||'Could not save','error');return}
     currentLead=r.lead;
+    // A Rapid Web-only deal is qualified by the server as part of this very save (maybeAutoQualifyRapidWeb), so the
+    // deal is already at Qualified: setDealStage() below would see "already there" and stop without redrawing, leaving
+    // the old Lead panel on screen. Redraw here instead.
+    if(getStage(currentLead)==='qualified'){
+        const qi=leads.findIndex(x=>x.id===currentLead.id);if(qi>-1)leads[qi]=currentLead;
+        viewingStage=null;loadLeads();loadStats();window.forceLeadModalScrollTop=true;renderLeadModal();
+        return;
+    }
     if(notQualified.length){
         // deal_amount was already rolled up from EVERY service's own
         // Estimated Deal Value, including the ones just disqualified above
@@ -7839,6 +7875,9 @@ function qualifiedPanelHtml(l){
     // (e.g. "Sales Intelligence Platform" trends) even with nothing else on
     // file, so research always has something to run on.
     const nothingToResearch=!hasCompany&&!hasIndustry&&isCreativeService;
+    // The Rapid Web email only exists for deals that include Rapid Web; a stored Rapid Web email on a deal that no longer has it regenerates as the standard one.
+    const hasRapidWeb=(l.services||[]).includes('Rapid Web')||(l.demo_services||[]).includes('Rapid Web');
+    const emailTemplate=(l.calendly_email_template==='rapid_web'&&hasRapidWeb)?'rapid_web':'calendly';
     return `<div class="lead-qualify-panel">
         <div class="lead-qualify-header">
             <div class="lead-qualify-heading">Prep for Demo</div>
@@ -7860,7 +7899,7 @@ function qualifiedPanelHtml(l){
                 ${isCreativeService&&!research?`<div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Creative work like this leans less on industry trends — research may find less to say than for a technical build.</div>`:''}`}
             ${qualifiedResearchResultHtml(research)}`)}
         ${leadQualifyStepHtml(2,'Calendly Email',l.email?`Send them the booking link at ${esc(l.email)}`:'Add an email on Profile first',!!l.calendly_email_sent,`
-            ${l.email?(l.calendly_email_subject?'':`<button type="button" class="btn btn-ai btn-xs" onclick="generateCalendlyEmail()" id="qf-calendly-btn">Generate Calendly Email</button>`)
+            ${l.email?(l.calendly_email_subject?'':`<div style="display:flex;gap:6px;flex-wrap:wrap;"><button type="button" class="btn btn-ai btn-xs" onclick="generateCalendlyEmail('calendly',this)" id="qf-calendly-btn">Generate Calendly Email</button>${hasRapidWeb?`<button type="button" class="btn btn-ai btn-xs" onclick="generateCalendlyEmail('rapid_web',this)" id="qf-rapid-btn">Generate Rapid Web Email</button>`:''}</div>`)
                 :`<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:8px;">No email on file for this lead.</div>
                 <button type="button" class="btn btn-secondary btn-xs" onclick="editLeadProfileField('email')">Add Email</button>`}
             <div class="generated-email" id="qf-calendly-result" style="display:${l.calendly_email_subject?'block':'none'};margin-top:10px;">
@@ -7874,7 +7913,8 @@ function qualifiedPanelHtml(l){
                     <button type="button" class="btn btn-primary btn-sm" onclick="saveCalendlyEmailEdits()">Save Edits</button>
                 </div>
                 ${l.calendly_email_subject?`<div class="form-group" style="margin-top:10px;"><label class="form-label">Want it different? Add instructions (optional) and regenerate</label><textarea class="form-textarea" id="qf-calendly-instructions" rows="2" placeholder="e.g. mention their upcoming product launch, keep it shorter...">${esc(l.calendly_custom_instructions||'')}</textarea></div>
-                <button type="button" class="btn btn-ai btn-xs" onclick="generateCalendlyEmail()" id="qf-calendly-btn">Regenerate</button>`:''}
+                <div style="display:flex;gap:6px;flex-wrap:wrap;"><button type="button" class="btn btn-ai btn-xs" onclick="generateCalendlyEmail('${emailTemplate}',this)" id="qf-calendly-btn">Regenerate</button>
+                ${hasRapidWeb?`<button type="button" class="btn btn-secondary btn-xs" onclick="generateCalendlyEmail('${emailTemplate==='rapid_web'?'calendly':'rapid_web'}',this)">${emailTemplate==='rapid_web'?'Use the standard Calendly email':'Use the Rapid Web email'}</button>`:''}</div>`:''}
             </div>`)}
         <div class="lead-qualify-actions">
             <button type="button" class="btn btn-secondary" onclick="markDemoRequestSent()" id="qf-demo-request-btn" ${requestSent?'disabled':''}>${requestSent?'Meeting Request Sent ✓':'Demo/Meeting Request Sent'}</button>
@@ -7890,9 +7930,10 @@ const CALENDLY_LINK='https://calendly.com/levatahq/30min';
  * in api.php) — was a fixed client-side template with no way to steer the
  * wording; now takes the Custom Instructions field into account, same
  * pattern as the outbound Email tab. */
-async function generateCalendlyEmail(){
+async function generateCalendlyEmail(template='calendly',btn=null){
     if(!currentLead)return;
-    const btn=document.getElementById('qf-calendly-btn');
+    template=template==='rapid_web'?'rapid_web':'calendly';
+    btn=btn||document.getElementById('qf-calendly-btn');
     // The Custom Instructions field only exists once an email has already
     // been generated once (see qualifiedPanelHtml()) — the first
     // generation is always the plain default, with no instructions to
@@ -7904,8 +7945,9 @@ async function generateCalendlyEmail(){
     // Regenerate is always safe to click: empty instructions just puts back
     // the same default email, non-empty instructions adapts it.
     const origLabel=btn?.textContent||'Generate Calendly Email';
+    const emailName=template==='rapid_web'?'Rapid Web email':'Calendly email';
     if(btn){btn.disabled=true;btn.innerHTML='<span class="spinner spinner-light"></span>';}
-    const r=await api('generate-calendly-email','POST',{lead:currentLead,calendar_link:CALENDLY_LINK,custom_instructions:instructions});
+    const r=await api('generate-calendly-email','POST',{lead:currentLead,calendar_link:CALENDLY_LINK,custom_instructions:instructions,template});
     if(btn){btn.disabled=false;btn.textContent=origLabel;}
     if(!r.success){toast(r.error||'Could not generate the email','error');return}
     const raw=r.email.trim();
@@ -7918,7 +7960,7 @@ async function generateCalendlyEmail(){
     // unsaved pick sitting on currentLead right now. Carry all three
     // forward across the currentLead=r.lead swap below.
     const stagedServices=currentLead.services,stagedDemoServices=currentLead.demo_services,stagedRequisitions=currentLead.requisitions;
-    const sr=await api('update-lead','POST',{id:currentLead.id,calendly_email_subject:subject,calendly_email_body:body,calendly_custom_instructions:instructions});
+    const sr=await api('update-lead','POST',{id:currentLead.id,calendly_email_subject:subject,calendly_email_body:body,calendly_custom_instructions:instructions,calendly_email_template:template});
     if(!sr.success){toast(sr.error||'Could not save the email','error');return}
     currentLead=sr.lead;
     currentLead.services=stagedServices;
@@ -7926,7 +7968,7 @@ async function generateCalendlyEmail(){
     currentLead.requisitions=stagedRequisitions;
     const idx=leads.findIndex(x=>x.id===currentLead.id);if(idx>-1)leads[idx]=currentLead;
     renderLeadModal();
-    toast('Calendly email generated','success');
+    toast(`${emailName.charAt(0).toUpperCase()+emailName.slice(1)} generated`,'success');
 }
 function copyCalendlyEmail(){
     const subject=document.getElementById('qf-calendly-subject')?.textContent||'';
@@ -9508,14 +9550,20 @@ function adRenderServices(){
     document.getElementById('ad-cur-row').style.display=ad.svcs.length?'':'none';
     adTotal();
 }
-function adToggleFixed(name){
+async function adToggleFixed(name){
     const i=ad.svcs.findIndex(s=>s.type==='fixed'&&s.name===name);
-    if(i>-1)ad.svcs.splice(i,1);else{
-        // Rapid Web is fixed-price USD 999: prefill it when that is honest (first service picked, or the deal is already USD).
-        let amount='';
-        if(name==='Rapid Web'){const cur=document.getElementById('ad-currency');if(cur&&(!ad.svcs.length||cur.value==='USD')){cur.value='USD';amount='999'}}
-        ad.svcs.push({type:'fixed',name,amount});
+    if(i>-1){ad.svcs.splice(i,1);adRenderServices();return}
+    // Rapid Web is USD 999: prefill it (converted at today's rate when the deal is in another currency; a currency still on the studio default starts in USD when Rapid Web is the first service).
+    let amount='';
+    if(name==='Rapid Web'){
+        const cur=document.getElementById('ad-currency');
+        if(cur){
+            if(!ad.svcs.length&&cur.value===DEFAULT_CURRENCY)cur.value='USD';
+            if(cur.value==='USD')amount='999';
+            else{const r=await api('rapid-web-price&currency='+encodeURIComponent(cur.value));if(r.success&&r.price)amount=String(r.price.amount)}
+        }
     }
+    ad.svcs.push({type:'fixed',name,amount,auto:name==='Rapid Web'?amount:''});
     adRenderServices();
 }
 function adAddCustom(sel){
@@ -9529,7 +9577,18 @@ function adTotal(){
     const el=document.getElementById('ad-total');
     el.innerHTML=total>0?`<label class="form-label">Deal value</label><div style="font-weight:700;padding:8px 0;">${dealMoneyFmt(total,document.getElementById('ad-currency').value)}</div>`:'';
 }
-document.getElementById('ad-currency')?.addEventListener('change',adTotal);
+document.getElementById('ad-currency')?.addEventListener('change',async()=>{
+    // Rapid Web's amount was filled in automatically (USD 999, or converted): re-price it for the new currency unless the rep has typed their own.
+    const cur=document.getElementById('ad-currency').value;
+    for(const sv of ad.svcs){
+        if(sv.name==='Rapid Web'&&sv.auto!==''&&String(sv.amount)===String(sv.auto)){
+            if(cur==='USD')sv.amount='999';
+            else{const r=await api('rapid-web-price&currency='+encodeURIComponent(cur));sv.amount=(r.success&&r.price)?String(r.price.amount):''}
+            sv.auto=sv.amount;
+        }
+    }
+    adRenderServices();
+});
 async function adSubmit(e){
     e.preventDefault();
     if(!ad.picked)return;

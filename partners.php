@@ -157,7 +157,7 @@ function partnerMayCall($user, $action, $method, $input) {
     $K = fn($keys, $req = true) => ['ticket', (array) $keys, $req]; // support tickets they raised themselves
     $rules = [
         'GET' => [
-            'me' => [], 'leads' => [], 'stats' => [], 'studio-overview' => [], 'jobs' => [], 'tasks' => [], 'notifications' => [],
+            'me' => [], 'rapid-web-price' => [], 'leads' => [], 'stats' => [], 'studio-overview' => [], 'jobs' => [], 'tasks' => [], 'notifications' => [],
             'tickets' => [], // Help & Support: the handler returns only tickets they raised
             'command-center' => [], 'team-members' => [], // dashboard funnel / owner+assignee pickers (both narrowed to the partner)
             'list-documents' => [], 'all-documents' => [],

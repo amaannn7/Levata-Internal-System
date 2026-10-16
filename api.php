@@ -585,9 +585,33 @@ function syncDealMoneyCurrencies(&$lead) {
     $cur = normalizeCurrency($lead['deal_currency'] ?? '');
     foreach ($lead['requisitions'] as $k => $v) {
         if (is_array($v) && array_key_exists('amount', $v) && array_key_exists('currency', $v)) {
+            // Rapid Web's default is a USD list price: in another currency it is CONVERTED (999 USD is not 999 LKR),
+            // or dropped when no exchange rate is available, never just relabelled.
+            if (!empty($v['default']) && $k === 'Rapid Web::estimated_deal_value' && strtoupper((string) $v['currency']) !== $cur) {
+                $p = rapidWebDefaultIn($cur);
+                if ($p === null) { unset($lead['requisitions'][$k]); continue; }
+                $lead['requisitions'][$k]['amount'] = (string) $p['amount'];
+            }
             $lead['requisitions'][$k]['currency'] = $cur;
         }
     }
+}
+
+/**
+ * Rapid Web is sold at USD 999. In a deal in another currency its default price is that list price converted at the
+ * cached exchange rate (fx.php), so a USD 999 service can sit next to a service priced in LKR without the two being
+ * added up as if they were the same unit. Returns ['amount','currency','rate','converted','stale'], or null when no
+ * rate is available for the currency (the caller then asks for the price to be entered instead).
+ */
+function rapidWebDefaultIn($currency) {
+    $cur = normalizeCurrency($currency);
+    if ($cur === 'USD') return ['amount' => 999, 'currency' => 'USD', 'rate' => 1, 'converted' => false, 'stale' => false];
+    $fx = getFxRates();
+    $rate = $fx['rates'][$cur] ?? null;
+    if (!$rate || $rate <= 0) return null;
+    $amount = 999 * $rate;
+    $amount = $amount >= 10000 ? round($amount / 10) * 10 : round($amount);
+    return ['amount' => (int) $amount, 'currency' => $cur, 'rate' => $rate, 'converted' => true, 'stale' => !empty($fx['stale'])];
 }
 
 /**
@@ -629,15 +653,44 @@ function changeDealCurrency(&$lead, $newCurrency, $actor = null) {
     }
     if ($touched) saveJobsStore($jobStore);
 
-    // An untouched default (Rapid Web's USD 999) is a suggested price in ITS currency, not an answer: relabelling it
-    // as 999 of the new currency would misstate the price, so it is dropped (the rep enters the real amount).
-    if (is_array($lead['requisitions'] ?? null)) {
-        foreach ($lead['requisitions'] as $k => $v) {
-            if (is_array($v) && !empty($v['default']) && strtoupper((string) ($v['currency'] ?? '')) !== $new) unset($lead['requisitions'][$k]);
+    // If the deal's total is simply what its services add up to, it must follow the services through the change (Rapid Web's
+    // price is converted, so the total changes with it), not stay at the old number under a new label.
+    $sumOf = function ($svcs) use (&$lead) {
+        $t = 0.0; $any = false;
+        foreach ($svcs as $svc) {
+            $v = ($lead['requisitions'] ?? [])["{$svc}::estimated_deal_value"] ?? null;
+            if (is_array($v) && !empty($v['amount'])) { $t += dealMoney($v['amount']); $any = true; }
         }
+        return $any ? $t : null;
+    };
+    $candidates = [array_values(array_unique(array_merge($lead['services'] ?? [], $lead['demo_services'] ?? []))), array_values($lead['services'] ?? [])];
+    $followSet = null;
+    foreach ($candidates as $set) {
+        $t = $sumOf($set);
+        if ($t !== null && $t > 0 && abs($t - dealMoney($lead['deal_amount'] ?? 0)) < 0.005) { $followSet = $set; break; }
+    }
+    // Rapid Web's price is USD 999. If it is still that exact list price (untouched default, or 999 USD re-saved as is),
+    // moving the deal to another currency CONVERTS it at today's rate rather than relabelling 999 as 999 of something else.
+    $rwKey = 'Rapid Web::estimated_deal_value';
+    $rwWarning = null;
+    $rv = is_array($lead['requisitions'] ?? null) ? ($lead['requisitions'][$rwKey] ?? null) : null;
+    if (is_array($rv) && strtoupper((string) ($rv['currency'] ?? '')) === 'USD' && (string) ($rv['amount'] ?? '') === '999') {
+        $lead['requisitions'][$rwKey]['default'] = true;
     }
     $lead['deal_currency'] = $new;
     syncDealMoneyCurrencies($lead);
+    if ($rv !== null && !empty($lead['requisitions'][$rwKey]['default'])) {
+        $now = $lead['requisitions'][$rwKey];
+        if (strtoupper((string) ($now['currency'] ?? '')) === $new && (string) $now['amount'] !== '999') {
+            $rwWarning = "Rapid Web's price (USD 999) was converted to $new " . number_format((float) $now['amount']) . " at today's exchange rate. Edit it in the Demo Feasibility Check if you quote a different amount.";
+        }
+    } elseif ($rv !== null && !isset($lead['requisitions'][$rwKey])) {
+        $rwWarning = "No exchange rate is available for $new, so Rapid Web's price was cleared: enter its $new price in the Demo Feasibility Check.";
+    }
+    if ($followSet !== null) {
+        $newTotal = $sumOf($followSet);
+        if ($newTotal !== null) $lead['deal_amount'] = dealMoney($newTotal);
+    }
     $lead['updated_at'] = date('c');
     logActivity($lead, 'currency_change', "Deal currency changed from $old to $new" . ($touched ? ' (' . count($touched) . ' job' . (count($touched) === 1 ? '' : 's') . ' updated)' : '') . '. Amounts are unchanged.',
         ['actor' => $actor]);
@@ -648,6 +701,7 @@ function changeDealCurrency(&$lead, $newCurrency, $actor = null) {
 
     // Generated documents carry their currency as text and can't be rewritten: say which ones to regenerate.
     $warnings = [];
+    if ($rwWarning) $warnings[] = $rwWarning;
     $docIds = array_filter(array_merge(
         [$lead['cost_proposal_id'] ?? '', $lead['sow_id'] ?? ''],
         array_values((array) ($lead['cost_proposal_by_service'] ?? [])),
@@ -935,15 +989,32 @@ function fetchWebsiteTextForResearch($url) {
 function leadQualifyChecklistDone($lead) {
     $services = $lead['services'] ?? [];
     if (empty($services) && empty($lead['services_other'])) return false;
+    // Rapid Web has no qualification questions, so a deal made only of it has nothing to answer.
+    $rapidOnly = !empty($services) && count(array_diff($services, ['Rapid Web'])) === 0;
     $answers = $lead['requisitions'] ?? [];
-    if (!is_array($answers) || empty($answers)) return false;
-    $hasAnswer = false;
+    if (!$rapidOnly && (!is_array($answers) || empty($answers))) return false;
+    $hasAnswer = $rapidOnly;
     foreach ($answers as $v) {
         if (is_array($v) && !empty($v['default'])) continue;   // an untouched default (Rapid Web's USD 999) is not an answer
         if (is_array($v) ? !empty($v) : (!empty($v) || $v === '0')) { $hasAnswer = true; break; }
     }
     if (!$hasAnswer) return false;
     if (empty($lead['engagement_method'])) return false;
+    return true;
+}
+
+/**
+ * Rapid Web has no qualification questions, so a deal made only of it qualifies by itself: as soon as it has an
+ * engagement method and the service (the rest of leadQualifyChecklistDone()), a Lead-stage deal moves to Qualified
+ * without anyone pressing Qualify. Returns true when it moved the deal.
+ */
+function maybeAutoQualifyRapidWeb(&$lead, $actor) {
+    if (getLeadStage($lead) !== 'lead') return false;
+    $services = $lead['services'] ?? [];
+    if (empty($services) || count(array_diff($services, ['Rapid Web'])) !== 0) return false;
+    if (!leadQualifyChecklistDone($lead)) return false;
+    setLeadStage($lead, 'qualified', 'auto_qualified:rapid_web', $actor);
+    logActivity($lead, 'stage_change', 'Rapid Web has no qualification questions: moved to Qualified automatically');
     return true;
 }
 
@@ -3983,11 +4054,15 @@ case 'set-deal-amount':
     if ($targetIdx === null) respond(['success' => false, 'error' => 'Lead not found'], 404);
     $lead = $leadsStore['leads'][$targetIdx];
     $curChange = ['ok' => true, 'changed' => false, 'warnings' => []];
+    $totalBefore = dealMoney($lead['deal_amount'] ?? 0);
     if (isset($input['currency']) && trim($input['currency']) !== '') {
         $curChange = changeDealCurrency($lead, $input['currency'], $u['name'] ?? ($u['id'] ?? null));
         if (!$curChange['ok']) respond(['success' => false, 'error' => $curChange['error']], 409);
     }
-    $changed = setDealAmount($lead, $input['amount'] ?? 0, '', $u['id'] ?? null);
+    // The screen re-sends the total it was showing along with a currency change. When that is just the OLD total (not a
+    // typed edit), keep the total the currency change recomputed from the services instead of overwriting it.
+    $keepRecomputed = $curChange['changed'] && abs(dealMoney($input['amount'] ?? 0) - $totalBefore) < 0.005;
+    $changed = $keepRecomputed ? false : setDealAmount($lead, $input['amount'] ?? 0, '', $u['id'] ?? null);
     $leadsStore['leads'][$targetIdx] = $lead;
     saveLeadsStore($leadsStore);
     respond(['success' => true, 'lead' => $lead, 'changed' => $changed, 'currency_changed' => $curChange['changed'], 'warnings' => $curChange['warnings']]);
@@ -5567,6 +5642,13 @@ case 'admin-settings':
     }
     break;
 
+/** Rapid Web's default price in a currency (USD 999, or converted at the cached rate). */
+case 'rapid-web-price':
+    if ($method !== 'GET') break;
+    requireAuth();
+    respond(['success' => true, 'price' => rapidWebDefaultIn($_GET['currency'] ?? ''), 'list' => ['amount' => 999, 'currency' => 'USD']]);
+    break;
+
 case 'get-requisitions':
     if ($method !== 'GET') break;
     requireAuth();
@@ -6350,8 +6432,9 @@ case 'log-call':
         $lead['last_action'] = 'call_logged';
         $lead['last_action_at'] = date('c');
         $lead['updated_at'] = date('c');
+        $autoQualified = maybeAutoQualifyRapidWeb($lead, $user['id']);   // logging a call can be what completes the engagement method
         saveLeadsStore($leadsStore);
-        respond(['success' => true, 'lead' => $lead]);
+        respond(['success' => true, 'lead' => $lead, 'auto_qualified' => $autoQualified]);
     }
     respond(['success' => false, 'error' => 'Lead not found'], 404);
     break;
@@ -6460,14 +6543,14 @@ case 'update-lead':
             // company fields (first/last name, email, phone, company,
             // title, industry, country, website, linkedin, company_size),
             // validated above when email/linkedin/website change.
-            $allowedFields = ['call_anchor', 'email_skipped', 'followup_date', 'notes', 'source', 'source_detail', 'assigned_to', 'urgency_flag', 'rejection_reason', 'consultation_type', 'services', 'services_other', 'engagement_method', 'engagement_date', 'engagement_status', 'engagement_note', 'meeting_link', 'demo_checklist_answers', 'demo_transcript', 'demo_feasibility', 'first_name', 'last_name', 'email', 'phone', 'company', 'title', 'industry', 'country', 'website', 'linkedin', 'company_size', 'demo_services', 'demo_request_sent', 'demo_feasibility_by_service', 'demo_disqualified_services', 'sales_materials_link', 'calendly_email_subject', 'calendly_email_body', 'calendly_custom_instructions', 'qualified_research_skipped', 'followups', 'meeting_confirmed_at'];
+            $allowedFields = ['call_anchor', 'email_skipped', 'followup_date', 'notes', 'source', 'source_detail', 'assigned_to', 'urgency_flag', 'rejection_reason', 'consultation_type', 'services', 'services_other', 'engagement_method', 'engagement_date', 'engagement_status', 'engagement_note', 'meeting_link', 'demo_checklist_answers', 'demo_transcript', 'demo_feasibility', 'first_name', 'last_name', 'email', 'phone', 'company', 'title', 'industry', 'country', 'website', 'linkedin', 'company_size', 'demo_services', 'demo_request_sent', 'demo_feasibility_by_service', 'demo_disqualified_services', 'sales_materials_link', 'calendly_email_subject', 'calendly_email_body', 'calendly_email_template', 'calendly_custom_instructions', 'qualified_research_skipped', 'followups', 'meeting_confirmed_at'];
             // calendly_email_subject/body are plain multi-line email text —
             // the frontend already HTML-escapes them at render time (esc())
             // and reads them back as plain text for mailto/copy, so running
             // them through sanitizeInput()'s htmlspecialchars() here would
             // double-encode apostrophes into literal "&#039;" on screen.
             // Tags are still stripped/trimmed, just not entity-encoded.
-            $plainTextFields = ['calendly_email_subject', 'calendly_email_body'];
+            $plainTextFields = ['calendly_email_subject', 'calendly_email_body', 'calendly_email_template'];
             foreach ($allowedFields as $field) {
                 if (isset($input[$field])) {
                     if (!is_string($input[$field])) {
@@ -6577,9 +6660,10 @@ case 'update-lead':
             }
             $lead = normalizeLeadForMapping($lead);
             syncDealMoneyCurrencies($lead);
+            $autoQualified = $requestedStage === '' ? maybeAutoQualifyRapidWeb($lead, $user['id']) : false;
             $lead['updated_at'] = date('c');
             saveLeadsStore($leadsStore);
-            respond(['success' => true, 'lead' => $lead, 'currency_changed' => !empty($curChange['changed']), 'warnings' => $curChange['warnings'] ?? []]);
+            respond(['success' => true, 'lead' => $lead, 'currency_changed' => !empty($curChange['changed']), 'warnings' => $curChange['warnings'] ?? [], 'auto_qualified' => $autoQualified]);
         }
     }
     respond(['success' => false, 'error' => 'Lead not found'], 404);
@@ -6955,6 +7039,10 @@ case 'generate-calendly-email':
     $lead = $input['lead'] ?? [];
     $calendarLink = trim($input['calendar_link'] ?? '');
     if (!$calendarLink) respond(['success' => false, 'error' => 'Missing calendar link'], 400);
+    // The Rapid Web wording is only for deals that include Rapid Web.
+    if (($input['template'] ?? '') === 'rapid_web' && !in_array('Rapid Web', array_merge((array) ($lead['services'] ?? []), (array) ($lead['demo_services'] ?? [])), true)) {
+        respond(['success' => false, 'error' => 'The Rapid Web email is only for deals that include Rapid Web'], 400);
+    }
 
     $res = generateCalendlyEmailContent(
         $provider,
@@ -6962,7 +7050,8 @@ case 'generate-calendly-email':
         $lead,
         $calendarLink,
         $input['custom_instructions'] ?? '',
-        $userData['settings'] ?? []
+        $userData['settings'] ?? [],
+        ($input['template'] ?? '') === 'rapid_web' ? 'rapid_web' : 'calendly'
     );
 
     if ($res['success']) respond(['success' => true, 'email' => $res['email']]);
@@ -10102,7 +10191,7 @@ INSTRUCTIONS:
  * The AI is only invoked once a rep types custom instructions, to adapt
  * THIS template's content/tone — see generateCalendlyEmailContent() below.
  */
-function calendlyEmailDefaultTemplate($lead, $calendarLink, $settings) {
+function calendlyEmailDefaultTemplate($lead, $calendarLink, $settings, $template = 'calendly') {
     $firstName = $lead['first_name'] ?? 'there';
     $company = $lead['company'] ?? '';
     $senderName = $settings['sender_name'] ?? '';
@@ -10113,10 +10202,9 @@ function calendlyEmailDefaultTemplate($lead, $calendarLink, $settings) {
     $signOff = $senderName ?: 'there';
     if ($senderTitle) $signOff .= "\n{$senderTitle}";
 
-    // A deal that is only Rapid Web (the fixed-scope Rapid Build Website) gets its own demo invitation: the demo is
-    // a look at their own website and what could be improved, not a requirements workshop.
-    $dealServices = $lead['services'] ?? [];
-    if (count($dealServices) === 1 && $dealServices[0] === 'Rapid Web') {
+    // The Rapid Web (fixed-scope Rapid Build Website) invitation, picked by the "Generate Rapid Web Email" button.
+    // PLACEHOLDER WORDING: Shameer is providing the real text; replace $subject/$body below when it arrives.
+    if ($template === 'rapid_web') {
         $subject = "A quick look at your website";
         $body = "Hi {$firstName},\n\n"
             . "Thank you for taking the time to speak with me.\n\n"
@@ -10139,14 +10227,14 @@ function calendlyEmailDefaultTemplate($lead, $calendarLink, $settings) {
     return ['subject' => $subject, 'body' => $body];
 }
 
-function generateCalendlyEmailContent($provider, $apiKey, $lead, $calendarLink, $customInstructions, $settings) {
-    $default = calendlyEmailDefaultTemplate($lead, $calendarLink, $settings);
+function generateCalendlyEmailContent($provider, $apiKey, $lead, $calendarLink, $customInstructions, $settings, $template = 'calendly') {
+    $default = calendlyEmailDefaultTemplate($lead, $calendarLink, $settings, $template);
 
     if (!$customInstructions) {
         return ['success' => true, 'email' => "SUBJECT: {$default['subject']}\n\n{$default['body']}"];
     }
 
-    $prompt = "Adapt the email below per the rep's instructions. Keep the same overall structure and intent (thanking them for sharing their requirements, proposing a detailed demo as the next step, sharing the booking link, professional sign-off) unless the instructions say otherwise.
+    $prompt = "Adapt the email below per the rep's instructions. Keep the same overall structure and intent (" . ($template === 'rapid_web' ? "thanking them for their time, proposing the short demo of their own website as the next step" : "thanking them for sharing their requirements, proposing a detailed demo as the next step") . ", sharing the booking link, professional sign-off) unless the instructions say otherwise.
 
 DEFAULT EMAIL:
 SUBJECT: {$default['subject']}
